@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+checkpoints/
+outputs/
+logs/
+.wandb/
+.DS_Store

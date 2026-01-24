@@ -1,0 +1,3 @@
+# DeepSeek-VL2 install instructions live in the repo:
+# https://github.com/deepseek-ai/DeepSeek-VL2
+# Follow their setup (often includes flash-attn and specific torch versions).

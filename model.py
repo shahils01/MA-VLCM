@@ -1,0 +1,287 @@
+import math
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+@dataclass
+class ModelConfig:
+    # Backbone
+    vl_backend: str = "deepseek_vl"  # deepseek_vl | deepseek_vl2
+    vl_model_name: str = "deepseek-community/deepseek-vl-1.3b-base"
+    vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
+    vl_max_text_len: int = 256
+    freeze_vl: bool = False
+
+    # Video
+    video_channels: int = 3
+    video_height: int = 224
+    video_width: int = 224
+    video_frames: int = 8
+    video_preprocessed: bool = False
+    video_mean: tuple = (0.5, 0.5, 0.5)
+    video_std: tuple = (0.5, 0.5, 0.5)
+
+    # Robots / graph
+    num_robots: int = 8
+    robot_obs_dim: int = 16
+
+    # Text (placeholder: supply pre-embedded text vectors)
+    text_dim: int = 512
+
+    # Model dims
+    d_model: int = 256
+    temporal_layers: int = 2
+    temporal_heads: int = 4
+    temporal_dropout: float = 0.1
+
+    # GNN
+    gnn_layers: int = 2
+
+    # Fusion
+    fusion_hidden: int = 512
+    use_moe: bool = False
+    moe_experts: int = 4
+    moe_top_k: int = 2
+
+
+class DeepSeekVLMBackbone(nn.Module):
+    """Backbone wrapper for DeepSeek VLMs (DeepSeek-VL or DeepSeek-VL2)."""
+
+    def __init__(self, cfg: ModelConfig, device: torch.device):
+        super().__init__()
+        self.cfg = cfg
+        self.device = device
+
+        if cfg.vl_dtype == "float16":
+            dtype = torch.float16
+        elif cfg.vl_dtype == "float32":
+            dtype = torch.float32
+        else:
+            dtype = torch.bfloat16
+
+        if cfg.vl_backend == "deepseek_vl2":
+            try:
+                from deepseek_vl.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor
+            except Exception as e:
+                raise ImportError(
+                    "DeepSeek-VL2 backend requires the DeepSeek-VL2 repo installed. "
+                    "Install it from https://github.com/deepseek-ai/DeepSeek-VL2"
+                ) from e
+
+            self.processor = DeepseekVLV2Processor.from_pretrained(cfg.vl_model_name)
+            self.tokenizer = self.processor.tokenizer
+            self.model = DeepseekVLV2ForCausalLM.from_pretrained(
+                cfg.vl_model_name, torch_dtype=dtype
+            )
+        else:
+            from transformers import AutoProcessor, DeepseekVLModel, AutoTokenizer
+
+            self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(cfg.vl_model_name)
+            self.model = DeepseekVLModel.from_pretrained(
+                cfg.vl_model_name, torch_dtype=dtype
+            )
+
+        self.model.to(device)
+        if cfg.freeze_vl:
+            for p in self.model.parameters():
+                p.requires_grad = False
+
+        self._language_model = self._get_language_model()
+        self.text_hidden_size = self._language_model.config.hidden_size
+
+    def _get_language_model(self):
+        if hasattr(self.model, "language_model"):
+            return self.model.language_model
+        if hasattr(self.model, "model") and hasattr(self.model.model, "language_model"):
+            return self.model.model.language_model
+        raise AttributeError("Could not find language_model on DeepSeek VLM.")
+
+    def _normalize_video(self, video):
+        # video: [B*T, C, H, W]
+        if video.dtype != torch.float32 and video.dtype != torch.float16 and video.dtype != torch.bfloat16:
+            video = video.float()
+        mean = torch.tensor(self.cfg.video_mean, device=video.device).view(1, -1, 1, 1)
+        std = torch.tensor(self.cfg.video_std, device=video.device).view(1, -1, 1, 1)
+        return (video - mean) / std
+
+    def encode_image(self, pixel_values):
+        if not self.cfg.video_preprocessed:
+            pixel_values = self._normalize_video(pixel_values)
+
+        if hasattr(self.model, "get_image_features"):
+            img = self.model.get_image_features(pixel_values)
+        elif hasattr(self.model, "model") and hasattr(self.model.model, "get_image_features"):
+            img = self.model.model.get_image_features(pixel_values)
+        else:
+            raise AttributeError("DeepSeek VLM does not expose get_image_features.")
+
+        # img: [B, num_image_tokens, D]
+        return img.mean(dim=1)
+
+    def encode_text(self, texts):
+        tokens = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.cfg.vl_max_text_len,
+            return_tensors="pt",
+        ).to(self.device)
+        outputs = self._language_model(**tokens)
+        hidden = outputs.last_hidden_state
+        mask = tokens.attention_mask.unsqueeze(-1)
+        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        return pooled
+
+
+class TemporalTransformer(nn.Module):
+    def __init__(self, d_model: int, layers: int, heads: int, dropout: float):
+        super().__init__()
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=heads, dropout=dropout, batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers)
+        self.pos_emb = nn.Parameter(torch.zeros(1, 1024, d_model))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x: [B, T, D]
+        t = x.size(1)
+        pos = self.pos_emb[:, :t, :]
+        x = self.dropout(x + pos)
+        return self.encoder(x)
+
+
+class RobotEncoder(nn.Module):
+    def __init__(self, in_dim: int, d_model: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class DenseGraphEncoder(nn.Module):
+    """Simple dense adjacency message passing. adj is [B, T, N, N]."""
+
+    def __init__(self, d_model: int, layers: int):
+        super().__init__()
+        self.layers = nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(layers)])
+
+    def forward(self, node_feats, adj):
+        # node_feats: [B, T, N, D]
+        # adj: [B, T, N, N]
+        h = node_feats
+        for layer in self.layers:
+            # normalize adjacency to avoid scale blowup
+            deg = adj.sum(dim=-1, keepdim=True).clamp(min=1.0)
+            adj_norm = adj / deg
+            agg = torch.matmul(adj_norm, h)  # [B, T, N, D]
+            h = F.gelu(layer(agg))
+        return h
+
+
+class MoEFeedForward(nn.Module):
+    def __init__(self, d_model: int, hidden: int, experts: int, top_k: int):
+        super().__init__()
+        self.experts = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(d_model, hidden),
+                    nn.GELU(),
+                    nn.Linear(hidden, d_model),
+                )
+                for _ in range(experts)
+            ]
+        )
+        self.gate = nn.Linear(d_model, experts)
+        self.top_k = top_k
+
+    def forward(self, x):
+        # x: [B, D]
+        logits = self.gate(x)
+        topk = torch.topk(logits, k=self.top_k, dim=-1)
+        weights = F.softmax(topk.values, dim=-1)
+        out = torch.zeros_like(x)
+        for i in range(self.top_k):
+            idx = topk.indices[:, i]
+            w = weights[:, i].unsqueeze(-1)
+            expert_out = torch.stack([self.experts[j](x[b]) for b, j in enumerate(idx)], dim=0)
+            out = out + w * expert_out
+        return out
+
+
+class MultimodalValueModel(nn.Module):
+    def __init__(self, cfg: ModelConfig, device: torch.device):
+        super().__init__()
+        self.cfg = cfg
+        self.backbone = DeepSeekVLMBackbone(cfg, device=device)
+        if self.backbone.text_hidden_size != cfg.d_model:
+            self.vision_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
+            self.text_raw_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
+        else:
+            self.vision_proj = nn.Identity()
+            self.text_raw_proj = nn.Identity()
+
+        self.video_temporal = TemporalTransformer(
+            cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
+        )
+
+        self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
+        self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
+        self.graph_temporal = TemporalTransformer(
+            cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
+        )
+
+        self.text_proj = nn.Linear(cfg.text_dim, cfg.d_model)
+
+        fused_dim = cfg.d_model * 3
+        if cfg.use_moe:
+            self.fusion = MoEFeedForward(fused_dim, cfg.fusion_hidden, cfg.moe_experts, cfg.moe_top_k)
+        else:
+            self.fusion = nn.Sequential(
+                nn.Linear(fused_dim, cfg.fusion_hidden),
+                nn.GELU(),
+                nn.Linear(cfg.fusion_hidden, fused_dim),
+            )
+
+        self.value_head = nn.Linear(fused_dim, 1)
+
+    def forward(self, video, robot_obs, adj, text_emb=None, text_raw=None):
+        # video: [B, T, C, H, W]
+        # robot_obs: [B, T, N, obs_dim]
+        # adj: [B, T, N, N]
+        # text_emb: [B, text_dim] or text_raw: list[str]
+
+        b, t = video.shape[0], video.shape[1]
+
+        video_flat = video.view(b * t, *video.shape[2:])
+        vid_tokens = self.backbone.encode_image(video_flat)
+        vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
+        vid_tokens = self.video_temporal(vid_tokens)
+        vid_feat = vid_tokens.mean(dim=1)
+
+        robot_feats = self.robot_enc(robot_obs)
+        robot_feats = self.graph_enc(robot_feats, adj)
+        team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
+        team_tokens = self.graph_temporal(team_tokens)
+        team_feat = team_tokens.mean(dim=1)
+
+        if text_emb is not None:
+            text_feat = self.text_proj(text_emb)
+        elif text_raw is not None:
+            text_feat = self.text_raw_proj(self.backbone.encode_text(text_raw))
+        else:
+            raise ValueError("Provide either text_emb or text_raw.")
+
+        fused = torch.cat([vid_feat, team_feat, text_feat], dim=-1)
+        fused = self.fusion(fused)
+        value = self.value_head(fused).squeeze(-1)
+        return value
