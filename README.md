@@ -16,13 +16,14 @@ pip install -r requirements.txt
 For DeepSeek-VL2 (MoE backbone), follow the official DeepSeek-VL2 repo install steps and then use `--vl_backend deepseek_vl2`.
 
 ## WebDataset expected keys
-Each sample should contain these tensors (depending on `--text_mode`):
-- `video.pth`: `[T, C, H, W]`
-- `robot_obs.pth`: `[T, N, obs_dim]`
-- `adj.pth`: `[T, N, N]`
-- `text_emb.pth`: `[text_dim]` (when `--text_mode emb`)
-- `text.txt`: raw text (when `--text_mode raw`)
-- `value.pth`: `[]` or `[1]` scalar value
+Each **frame** sample should contain these keys:
+- `image.png`
+- `obs.npy` and/or `state.npy`
+- `edge_index.npy`
+- `caption.txt`
+- `rewards.npy` (or `state.npy` if you use `--value_source state`)
+
+The loader will group consecutive frames by episode id (parsed from `__key__` like `000000_000123`) and build clips of length `--clip_len`.
 
 ## Run
 ```
@@ -30,6 +31,13 @@ python train.py \
   --train_shards "/path/to/train/{00000..00099}.tar" \
   --val_shards "/path/to/val/{00000..00009}.tar" \
   --batch_size 4 \
+  --clip_len 8 \
+  --clip_stride 1 \
+  --robot_source obs \
+  --value_source rewards \
+  --value_reduce mean \
+  --value_time last \
+  --text_mode raw \
   --epochs 2
 ```
 
@@ -39,3 +47,4 @@ python train.py \
 
 ## Notes
 - If your `video.pth` tensors are already normalized for the DeepSeek image encoder, use `--video_preprocessed`.
+- Your `.npy` payloads appear to be stored as raw arrays (not .npy files), so the loader reads them directly and falls back to `np.load`/`torch.load` only if needed.

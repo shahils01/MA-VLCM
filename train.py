@@ -1,13 +1,14 @@
 import argparse
 import os
+import io
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 
 try:
     import webdataset as wds
-except Exception as e:
+except Exception:
     wds = None
 
 from model import ModelConfig, MultimodalValueModel
@@ -22,7 +23,15 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--samples_per_epoch", type=int, default=10000)
-    p.add_argument("--text_mode", type=str, default="emb", choices=["emb", "raw"])
+    p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
+
+    # Sequence building
+    p.add_argument("--clip_len", type=int, default=8)
+    p.add_argument("--clip_stride", type=int, default=1)
+    p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
+    p.add_argument("--value_source", type=str, default="rewards", choices=["rewards", "state"])
+    p.add_argument("--value_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
+    p.add_argument("--value_time", type=str, default="last", choices=["last", "mean"])
 
     # DeepSeek VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2"])
@@ -99,35 +108,199 @@ def build_model(args):
     return MultimodalValueModel(cfg, device=torch.device(args.device))
 
 
-def webdataset_loader(shards, batch_size, num_workers, text_mode):
-    if wds is None:
-        raise RuntimeError("webdataset is not installed. Please install it or use a different loader.")
+def _as_numpy(x):
+    if isinstance(x, bytes):
+        # try numpy load from bytes
+        import numpy as np
+        try:
+            return np.load(io.BytesIO(x), allow_pickle=True)
+        except Exception:
+            # try torch load fallback
+            import torch
+            return torch.load(io.BytesIO(x), map_location="cpu")
+    return x
 
-    if text_mode == "raw":
-        dataset = (
-            wds.WebDataset(shards)
-            .decode("torch", "utf-8")
-            .to_tuple("video.pth", "robot_obs.pth", "adj.pth", "text.txt", "value.pth")
-        )
-    else:
-        dataset = (
-            wds.WebDataset(shards)
-            .decode("torch")
-            .to_tuple("video.pth", "robot_obs.pth", "adj.pth", "text_emb.pth", "value.pth")
-        )
+
+def _pil_to_tensor(img):
+    # img: PIL.Image
+    import numpy as np
+    arr = np.array(img, copy=False)
+    if arr.ndim == 2:
+        arr = arr[:, :, None]
+    # HWC -> CHW
+    arr = arr.transpose(2, 0, 1)
+    return torch.from_numpy(arr).float() / 255.0
+
+
+def _edge_index_to_adj(edge_index, num_nodes):
+    # edge_index: [2, E] possibly with -1 paddings
+    edge_index = _as_numpy(edge_index)
+    if hasattr(edge_index, "shape") and len(edge_index.shape) == 2 and edge_index.shape[0] == num_nodes and edge_index.shape[1] == num_nodes:
+        adj = torch.from_numpy(edge_index).float()
+        return adj
+    if hasattr(edge_index, "shape") and edge_index.shape[0] == 2:
+        src = edge_index[0]
+        dst = edge_index[1]
+        mask = (src >= 0) & (dst >= 0)
+        src = src[mask]
+        dst = dst[mask]
+        adj = torch.zeros((num_nodes, num_nodes), dtype=torch.float32)
+        if len(src) > 0:
+            adj[src, dst] = 1.0
+        return adj
+    raise ValueError("edge_index has unexpected shape")
+
+
+def _reduce_value(x, reduce_mode):
+    if reduce_mode == "sum":
+        return x.sum()
+    if reduce_mode == "first":
+        return x.flatten()[0]
+    return x.mean()
+
+
+def _value_from_frame(sample, value_source, reduce_mode):
+    arr = _as_numpy(sample[f"{value_source}.npy"])
+    if hasattr(arr, "numpy"):
+        arr = arr.numpy()
+    t = torch.tensor(arr, dtype=torch.float32)
+    return _reduce_value(t, reduce_mode)
+
+
+class SequenceWebDataset(IterableDataset):
+    def __init__(
+        self,
+        shards,
+        clip_len,
+        clip_stride,
+        text_mode,
+        robot_source,
+        value_source,
+        value_reduce,
+        value_time,
+    ):
+        self.shards = shards
+        self.clip_len = clip_len
+        self.clip_stride = clip_stride
+        self.text_mode = text_mode
+        self.robot_source = robot_source
+        self.value_source = value_source
+        self.value_reduce = value_reduce
+        self.value_time = value_time
+
+    def __iter__(self):
+        if wds is None:
+            raise RuntimeError("webdataset is not installed.")
+
+        dataset = wds.WebDataset(self.shards, shardshuffle=False).decode("pil")
+
+        current_ep = None
+        buffer = []
+
+        def flush_buffer():
+            if len(buffer) < self.clip_len:
+                return
+            for i in range(0, len(buffer) - self.clip_len + 1, self.clip_stride):
+                clip = buffer[i : i + self.clip_len]
+
+                video = torch.stack([f["image"] for f in clip], dim=0)
+                robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
+                adj = torch.stack([f["adj"] for f in clip], dim=0)
+                text = clip[0]["text"]
+
+                if self.value_time == "mean":
+                    value = torch.stack([f["value"] for f in clip]).mean()
+                else:
+                    value = clip[-1]["value"]
+
+                out = {
+                    "video": video,
+                    "robot_obs": robot_obs,
+                    "adj": adj,
+                    "value": value.view(1),
+                }
+                if self.text_mode == "raw":
+                    out["text_raw"] = text
+                else:
+                    out["text_emb"] = text
+                yield out
+
+        for sample in dataset:
+            key = sample.get("__key__", "")
+            if isinstance(key, bytes):
+                key = key.decode("utf-8", errors="ignore")
+
+            if "_" in key:
+                ep_id = key.split("_")[0]
+            else:
+                ep_id = key
+
+            if current_ep is None:
+                current_ep = ep_id
+
+            if ep_id != current_ep:
+                yield from flush_buffer()
+                buffer = []
+                current_ep = ep_id
+
+            image = _pil_to_tensor(sample["image.png"])
+            robot_src = _as_numpy(sample[f"{self.robot_source}.npy"])
+            if hasattr(robot_src, "numpy"):
+                robot_src = robot_src.numpy()
+            robot_obs = torch.tensor(robot_src, dtype=torch.float32)
+
+            num_nodes = robot_obs.shape[0]
+            edge_index = _as_numpy(sample["edge_index.npy"])
+            adj = _edge_index_to_adj(edge_index, num_nodes)
+
+            if self.text_mode == "raw":
+                text = sample["caption.txt"]
+                if isinstance(text, bytes):
+                    text = text.decode("utf-8", errors="ignore")
+            else:
+                text = _as_numpy(sample["text_emb.npy"])
+                if hasattr(text, "numpy"):
+                    text = text.numpy()
+                text = torch.tensor(text, dtype=torch.float32)
+
+            value = _value_from_frame(sample, self.value_source, self.value_reduce)
+
+            buffer.append(
+                {
+                    "image": image,
+                    "robot_obs": robot_obs,
+                    "adj": adj,
+                    "text": text,
+                    "value": value,
+                }
+            )
+
+        # flush last episode
+        yield from flush_buffer()
+
+
+def webdataset_loader(args, shards, batch_size, num_workers):
+    dataset = SequenceWebDataset(
+        shards=shards,
+        clip_len=args.clip_len,
+        clip_stride=args.clip_stride,
+        text_mode=args.text_mode,
+        robot_source=args.robot_source,
+        value_source=args.value_source,
+        value_reduce=args.value_reduce,
+        value_time=args.value_time,
+    )
 
     def _collate(batch):
-        video, robot_obs, adj, text_field, value = zip(*batch)
-        out = {
-            "video": torch.stack(video, dim=0),
-            "robot_obs": torch.stack(robot_obs, dim=0),
-            "adj": torch.stack(adj, dim=0),
-            "value": torch.stack(value, dim=0).view(-1),
-        }
-        if text_mode == "raw":
-            out["text_raw"] = [t if isinstance(t, str) else t.decode("utf-8") for t in text_field]
+        video = torch.stack([b["video"] for b in batch], dim=0)
+        robot_obs = torch.stack([b["robot_obs"] for b in batch], dim=0)
+        adj = torch.stack([b["adj"] for b in batch], dim=0)
+        value = torch.stack([b["value"] for b in batch], dim=0).view(-1)
+        out = {"video": video, "robot_obs": robot_obs, "adj": adj, "value": value}
+        if args.text_mode == "raw":
+            out["text_raw"] = [b["text_raw"] for b in batch]
         else:
-            out["text_emb"] = torch.stack(text_field, dim=0)
+            out["text_emb"] = torch.stack([b["text_emb"] for b in batch], dim=0)
         return out
 
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
@@ -180,10 +353,10 @@ def main():
     model = build_model(args).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    train_loader = webdataset_loader(args.train_shards, args.batch_size, args.num_workers, args.text_mode)
+    train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
     val_loader = None
     if args.val_shards:
-        val_loader = webdataset_loader(args.val_shards, args.batch_size, args.num_workers, args.text_mode)
+        val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers)
 
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(model, train_loader, optimizer, args.device, args.log_every, train=True)
