@@ -53,7 +53,7 @@ def parse_args():
 
     # Robots / graph
     p.add_argument("--num_robots", type=int, default=8)
-    p.add_argument("--robot_obs_dim", type=int, default=16)
+    p.add_argument("--robot_obs_dim", type=int, default=32)
 
     # Text
     p.add_argument("--text_dim", type=int, default=512)
@@ -345,7 +345,7 @@ def run_epoch(model, loader, optimizer, device, log_every, gamma, train=True):
         next_robot_obs = batch["next_robot_obs"].to(device)
         next_adj = batch["next_adj"].to(device)
         reward = batch["reward"].to(device)
-        done = batch["done"].to(device)
+        done = batch["done"].to(device).float()
 
         text_emb = batch.get("text_emb", None)
         text_raw = batch.get("text_raw", None)
