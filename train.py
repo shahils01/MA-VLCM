@@ -230,8 +230,12 @@ class SequenceWebDataset(IterableDataset):
                 next_clip = buffer[i + 1 : i + 1 + self.clip_len]
 
                 if self.image_processor is not None:
-                    video = self.image_processor([f["image"] for f in clip])["pixel_values"]
-                    next_video = self.image_processor([f["image"] for f in next_clip])["pixel_values"]
+                    video = self.image_processor([f["image"] for f in clip], return_tensors="pt")[
+                        "pixel_values"
+                    ]
+                    next_video = self.image_processor(
+                        [f["image"] for f in next_clip], return_tensors="pt"
+                    )["pixel_values"]
                 else:
                     video = [f["image"] for f in clip]
                     next_video = [f["image"] for f in next_clip]
