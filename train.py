@@ -29,9 +29,11 @@ def parse_args():
     p.add_argument("--clip_len", type=int, default=8)
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
-    p.add_argument("--value_source", type=str, default="rewards", choices=["rewards", "state"])
-    p.add_argument("--value_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
-    p.add_argument("--value_time", type=str, default="last", choices=["last", "mean"])
+    p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
+    p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
+
+    # TD value loss
+    p.add_argument("--gamma", type=float, default=0.99)
 
     # DeepSeek VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2"])
@@ -110,34 +112,19 @@ def build_model(args):
 
 def _as_numpy(x):
     if isinstance(x, bytes):
-        # try numpy load from bytes
         import numpy as np
         try:
             return np.load(io.BytesIO(x), allow_pickle=True)
         except Exception:
-            # try torch load fallback
             import torch
             return torch.load(io.BytesIO(x), map_location="cpu")
     return x
 
 
-def _pil_to_tensor(img):
-    # img: PIL.Image
-    import numpy as np
-    arr = np.array(img, copy=False)
-    if arr.ndim == 2:
-        arr = arr[:, :, None]
-    # HWC -> CHW
-    arr = arr.transpose(2, 0, 1)
-    return torch.from_numpy(arr).float() / 255.0
-
-
 def _edge_index_to_adj(edge_index, num_nodes):
-    # edge_index: [2, E] possibly with -1 paddings
     edge_index = _as_numpy(edge_index)
     if hasattr(edge_index, "shape") and len(edge_index.shape) == 2 and edge_index.shape[0] == num_nodes and edge_index.shape[1] == num_nodes:
-        adj = torch.from_numpy(edge_index).float()
-        return adj
+        return torch.from_numpy(edge_index).float()
     if hasattr(edge_index, "shape") and edge_index.shape[0] == 2:
         src = edge_index[0]
         dst = edge_index[1]
@@ -159,12 +146,32 @@ def _reduce_value(x, reduce_mode):
     return x.mean()
 
 
-def _value_from_frame(sample, value_source, reduce_mode):
-    arr = _as_numpy(sample[f"{value_source}.npy"])
+def _reduce_done(x, reduce_mode):
+    if reduce_mode == "all":
+        return (x > 0).all()
+    if reduce_mode == "sum":
+        return x.sum() > 0
+    if reduce_mode == "first":
+        return x.flatten()[0] > 0
+    if reduce_mode == "mean":
+        return x.float().mean() > 0.5
+    return (x > 0).any()
+
+
+def _reward_from_frame(sample, reduce_mode):
+    arr = _as_numpy(sample["rewards.npy"])
     if hasattr(arr, "numpy"):
         arr = arr.numpy()
     t = torch.tensor(arr, dtype=torch.float32)
     return _reduce_value(t, reduce_mode)
+
+
+def _done_from_frame(sample, reduce_mode):
+    arr = _as_numpy(sample["dones.npy"])
+    if hasattr(arr, "numpy"):
+        arr = arr.numpy()
+    t = torch.tensor(arr, dtype=torch.float32)
+    return _reduce_done(t, reduce_mode)
 
 
 class SequenceWebDataset(IterableDataset):
@@ -175,18 +182,16 @@ class SequenceWebDataset(IterableDataset):
         clip_stride,
         text_mode,
         robot_source,
-        value_source,
-        value_reduce,
-        value_time,
+        reward_reduce,
+        done_reduce,
     ):
         self.shards = shards
         self.clip_len = clip_len
         self.clip_stride = clip_stride
         self.text_mode = text_mode
         self.robot_source = robot_source
-        self.value_source = value_source
-        self.value_reduce = value_reduce
-        self.value_time = value_time
+        self.reward_reduce = reward_reduce
+        self.done_reduce = done_reduce
 
     def __iter__(self):
         if wds is None:
@@ -198,26 +203,36 @@ class SequenceWebDataset(IterableDataset):
         buffer = []
 
         def flush_buffer():
-            if len(buffer) < self.clip_len:
+            if len(buffer) < self.clip_len + 1:
                 return
-            for i in range(0, len(buffer) - self.clip_len + 1, self.clip_stride):
+            max_i = len(buffer) - self.clip_len - 1
+            for i in range(0, max_i + 1, self.clip_stride):
                 clip = buffer[i : i + self.clip_len]
+                next_clip = buffer[i + 1 : i + 1 + self.clip_len]
 
-                video = torch.stack([f["image"] for f in clip], dim=0)
+                video = [f["image"] for f in clip]
+                next_video = [f["image"] for f in next_clip]
+
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
+                next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
+
                 adj = torch.stack([f["adj"] for f in clip], dim=0)
+                next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
+
                 text = clip[0]["text"]
 
-                if self.value_time == "mean":
-                    value = torch.stack([f["value"] for f in clip]).mean()
-                else:
-                    value = clip[-1]["value"]
+                reward = clip[-1]["reward"]
+                done = clip[-1]["done"]
 
                 out = {
                     "video": video,
                     "robot_obs": robot_obs,
                     "adj": adj,
-                    "value": value.view(1),
+                    "next_video": next_video,
+                    "next_robot_obs": next_robot_obs,
+                    "next_adj": next_adj,
+                    "reward": reward.view(1),
+                    "done": done.view(1),
                 }
                 if self.text_mode == "raw":
                     out["text_raw"] = text
@@ -243,7 +258,7 @@ class SequenceWebDataset(IterableDataset):
                 buffer = []
                 current_ep = ep_id
 
-            image = _pil_to_tensor(sample["image.png"])
+            image = sample["image.png"]
             robot_src = _as_numpy(sample[f"{self.robot_source}.npy"])
             if hasattr(robot_src, "numpy"):
                 robot_src = robot_src.numpy()
@@ -263,7 +278,8 @@ class SequenceWebDataset(IterableDataset):
                     text = text.numpy()
                 text = torch.tensor(text, dtype=torch.float32)
 
-            value = _value_from_frame(sample, self.value_source, self.value_reduce)
+            reward = _reward_from_frame(sample, self.reward_reduce)
+            done = _done_from_frame(sample, self.done_reduce)
 
             buffer.append(
                 {
@@ -271,11 +287,11 @@ class SequenceWebDataset(IterableDataset):
                     "robot_obs": robot_obs,
                     "adj": adj,
                     "text": text,
-                    "value": value,
+                    "reward": reward,
+                    "done": done,
                 }
             )
 
-        # flush last episode
         yield from flush_buffer()
 
 
@@ -286,17 +302,21 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         clip_stride=args.clip_stride,
         text_mode=args.text_mode,
         robot_source=args.robot_source,
-        value_source=args.value_source,
-        value_reduce=args.value_reduce,
-        value_time=args.value_time,
+        reward_reduce=args.reward_reduce,
+        done_reduce=args.done_reduce,
     )
 
     def _collate(batch):
-        video = torch.stack([b["video"] for b in batch], dim=0)
-        robot_obs = torch.stack([b["robot_obs"] for b in batch], dim=0)
-        adj = torch.stack([b["adj"] for b in batch], dim=0)
-        value = torch.stack([b["value"] for b in batch], dim=0).view(-1)
-        out = {"video": video, "robot_obs": robot_obs, "adj": adj, "value": value}
+        out = {
+            "video": [b["video"] for b in batch],
+            "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
+            "adj": torch.stack([b["adj"] for b in batch], dim=0),
+            "next_video": [b["next_video"] for b in batch],
+            "next_robot_obs": torch.stack([b["next_robot_obs"] for b in batch], dim=0),
+            "next_adj": torch.stack([b["next_adj"] for b in batch], dim=0),
+            "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
+            "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
+        }
         if args.text_mode == "raw":
             out["text_raw"] = [b["text_raw"] for b in batch]
         else:
@@ -306,7 +326,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
 
 
-def run_epoch(model, loader, optimizer, device, log_every, train=True):
+def run_epoch(model, loader, optimizer, device, log_every, gamma, train=True):
     if train:
         model.train()
     else:
@@ -318,21 +338,29 @@ def run_epoch(model, loader, optimizer, device, log_every, train=True):
 
     for batch in loader:
         step += 1
-        video = batch["video"].to(device)
+        video = batch["video"]
+        next_video = batch["next_video"]
         robot_obs = batch["robot_obs"].to(device)
         adj = batch["adj"].to(device)
+        next_robot_obs = batch["next_robot_obs"].to(device)
+        next_adj = batch["next_adj"].to(device)
+        reward = batch["reward"].to(device)
+        done = batch["done"].to(device)
+
         text_emb = batch.get("text_emb", None)
         text_raw = batch.get("text_raw", None)
         if text_emb is not None:
             text_emb = text_emb.to(device)
-        value = batch["value"].to(device)
 
         if train:
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(train):
             pred = model(video, robot_obs, adj, text_emb=text_emb, text_raw=text_raw)
-            loss = loss_fn(pred, value)
+            with torch.no_grad():
+                next_pred = model(next_video, next_robot_obs, next_adj, text_emb=text_emb, text_raw=text_raw)
+            target = reward + gamma * (1.0 - done) * next_pred
+            loss = loss_fn(pred, target)
             if train:
                 loss.backward()
                 optimizer.step()
@@ -359,10 +387,10 @@ def main():
         val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers)
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = run_epoch(model, train_loader, optimizer, args.device, args.log_every, train=True)
+        train_loss = run_epoch(model, train_loader, optimizer, args.device, args.log_every, args.gamma, train=True)
         val_loss = None
         if val_loader is not None:
-            val_loss = run_epoch(model, val_loader, optimizer, args.device, args.log_every, train=False)
+            val_loss = run_epoch(model, val_loader, optimizer, args.device, args.log_every, args.gamma, train=False)
 
         print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss if val_loss is not None else 'n/a'}")
 

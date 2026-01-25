@@ -21,22 +21,28 @@ Each **frame** sample should contain these keys:
 - `obs.npy` and/or `state.npy`
 - `edge_index.npy`
 - `caption.txt`
-- `rewards.npy` (or `state.npy` if you use `--value_source state`)
+- `rewards.npy`
+- `dones.npy`
 
-The loader will group consecutive frames by episode id (parsed from `__key__` like `000000_000123`) and build clips of length `--clip_len`.
+The loader groups consecutive frames by episode id (parsed from `__key__` like `000000_000123`) and builds clips of length `--clip_len`.
+
+## Value loss (TD)
+We use TD(0) with reward from `rewards.npy`:
+```
+V_loss = MSE(V(s_t), r_t + gamma * (1 - done_t) * V(s_{t+1}))
+```
 
 ## Run
 ```
 python train.py \
   --train_shards "/path/to/train/{00000..00099}.tar" \
-  --val_shards "/path/to/val/{00000..00009}.tar" \
   --batch_size 4 \
   --clip_len 8 \
   --clip_stride 1 \
   --robot_source obs \
-  --value_source rewards \
-  --value_reduce mean \
-  --value_time last \
+  --reward_reduce mean \
+  --done_reduce any \
+  --gamma 0.99 \
   --text_mode raw \
   --epochs 2
 ```
@@ -46,5 +52,5 @@ python train.py \
 - For MoE backbone: use `--vl_backend deepseek_vl2` and a DeepSeek-VL2 model name (requires DeepSeek-VL2 repo)
 
 ## Notes
-- If your `video.pth` tensors are already normalized for the DeepSeek image encoder, use `--video_preprocessed`.
-- Your `.npy` payloads appear to be stored as raw arrays (not .npy files), so the loader reads them directly and falls back to `np.load`/`torch.load` only if needed.
+- Images are preprocessed using the DeepSeek VLM processor (resizes/crops to the expected size).
+- If your `image.png` is already preprocessed for the model, set `--video_preprocessed` and feed tensors instead of PIL.

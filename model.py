@@ -92,6 +92,7 @@ class DeepSeekVLMBackbone(nn.Module):
 
         self._language_model = self._get_language_model()
         self.text_hidden_size = self._language_model.config.hidden_size
+        self._dtype = dtype
 
     def _get_language_model(self):
         if hasattr(self.model, "language_model"):
@@ -108,9 +109,19 @@ class DeepSeekVLMBackbone(nn.Module):
         std = torch.tensor(self.cfg.video_std, device=video.device).view(1, -1, 1, 1)
         return (video - mean) / std
 
-    def encode_image(self, pixel_values):
-        if not self.cfg.video_preprocessed:
-            pixel_values = self._normalize_video(pixel_values)
+    def _processor_images(self, images):
+        proc = self.processor(images=images, return_tensors="pt")
+        pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
+        return pixel_values
+
+    def encode_image(self, pixel_values_or_images):
+        if isinstance(pixel_values_or_images, (list, tuple)):
+            pixel_values = self._processor_images(pixel_values_or_images)
+        else:
+            pixel_values = pixel_values_or_images
+            if not self.cfg.video_preprocessed:
+                pixel_values = self._normalize_video(pixel_values)
+            pixel_values = pixel_values.to(self.device, dtype=self._dtype)
 
         if hasattr(self.model, "get_image_features"):
             img = self.model.get_image_features(pixel_values)
@@ -255,15 +266,21 @@ class MultimodalValueModel(nn.Module):
         self.value_head = nn.Linear(fused_dim, 1)
 
     def forward(self, video, robot_obs, adj, text_emb=None, text_raw=None):
-        # video: [B, T, C, H, W]
+        # video: torch.Tensor [B, T, C, H, W] or list of list of PIL images
         # robot_obs: [B, T, N, obs_dim]
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        b, t = video.shape[0], video.shape[1]
+        if isinstance(video, torch.Tensor):
+            b, t = video.shape[0], video.shape[1]
+            video_flat = video.view(b * t, *video.shape[2:])
+            vid_tokens = self.backbone.encode_image(video_flat)
+        else:
+            b = len(video)
+            t = len(video[0]) if b > 0 else 0
+            flat = [img for seq in video for img in seq]
+            vid_tokens = self.backbone.encode_image(flat)
 
-        video_flat = video.view(b * t, *video.shape[2:])
-        vid_tokens = self.backbone.encode_image(video_flat)
         vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
         vid_tokens = self.video_temporal(vid_tokens)
         vid_feat = vid_tokens.mean(dim=1)
