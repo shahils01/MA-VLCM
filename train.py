@@ -206,11 +206,11 @@ class SequenceWebDataset(IterableDataset):
         dataset = wds.WebDataset(self.shards, shardshuffle=False).decode("pil")
         if hasattr(dataset, "split_by_node"):
             dataset = dataset.split_by_node()
-        elif hasattr(wds, "split_by_node"):
+        elif hasattr(wds, "split_by_node") and hasattr(dataset, "then"):
             dataset = dataset.then(wds.split_by_node)
         if hasattr(dataset, "split_by_worker"):
             dataset = dataset.split_by_worker()
-        elif hasattr(wds, "split_by_worker"):
+        elif hasattr(wds, "split_by_worker") and hasattr(dataset, "then"):
             dataset = dataset.then(wds.split_by_worker)
 
         current_ep = None
