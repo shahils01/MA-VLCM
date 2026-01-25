@@ -204,8 +204,14 @@ class SequenceWebDataset(IterableDataset):
             raise RuntimeError("webdataset is not installed.")
 
         dataset = wds.WebDataset(self.shards, shardshuffle=False).decode("pil")
-        dataset = dataset.split_by_node()
-        dataset = dataset.split_by_worker()
+        if hasattr(dataset, "split_by_node"):
+            dataset = dataset.split_by_node()
+        elif hasattr(wds, "split_by_node"):
+            dataset = dataset.then(wds.split_by_node)
+        if hasattr(dataset, "split_by_worker"):
+            dataset = dataset.split_by_worker()
+        elif hasattr(wds, "split_by_worker"):
+            dataset = dataset.then(wds.split_by_worker)
 
         current_ep = None
         buffer = []
