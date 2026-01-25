@@ -289,6 +289,8 @@ class MultimodalValueModel(nn.Module):
             flat = [img for seq in video for img in seq]
             vid_tokens = self.backbone.encode_image(flat)
 
+        proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
+        vid_tokens = vid_tokens.to(proj_dtype)
         vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
         vid_tokens = self.video_temporal(vid_tokens)
         vid_feat = vid_tokens.mean(dim=1)
@@ -302,7 +304,9 @@ class MultimodalValueModel(nn.Module):
         if text_emb is not None:
             text_feat = self.text_proj(text_emb)
         elif text_raw is not None:
-            text_feat = self.text_raw_proj(self.backbone.encode_text(text_raw))
+            txt = self.backbone.encode_text(text_raw)
+            txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt
+            text_feat = self.text_raw_proj(txt)
         else:
             raise ValueError("Provide either text_emb or text_raw.")
 
