@@ -1,0 +1,10 @@
+python train.py \
+  --train_shards "/scratch/shahils/data/wds/shard-{000000..000099}.tar" \
+  --batch_size 4 \
+  --clip_len 8 \
+  --clip_stride 1 \
+  --robot_source obs \
+  --reward_reduce mean \
+  --done_reduce any \
+  --gamma 0.99 \
+  --text_mode raw
