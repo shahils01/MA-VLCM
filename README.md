@@ -44,6 +44,7 @@ python train.py \
   --done_reduce any \
   --gamma 0.99 \
   --text_mode raw \
+  --preprocess_in_loader \
   --epochs 2
 ```
 

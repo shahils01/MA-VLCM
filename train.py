@@ -32,6 +32,7 @@ def parse_args():
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
     p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
+    p.add_argument("--preprocess_in_loader", action="store_true", help="Use VLM image processor in dataloader")
 
     # TD value loss
     p.add_argument("--gamma", type=float, default=0.99)
@@ -187,6 +188,7 @@ class SequenceWebDataset(IterableDataset):
         robot_source,
         reward_reduce,
         done_reduce,
+        image_processor=None,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -195,12 +197,15 @@ class SequenceWebDataset(IterableDataset):
         self.robot_source = robot_source
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
+        self.image_processor = image_processor
 
     def __iter__(self):
         if wds is None:
             raise RuntimeError("webdataset is not installed.")
 
         dataset = wds.WebDataset(self.shards, shardshuffle=False).decode("pil")
+        dataset = dataset.split_by_node()
+        dataset = dataset.split_by_worker()
 
         current_ep = None
         buffer = []
@@ -213,8 +218,12 @@ class SequenceWebDataset(IterableDataset):
                 clip = buffer[i : i + self.clip_len]
                 next_clip = buffer[i + 1 : i + 1 + self.clip_len]
 
-                video = [f["image"] for f in clip]
-                next_video = [f["image"] for f in next_clip]
+                if self.image_processor is not None:
+                    video = self.image_processor([f["image"] for f in clip])["pixel_values"]
+                    next_video = self.image_processor([f["image"] for f in next_clip])["pixel_values"]
+                else:
+                    video = [f["image"] for f in clip]
+                    next_video = [f["image"] for f in next_clip]
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
                 next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
@@ -299,6 +308,21 @@ class SequenceWebDataset(IterableDataset):
 
 
 def webdataset_loader(args, shards, batch_size, num_workers):
+    image_processor = None
+    if args.preprocess_in_loader:
+        if args.vl_backend == "deepseek_vl2":
+            from deepseek_vl.models import DeepseekVLV2Processor
+
+            image_processor = DeepseekVLV2Processor.from_pretrained(args.vl_model_name).image_processor
+        else:
+            from transformers import AutoProcessor
+
+            proc = AutoProcessor.from_pretrained(args.vl_model_name)
+            image_processor = getattr(proc, "image_processor", None) or getattr(proc, "vision_processor", None)
+
+        if image_processor is None:
+            raise RuntimeError("Could not find image processor for the selected VLM backend.")
+
     dataset = SequenceWebDataset(
         shards=shards,
         clip_len=args.clip_len,
@@ -307,14 +331,19 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
+        image_processor=image_processor,
     )
 
     def _collate(batch):
         out = {
-            "video": [b["video"] for b in batch],
+            "video": torch.stack([b["video"] for b in batch], dim=0)
+            if torch.is_tensor(batch[0]["video"])
+            else [b["video"] for b in batch],
             "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
             "adj": torch.stack([b["adj"] for b in batch], dim=0),
-            "next_video": [b["next_video"] for b in batch],
+            "next_video": torch.stack([b["next_video"] for b in batch], dim=0)
+            if torch.is_tensor(batch[0]["next_video"])
+            else [b["next_video"] for b in batch],
             "next_robot_obs": torch.stack([b["next_robot_obs"] for b in batch], dim=0),
             "next_adj": torch.stack([b["next_adj"] for b in batch], dim=0),
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
@@ -380,6 +409,9 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, train=Tru
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
+
+    if args.preprocess_in_loader:
+        args.video_preprocessed = True
 
     accelerator = Accelerator(mixed_precision=args.mixed_precision)
     model = build_model(args, device=accelerator.device)
