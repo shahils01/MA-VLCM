@@ -430,10 +430,22 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, train=Tru
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(train):
-            pred = model(video, robot_obs, adj, text_emb=text_emb, text_ids=text_ids, text_mask=text_mask)
+            pred = model(
+                video,
+                robot_obs,
+                adj,
+                text_emb=text_emb,
+                text_ids=text_ids.clone() if text_ids is not None else None,
+                text_mask=text_mask.clone() if text_mask is not None else None,
+            )
             with torch.no_grad():
                 next_pred = model(
-                    next_video, next_robot_obs, next_adj, text_emb=text_emb, text_ids=text_ids, text_mask=text_mask
+                    next_video,
+                    next_robot_obs,
+                    next_adj,
+                    text_emb=text_emb,
+                    text_ids=text_ids.clone() if text_ids is not None else None,
+                    text_mask=text_mask.clone() if text_mask is not None else None,
                 )
             target = reward + gamma * (1.0 - done) * next_pred
             loss = loss_fn(pred, target)
