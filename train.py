@@ -346,6 +346,11 @@ def webdataset_loader(args, shards, batch_size, num_workers):
 
             text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
 
+    if args.text_mode == "raw" and text_tokenizer is None:
+        from transformers import AutoTokenizer
+
+        text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
+
     dataset = SequenceWebDataset(
         shards=shards,
         clip_len=args.clip_len,
@@ -372,20 +377,15 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
-    if args.text_mode == "raw" and text_tokenizer is None:
-        from transformers import AutoTokenizer
-
-        text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
-
-    if args.text_mode == "raw":
-        texts = [b["text_raw"] for b in batch]
-        tokens = text_tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=args.vl_max_text_len,
-            return_tensors="pt",
-        )
+        if args.text_mode == "raw":
+            texts = [b["text_raw"] for b in batch]
+            tokens = text_tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=args.vl_max_text_len,
+                return_tensors="pt",
+            )
             out["text_ids"] = tokens["input_ids"]
             out["text_mask"] = tokens["attention_mask"]
         else:
