@@ -110,7 +110,15 @@ class DeepSeekVLMBackbone(nn.Module):
         return (video - mean) / std
 
     def _processor_images(self, images):
-        proc = self.processor(images=images, return_tensors="pt")
+        # Prefer dedicated image processor if available to avoid text-required processors
+        if hasattr(self.processor, "image_processor"):
+            proc = self.processor.image_processor(images=images, return_tensors="pt")
+        elif hasattr(self.processor, "vision_processor"):
+            proc = self.processor.vision_processor(images=images, return_tensors="pt")
+        else:
+            # Fallback: DeepSeek-VL processor expects text + images
+            texts = [""] * len(images)
+            proc = self.processor(text=texts, images=images, return_tensors="pt")
         pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
         return pixel_values
 
