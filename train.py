@@ -5,6 +5,7 @@ import io
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
+from accelerate import Accelerator
 
 try:
     import webdataset as wds
@@ -34,6 +35,9 @@ def parse_args():
 
     # TD value loss
     p.add_argument("--gamma", type=float, default=0.99)
+
+    # Accelerate
+    p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
 
     # DeepSeek VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2"])
@@ -73,14 +77,13 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
-    p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints")
 
     return p.parse_args()
 
 
-def build_model(args):
+def build_model(args, device):
     cfg = ModelConfig(
         vl_backend=args.vl_backend,
         vl_model_name=args.vl_model_name,
@@ -107,7 +110,7 @@ def build_model(args):
         moe_experts=args.moe_experts,
         moe_top_k=args.moe_top_k,
     )
-    return MultimodalValueModel(cfg, device=torch.device(args.device))
+    return MultimodalValueModel(cfg, device=device)
 
 
 def _as_numpy(x):
@@ -326,7 +329,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
 
 
-def run_epoch(model, loader, optimizer, device, log_every, gamma, train=True):
+def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, train=True):
     if train:
         model.train()
     else:
@@ -340,17 +343,17 @@ def run_epoch(model, loader, optimizer, device, log_every, gamma, train=True):
         step += 1
         video = batch["video"]
         next_video = batch["next_video"]
-        robot_obs = batch["robot_obs"].to(device)
-        adj = batch["adj"].to(device)
-        next_robot_obs = batch["next_robot_obs"].to(device)
-        next_adj = batch["next_adj"].to(device)
-        reward = batch["reward"].to(device)
-        done = batch["done"].to(device).float()
+        robot_obs = batch["robot_obs"].to(accelerator.device)
+        adj = batch["adj"].to(accelerator.device)
+        next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
+        next_adj = batch["next_adj"].to(accelerator.device)
+        reward = batch["reward"].to(accelerator.device)
+        done = batch["done"].to(accelerator.device).float()
 
         text_emb = batch.get("text_emb", None)
         text_raw = batch.get("text_raw", None)
         if text_emb is not None:
-            text_emb = text_emb.to(device)
+            text_emb = text_emb.to(accelerator.device)
 
         if train:
             optimizer.zero_grad(set_to_none=True)
@@ -362,14 +365,14 @@ def run_epoch(model, loader, optimizer, device, log_every, gamma, train=True):
             target = reward + gamma * (1.0 - done) * next_pred
             loss = loss_fn(pred, target)
             if train:
-                loss.backward()
+                accelerator.backward(loss)
                 optimizer.step()
 
         total_loss += loss.item()
         if log_every > 0 and step % log_every == 0:
             avg = total_loss / step
             phase = "train" if train else "val"
-            print(f"{phase} step={step} loss={avg:.4f}")
+            accelerator.print(f"{phase} step={step} loss={avg:.4f}")
 
     return total_loss / max(step, 1)
 
@@ -378,7 +381,8 @@ def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
 
-    model = build_model(args).to(args.device)
+    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    model = build_model(args, device=accelerator.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
@@ -386,21 +390,30 @@ def main():
     if args.val_shards:
         val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers)
 
+    if val_loader is not None:
+        model, optimizer, train_loader, val_loader = accelerator.prepare(
+            model, optimizer, train_loader, val_loader
+        )
+    else:
+        model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
+
     for epoch in range(1, args.epochs + 1):
-        train_loss = run_epoch(model, train_loader, optimizer, args.device, args.log_every, args.gamma, train=True)
+        train_loss = run_epoch(model, train_loader, optimizer, accelerator, args.log_every, args.gamma, train=True)
         val_loss = None
         if val_loader is not None:
-            val_loss = run_epoch(model, val_loader, optimizer, args.device, args.log_every, args.gamma, train=False)
+            val_loss = run_epoch(model, val_loader, optimizer, accelerator, args.log_every, args.gamma, train=False)
 
-        print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss if val_loss is not None else 'n/a'}")
+        accelerator.print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss if val_loss is not None else 'n/a'}")
 
-        ckpt = {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "epoch": epoch,
-            "args": vars(args),
-        }
-        torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
+        if accelerator.is_main_process:
+            ckpt = {
+                "model": accelerator.get_state_dict(model),
+                "optimizer": optimizer.state_dict(),
+                "epoch": epoch,
+                "args": vars(args),
+            }
+            torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
+        accelerator.wait_for_everyone()
 
 
 if __name__ == "__main__":
