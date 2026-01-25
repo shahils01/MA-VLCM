@@ -149,9 +149,13 @@ class DeepSeekVLMBackbone(nn.Module):
             max_length=self.cfg.vl_max_text_len,
             return_tensors="pt",
         ).to(self.device)
+        return self.encode_text_tokens(tokens["input_ids"], tokens["attention_mask"])
+
+    def encode_text_tokens(self, input_ids, attention_mask):
+        tokens = {"input_ids": input_ids.to(self.device), "attention_mask": attention_mask.to(self.device)}
         outputs = self._language_model(**tokens)
         hidden = outputs.last_hidden_state
-        mask = tokens.attention_mask.unsqueeze(-1)
+        mask = tokens["attention_mask"].unsqueeze(-1)
         pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
         return pooled
 
@@ -273,7 +277,7 @@ class MultimodalValueModel(nn.Module):
 
         self.value_head = nn.Linear(fused_dim, 1)
 
-    def forward(self, video, robot_obs, adj, text_emb=None, text_raw=None):
+    def forward(self, video, robot_obs, adj, text_emb=None, text_raw=None, text_ids=None, text_mask=None):
         # video: torch.Tensor [B, T, C, H, W] or list of list of PIL images
         # robot_obs: [B, T, N, obs_dim]
         # adj: [B, T, N, N]
@@ -303,6 +307,10 @@ class MultimodalValueModel(nn.Module):
 
         if text_emb is not None:
             text_feat = self.text_proj(text_emb)
+        elif text_ids is not None and text_mask is not None:
+            txt = self.backbone.encode_text_tokens(text_ids, text_mask)
+            txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt
+            text_feat = self.text_raw_proj(txt)
         elif text_raw is not None:
             txt = self.backbone.encode_text(text_raw)
             txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt

@@ -324,19 +324,27 @@ class SequenceWebDataset(IterableDataset):
 
 def webdataset_loader(args, shards, batch_size, num_workers):
     image_processor = None
+    text_tokenizer = None
     if args.preprocess_in_loader:
         if args.vl_backend == "deepseek_vl2":
             from deepseek_vl.models import DeepseekVLV2Processor
 
-            image_processor = DeepseekVLV2Processor.from_pretrained(args.vl_model_name).image_processor
+            proc = DeepseekVLV2Processor.from_pretrained(args.vl_model_name)
+            image_processor = proc.image_processor
+            text_tokenizer = proc.tokenizer
         else:
             from transformers import AutoProcessor
 
             proc = AutoProcessor.from_pretrained(args.vl_model_name)
             image_processor = getattr(proc, "image_processor", None) or getattr(proc, "vision_processor", None)
+            text_tokenizer = getattr(proc, "tokenizer", None)
 
         if image_processor is None:
             raise RuntimeError("Could not find image processor for the selected VLM backend.")
+        if text_tokenizer is None:
+            from transformers import AutoTokenizer
+
+            text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
 
     dataset = SequenceWebDataset(
         shards=shards,
@@ -364,8 +372,22 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
-        if args.text_mode == "raw":
-            out["text_raw"] = [b["text_raw"] for b in batch]
+    if args.text_mode == "raw" and text_tokenizer is None:
+        from transformers import AutoTokenizer
+
+        text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
+
+    if args.text_mode == "raw":
+        texts = [b["text_raw"] for b in batch]
+        tokens = text_tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=args.vl_max_text_len,
+            return_tensors="pt",
+        )
+            out["text_ids"] = tokens["input_ids"]
+            out["text_mask"] = tokens["attention_mask"]
         else:
             out["text_emb"] = torch.stack([b["text_emb"] for b in batch], dim=0)
         return out
@@ -395,17 +417,24 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, train=Tru
         done = batch["done"].to(accelerator.device).float()
 
         text_emb = batch.get("text_emb", None)
-        text_raw = batch.get("text_raw", None)
+        text_ids = batch.get("text_ids", None)
+        text_mask = batch.get("text_mask", None)
         if text_emb is not None:
             text_emb = text_emb.to(accelerator.device)
+        if text_ids is not None:
+            text_ids = text_ids.to(accelerator.device)
+        if text_mask is not None:
+            text_mask = text_mask.to(accelerator.device)
 
         if train:
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(train):
-            pred = model(video, robot_obs, adj, text_emb=text_emb, text_raw=text_raw)
+            pred = model(video, robot_obs, adj, text_emb=text_emb, text_ids=text_ids, text_mask=text_mask)
             with torch.no_grad():
-                next_pred = model(next_video, next_robot_obs, next_adj, text_emb=text_emb, text_raw=text_raw)
+                next_pred = model(
+                    next_video, next_robot_obs, next_adj, text_emb=text_emb, text_ids=text_ids, text_mask=text_mask
+                )
             target = reward + gamma * (1.0 - done) * next_pred
             loss = loss_fn(pred, target)
             if train:
