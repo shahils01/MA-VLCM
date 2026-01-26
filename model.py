@@ -81,7 +81,7 @@ class LLaVAVideoBackbone(nn.Module):
 
 
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, torch_dtype=dtype, attn_implementation="flash_attention_2"
+            cfg.vl_model_name, torch_dtype=dtype
         )
 
         self.model.to(device)
