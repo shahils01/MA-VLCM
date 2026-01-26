@@ -39,6 +39,8 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
+    p.add_argument("--fm_debug", action="store_true", help="Run one batch through LLaVA and print decoded text output")
+    p.add_argument("--fm_max_new_tokens", type=int, default=64)
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
@@ -554,6 +556,20 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
             run_epoch._debug_saved = True
+        if train and args.fm_debug and not getattr(run_epoch, "_fm_debug_done", False):
+            if text_ids is None or text_mask is None:
+                raise RuntimeError("fm_debug requires --text_mode raw to supply text_ids/text_mask.")
+            outputs = model.forward_fm(
+                video,
+                text_ids,
+                text_mask,
+                image_sizes=image_sizes,
+                max_new_tokens=args.fm_max_new_tokens,
+            )
+            decoded = model.backbone.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            accelerator.print(f"FM decoded output[0]: {decoded[0] if len(decoded) else ''}")
+            run_epoch._fm_debug_done = True
+            return 0.0
 
         if train:
             optimizer.zero_grad(set_to_none=True)
