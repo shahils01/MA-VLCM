@@ -210,8 +210,14 @@ class LLaVAVideoBackbone(nn.Module):
         proc = self.processor(text=texts, videos=frames, return_tensors="pt")
         input_ids = proc["input_ids"]
         attention_mask = proc["attention_mask"]
-        pixel_values = proc.get("pixel_values", None) or proc.get("video_values", None)
+        pixel_values = (
+            proc.get("pixel_values", None)
+            or proc.get("video_values", None)
+            or proc.get("pixel_values_videos", None)
+        )
         image_sizes = proc.get("image_sizes", None)
+        if pixel_values is None:
+            raise RuntimeError(f"Processor did not return pixel values. Keys: {list(proc.keys())}")
         return self.forward_fm(
             pixel_values=pixel_values,
             input_ids=input_ids,
