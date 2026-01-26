@@ -282,8 +282,12 @@ class LLaVAVideoBackbone(nn.Module):
                     use_sizes = image_sizes
             if use_sizes is None:
                 use_sizes = [(h, w)] * n
-            img = self.model.get_image_features(pixel_values, image_sizes=use_sizes)
-            return img.mean(dim=1)
+            try:
+                img = self.model.get_image_features(pixel_values, image_sizes=use_sizes)
+                return img.mean(dim=1)
+            except Exception:
+                # Some LLaVA video models expect different image_sizes semantics; fall back to vision tower.
+                pass
 
         vision_tower = self._get_vision_tower()
         if vision_tower is None:
