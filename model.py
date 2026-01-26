@@ -495,10 +495,16 @@ class MultimodalValueModel(nn.Module):
             vid_tokens = self.backbone.encode_image(flat, image_sizes=image_sizes)
 
         # Lazily fix vision projection if backbone dim differs from config
-        if isinstance(self.vision_proj, nn.Identity) and vid_tokens.shape[-1] != self.cfg.d_model:
-            self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-                vid_tokens.device, dtype=vid_tokens.dtype
-            )
+        if isinstance(self.vision_proj, nn.Identity):
+            if vid_tokens.shape[-1] != self.cfg.d_model:
+                self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
+                    vid_tokens.device, dtype=vid_tokens.dtype
+                )
+        elif isinstance(self.vision_proj, nn.Linear):
+            if self.vision_proj.in_features != vid_tokens.shape[-1]:
+                self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
+                    vid_tokens.device, dtype=vid_tokens.dtype
+                )
         proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
         vid_tokens = vid_tokens.to(proj_dtype)
         vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
