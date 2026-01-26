@@ -301,7 +301,10 @@ class SequenceWebDataset(IterableDataset):
 
                 if self.image_processor is not None:
                     def _proc(frames):
-                        proc = self.image_processor(images=frames, return_tensors="pt")
+                        try:
+                            proc = self.image_processor(videos=frames, return_tensors="pt")
+                        except TypeError:
+                            proc = self.image_processor(images=frames, return_tensors="pt")
                         if "pixel_values" in proc:
                             return proc["pixel_values"]
                         if "video_values" in proc:
