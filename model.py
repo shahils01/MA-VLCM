@@ -269,10 +269,20 @@ class LLaVAVideoBackbone(nn.Module):
             pixel_values = pixel_values.to(self.device, dtype=self._dtype)
 
         if hasattr(self.model, "get_image_features"):
-            if image_sizes is None:
-                h, w = pixel_values.shape[-2], pixel_values.shape[-1]
-                image_sizes = [(h, w)] * pixel_values.shape[0]
-            img = self.model.get_image_features(pixel_values, image_sizes=image_sizes)
+            h, w = pixel_values.shape[-2], pixel_values.shape[-1]
+            n = pixel_values.shape[0]
+            use_sizes = None
+            if isinstance(image_sizes, (list, tuple)) and len(image_sizes) == n:
+                ok = True
+                for item in image_sizes:
+                    if not isinstance(item, (list, tuple)) or len(item) != 2:
+                        ok = False
+                        break
+                if ok:
+                    use_sizes = image_sizes
+            if use_sizes is None:
+                use_sizes = [(h, w)] * n
+            img = self.model.get_image_features(pixel_values, image_sizes=use_sizes)
             return img.mean(dim=1)
 
         vision_tower = self._get_vision_tower()
