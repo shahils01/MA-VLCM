@@ -269,28 +269,22 @@ class LLaVAVideoBackbone(nn.Module):
             pixel_values = self._processor_images(pixel_values_or_images)
         else:
             pixel_values = pixel_values_or_images
-            if pixel_values.ndim == 5:
-                b, t, c, h, w = pixel_values.shape
-                pixel_values = pixel_values.view(b * t, c, h, w)
             pixel_values = pixel_values.to(self.device, dtype=self._dtype)
 
         if hasattr(self.model, "get_image_features"):
             h, w = pixel_values.shape[-2], pixel_values.shape[-1]
-            n = pixel_values.shape[0]
+            if pixel_values.ndim == 5:
+                n = pixel_values.shape[0] * pixel_values.shape[1]
+            else:
+                n = pixel_values.shape[0]
             use_sizes = None
-            if isinstance(image_sizes, (list, tuple)) and len(image_sizes) == n:
-                ok = True
-                for item in image_sizes:
-                    if not isinstance(item, (list, tuple)) or len(item) != 2:
-                        ok = False
-                        break
-                if ok:
-                    use_sizes = image_sizes
-            if use_sizes is None:
+            if image_sizes is not None:
+                use_sizes = image_sizes
+            else:
                 use_sizes = [(h, w)] * n
             try:
                 img = self.model.get_image_features(pixel_values, image_sizes=use_sizes)
-                return img.mean(dim=1)
+                return img.mean(dim=1) if img.ndim == 3 else img
             except Exception:
                 # Some LLaVA video models expect different image_sizes semantics; fall back to vision tower.
                 pass
@@ -465,53 +459,69 @@ class MultimodalValueModel(nn.Module):
 
         if isinstance(video, torch.Tensor):
             b, t = video.shape[0], video.shape[1]
-            video_flat = video.view(b * t, *video.shape[2:])
-            flat_sizes = None
-            if image_sizes is not None:
-                if torch.is_tensor(image_sizes):
-                    if image_sizes.ndim == 3:
-                        flat_sizes = image_sizes.view(b * t, -1)
+            if isinstance(self.backbone, LLaVAVideoBackbone):
+                vid_tokens = self.backbone.encode_image(video, image_sizes=image_sizes)
+            else:
+                video_flat = video.view(b * t, *video.shape[2:])
+                flat_sizes = None
+                if image_sizes is not None:
+                    if torch.is_tensor(image_sizes):
+                        if image_sizes.ndim == 3:
+                            flat_sizes = image_sizes.view(b * t, -1)
+                        else:
+                            flat_sizes = image_sizes
+                    elif isinstance(image_sizes, (list, tuple)) and len(image_sizes) == b:
+                        flat_sizes = []
+                        for item in image_sizes:
+                            if torch.is_tensor(item):
+                                if item.ndim == 2:
+                                    flat_sizes.extend(item.tolist())
+                                else:
+                                    flat_sizes.append(item.tolist())
+                            elif isinstance(item, (list, tuple)):
+                                flat_sizes.extend(list(item))
+                            else:
+                                flat_sizes.append(item)
                     else:
                         flat_sizes = image_sizes
-                elif isinstance(image_sizes, (list, tuple)) and len(image_sizes) == b:
-                    flat_sizes = []
-                    for item in image_sizes:
-                        if torch.is_tensor(item):
-                            if item.ndim == 2:
-                                flat_sizes.extend(item.tolist())
-                            else:
-                                flat_sizes.append(item.tolist())
-                        elif isinstance(item, (list, tuple)):
-                            flat_sizes.extend(list(item))
-                        else:
-                            flat_sizes.append(item)
-                else:
-                    flat_sizes = image_sizes
-            vid_tokens = self.backbone.encode_image(video_flat, image_sizes=flat_sizes)
+                vid_tokens = self.backbone.encode_image(video_flat, image_sizes=flat_sizes)
         else:
             b = len(video)
             t = len(video[0]) if b > 0 else 0
             flat = [img for seq in video for img in seq]
             vid_tokens = self.backbone.encode_image(flat, image_sizes=image_sizes)
 
-        # Lazily fix vision projection if backbone dim differs from config
-        # if isinstance(self.vision_proj, nn.Identity):
-        #     if vid_tokens.shape[-1] != self.cfg.d_model:
-        #         self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-        #             vid_tokens.device, dtype=vid_tokens.dtype
-        #         )
-        # elif isinstance(self.vision_proj, nn.Linear):
-        #     if self.vision_proj.in_features != vid_tokens.shape[-1]:
-        #         self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-        #             vid_tokens.device, dtype=vid_tokens.dtype
-        #         )
-        # proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
-        # vid_tokens = vid_tokens.to(proj_dtype)
-        # vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
-        # vid_tokens = self.video_temporal(vid_tokens)
-
-        print('vid_tokens shape = ', vid_tokens.shape)
-        vid_feat = vid_tokens.mean(dim=1)
+        if isinstance(self.backbone, LLaVAVideoBackbone):
+            if vid_tokens.ndim == 3:
+                vid_feat = vid_tokens.mean(dim=1)
+            else:
+                vid_feat = vid_tokens
+            if vid_feat.ndim == 2 and vid_feat.shape[-1] != self.cfg.d_model:
+                if isinstance(self.vision_proj, nn.Identity) or (
+                    isinstance(self.vision_proj, nn.Linear) and self.vision_proj.in_features != vid_feat.shape[-1]
+                ):
+                    self.vision_proj = nn.Linear(vid_feat.shape[-1], self.cfg.d_model).to(
+                        vid_feat.device, dtype=vid_feat.dtype
+                    )
+                proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_feat.dtype
+                vid_feat = self.vision_proj(vid_feat.to(proj_dtype))
+        else:
+            # Lazily fix vision projection if backbone dim differs from config
+            if isinstance(self.vision_proj, nn.Identity):
+                if vid_tokens.shape[-1] != self.cfg.d_model:
+                    self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
+                        vid_tokens.device, dtype=vid_tokens.dtype
+                    )
+            elif isinstance(self.vision_proj, nn.Linear):
+                if self.vision_proj.in_features != vid_tokens.shape[-1]:
+                    self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
+                        vid_tokens.device, dtype=vid_tokens.dtype
+                    )
+            proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
+            vid_tokens = vid_tokens.to(proj_dtype)
+            vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
+            vid_tokens = self.video_temporal(vid_tokens)
+            vid_feat = vid_tokens.mean(dim=1)
 
         print('robot_obs shape = ', robot_obs.shape)
 
