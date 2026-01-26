@@ -324,8 +324,33 @@ class MultimodalValueModel(nn.Module):
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        print('video shape = ', video.shape)
-        b, t = video.shape[0], video.shape[1]
+        print('video shape = ', video.squeeze().shape)
+        video_list = [
+            video[i].permute(0, 2, 3, 1).cpu().numpy()
+            for i in range(video.shape[0])
+        ]
+        
+        video_inputs = self.backbone.processor(videos=video_list, return_tensors="pt")
+        pixel_values_videos = video_inputs["pixel_values_videos"].to(self.backbone.device)
+
+        inputs = {
+            "input_ids": text_ids.to(self.backbone.device),
+            "attention_mask": text_mask.to(self.backbone.device),
+            "pixel_values_videos": pixel_values_videos,
+        }
+
+        with torch.no_grad():
+            outputs = self.backbone(**inputs, max_new_tokens=128)
+
+        print('outputs = ', outputs)
+
+        # Decode
+        texts = self.backbone.processor.batch_decode(outputs, skip_special_tokens=True)
+        for i, t in enumerate(texts):
+            print(f"[{i}] {t}")
+
+
+        b, t = video.squeeze().shape[0], video.shape[1]
         if isinstance(self.backbone, LLaVAVideoBackbone):
             vid_tokens = self.backbone.encode_image(video, image_sizes=image_sizes)
         else:
