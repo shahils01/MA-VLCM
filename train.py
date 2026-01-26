@@ -35,8 +35,10 @@ def parse_args():
     p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
 
-    # TD value loss
+    # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
+    p.add_argument("--n_step", type=int, default=50)
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
@@ -218,6 +220,24 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
+def _compute_n_step_return(buffer, start_idx, n_step, gamma):
+    r0 = buffer[start_idx]["reward"]
+    ret = torch.zeros_like(r0)
+    discount = 1.0
+    for k in range(n_step):
+        idx = start_idx + k
+        if idx >= len(buffer):
+            break
+        r = buffer[idx]["reward"]
+        ret = ret + discount * r
+        done = buffer[idx]["done"]
+        done_flag = bool(done.item() if torch.is_tensor(done) else done)
+        if done_flag:
+            break
+        discount *= gamma
+    return ret
+
+
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -230,6 +250,9 @@ class SequenceWebDataset(IterableDataset):
         done_reduce,
         image_processor=None,
         text_prompt_template=None,
+        return_mode="td",
+        n_step=50,
+        gamma=0.99,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -240,6 +263,9 @@ class SequenceWebDataset(IterableDataset):
         self.done_reduce = done_reduce
         self.image_processor = image_processor
         self.text_prompt_template = text_prompt_template
+        self.return_mode = return_mode
+        self.n_step = n_step
+        self.gamma = gamma
 
     def __iter__(self):
         if wds is None:
@@ -292,6 +318,10 @@ class SequenceWebDataset(IterableDataset):
 
                 reward = clip[-1]["reward"]
                 done = clip[-1]["done"]
+                n_step_return = None
+                if self.return_mode == "nstep":
+                    start_idx = i + self.clip_len - 1
+                    n_step_return = _compute_n_step_return(buffer, start_idx, self.n_step, self.gamma)
 
                 out = {
                     "video": video,
@@ -303,6 +333,8 @@ class SequenceWebDataset(IterableDataset):
                     "reward": reward.view(1),
                     "done": done.view(1),
                 }
+                if n_step_return is not None:
+                    out["return"] = n_step_return.view(1)
                 if self.text_mode == "raw":
                     out["text_raw"] = text
                 else:
@@ -401,6 +433,9 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         done_reduce=args.done_reduce,
         image_processor=image_processor,
         text_prompt_template=args.text_prompt_template,
+        return_mode=args.return_mode,
+        n_step=args.n_step,
+        gamma=args.gamma,
     )
 
     def _collate(batch):
@@ -424,6 +459,8 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
+        if args.return_mode == "nstep":
+            out["return"] = torch.stack([b["return"] for b in batch], dim=0).view(-1)
         if args.text_mode == "raw":
             texts = [b["text_raw"] for b in batch]
             tokens = text_tokenizer(
@@ -455,13 +492,18 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
     for batch in loader:
         step += 1
         video = batch["video"]
-        next_video = batch["next_video"]
         robot_obs = batch["robot_obs"].to(accelerator.device)
         adj = batch["adj"].to(accelerator.device)
-        next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
-        next_adj = batch["next_adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
+        if args.return_mode == "td":
+            next_video = batch["next_video"]
+            next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
+            next_adj = batch["next_adj"].to(accelerator.device)
+        else:
+            next_video = None
+            next_robot_obs = None
+            next_adj = None
 
         text_emb = batch.get("text_emb", None)
         text_ids = batch.get("text_ids", None)
@@ -489,16 +531,19 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 text_ids=text_ids.clone() if text_ids is not None else None,
                 text_mask=text_mask.clone() if text_mask is not None else None,
             )
-            with torch.no_grad():
-                next_pred = model(
-                    next_video,
-                    next_robot_obs,
-                    next_adj,
-                    text_emb=text_emb,
-                    text_ids=text_ids.clone() if text_ids is not None else None,
-                    text_mask=text_mask.clone() if text_mask is not None else None,
-                )
-            target = reward + gamma * (1.0 - done) * next_pred
+            if args.return_mode == "td":
+                with torch.no_grad():
+                    next_pred = model(
+                        next_video,
+                        next_robot_obs,
+                        next_adj,
+                        text_emb=text_emb,
+                        text_ids=text_ids.clone() if text_ids is not None else None,
+                        text_mask=text_mask.clone() if text_mask is not None else None,
+                    )
+                target = reward + gamma * (1.0 - done) * next_pred
+            else:
+                target = batch["return"].to(accelerator.device)
             loss = loss_fn(pred, target)
             if train:
                 accelerator.backward(loss)
