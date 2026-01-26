@@ -330,7 +330,7 @@ class MultimodalValueModel(nn.Module):
             video[i].permute(0, 2, 3, 1).cpu().numpy()
             for i in range(video.shape[0])
         ]
-        
+        print('video_list = ', video_list)
         video_inputs = self.backbone.processor(videos=video_list, return_tensors="pt")
         pixel_values_videos = video_inputs["pixel_values_videos"].to(self.backbone.device)
 
