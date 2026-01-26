@@ -324,7 +324,8 @@ class MultimodalValueModel(nn.Module):
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        print('video shape = ', video.squeeze().shape)
+        video = video.squeeze()
+        print('video shape = ', video.shape)
         video_list = [
             video[i].permute(0, 2, 3, 1).cpu().numpy()
             for i in range(video.shape[0])
