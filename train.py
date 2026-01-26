@@ -44,7 +44,9 @@ def parse_args():
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
 
     # DeepSeek VLM backbone
-    p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2"])
+    p.add_argument(
+        "--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"]
+    )
     p.add_argument("--vl_model_name", type=str, default="deepseek-community/deepseek-vl-1.3b-base")
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
@@ -404,6 +406,14 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             proc = DeepseekVLV2Processor.from_pretrained(args.vl_model_name)
             image_processor = proc.image_processor
             text_tokenizer = proc.tokenizer
+        elif args.vl_backend == "llava_video":
+            from transformers import AutoProcessor
+
+            proc = AutoProcessor.from_pretrained(args.vl_model_name)
+            image_processor = getattr(proc, "video_processor", None) or getattr(
+                proc, "image_processor", None
+            ) or getattr(proc, "vision_processor", None)
+            text_tokenizer = getattr(proc, "tokenizer", None)
         else:
             from transformers import AutoProcessor
 

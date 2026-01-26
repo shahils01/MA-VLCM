@@ -9,7 +9,7 @@ import torch.nn.functional as F
 @dataclass
 class ModelConfig:
     # Backbone
-    vl_backend: str = "deepseek_vl"  # deepseek_vl | deepseek_vl2
+    vl_backend: str = "deepseek_vl"  # deepseek_vl | deepseek_vl2 | llava_video
     vl_model_name: str = "deepseek-community/deepseek-vl-1.3b-base"
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
@@ -160,6 +160,117 @@ class DeepSeekVLMBackbone(nn.Module):
         return pooled
 
 
+class LLaVAVideoBackbone(nn.Module):
+    """Backbone wrapper for LLaVA-style video models using HF interfaces."""
+
+    def __init__(self, cfg: ModelConfig, device: torch.device):
+        super().__init__()
+        self.cfg = cfg
+        self.device = device
+
+        if cfg.vl_dtype == "float16":
+            dtype = torch.float16
+        elif cfg.vl_dtype == "float32":
+            dtype = torch.float32
+        else:
+            dtype = torch.bfloat16
+
+        try:
+            from transformers import AutoProcessor, AutoTokenizer
+            from transformers import AutoModelForVision2Seq, AutoModelForCausalLM
+        except Exception as e:
+            raise ImportError(
+                "LLaVA-Video backend requires recent transformers with AutoModelForVision2Seq."
+            ) from e
+
+        self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
+        self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
+            cfg.vl_model_name
+        )
+
+        try:
+            self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
+        except Exception:
+            self.model = AutoModelForCausalLM.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
+
+        self.model.to(device)
+        if cfg.freeze_vl:
+            for p in self.model.parameters():
+                p.requires_grad = False
+
+        self._language_model = self._get_language_model()
+        self.text_hidden_size = self._language_model.config.hidden_size
+        self._dtype = dtype
+
+    def _get_language_model(self):
+        if hasattr(self.model, "language_model"):
+            return self.model.language_model
+        if hasattr(self.model, "model") and hasattr(self.model.model, "language_model"):
+            return self.model.model.language_model
+        if hasattr(self.model, "llm"):
+            return self.model.llm
+        raise AttributeError("Could not find language model on LLaVA backend.")
+
+    def _get_vision_tower(self):
+        if hasattr(self.model, "get_vision_tower"):
+            return self.model.get_vision_tower()
+        if hasattr(self.model, "vision_tower"):
+            return self.model.vision_tower
+        if hasattr(self.model, "model") and hasattr(self.model.model, "vision_tower"):
+            return self.model.model.vision_tower
+        return None
+
+    def _processor_images(self, images):
+        if hasattr(self.processor, "image_processor"):
+            proc = self.processor.image_processor(images=images, return_tensors="pt")
+        elif hasattr(self.processor, "vision_processor"):
+            proc = self.processor.vision_processor(images=images, return_tensors="pt")
+        else:
+            texts = [""] * len(images)
+            proc = self.processor(text=texts, images=images, return_tensors="pt")
+        pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
+        return pixel_values
+
+    def encode_image(self, pixel_values_or_images):
+        if isinstance(pixel_values_or_images, (list, tuple)):
+            pixel_values = self._processor_images(pixel_values_or_images)
+        else:
+            pixel_values = pixel_values_or_images.to(self.device, dtype=self._dtype)
+
+        if hasattr(self.model, "get_image_features"):
+            img = self.model.get_image_features(pixel_values)
+            return img.mean(dim=1)
+
+        vision_tower = self._get_vision_tower()
+        if vision_tower is None:
+            raise AttributeError("LLaVA backend does not expose a vision tower or get_image_features.")
+
+        feats = vision_tower(pixel_values)
+        if hasattr(feats, "last_hidden_state"):
+            feats = feats.last_hidden_state
+        if feats.ndim == 3:
+            return feats.mean(dim=1)
+        return feats
+
+    def encode_text(self, texts):
+        tokens = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.cfg.vl_max_text_len,
+            return_tensors="pt",
+        ).to(self.device)
+        return self.encode_text_tokens(tokens["input_ids"], tokens["attention_mask"])
+
+    def encode_text_tokens(self, input_ids, attention_mask):
+        tokens = {"input_ids": input_ids.to(self.device), "attention_mask": attention_mask.to(self.device)}
+        outputs = self._language_model(**tokens)
+        hidden = outputs.last_hidden_state
+        mask = tokens["attention_mask"].unsqueeze(-1)
+        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        return pooled
+
+
 class TemporalTransformer(nn.Module):
     def __init__(self, d_model: int, layers: int, heads: int, dropout: float):
         super().__init__()
@@ -245,7 +356,10 @@ class MultimodalValueModel(nn.Module):
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
         self.cfg = cfg
-        self.backbone = DeepSeekVLMBackbone(cfg, device=device)
+        if cfg.vl_backend == "llava_video":
+            self.backbone = LLaVAVideoBackbone(cfg, device=device)
+        else:
+            self.backbone = DeepSeekVLMBackbone(cfg, device=device)
         if self.backbone.text_hidden_size != cfg.d_model:
             self.vision_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
             self.text_raw_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
