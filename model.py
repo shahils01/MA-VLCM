@@ -66,17 +66,11 @@ class LLaVAVideoBackbone(nn.Module):
 
         try:
             from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+            from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
             try:
-                from transformers import AutoModelForVision2Seq
+                from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
             except Exception:
-                try:
-                    from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
-                except Exception:
-                    AutoModelForVision2Seq = None
-            try:
-                from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
-            except Exception:
-                LlavaNextVideoForConditionalGeneration = None
+                AutoModelForVision2Seq = None
         except Exception as e:
             raise ImportError("LLaVA-Video backend requires transformers installed.") from e
 
