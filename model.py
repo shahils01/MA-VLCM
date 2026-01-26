@@ -181,6 +181,9 @@ class LLaVAVideoBackbone(nn.Module):
         if vision_tower is None:
             raise AttributeError("LLaVA backend does not expose a vision tower or get_image_features.")
 
+        if pixel_values.ndim == 5:
+            b, t, c, h, w = pixel_values.shape
+            pixel_values = pixel_values.view(b * t, c, h, w)
         feats = vision_tower(pixel_values)
         if hasattr(feats, "last_hidden_state"):
             feats = feats.last_hidden_state
