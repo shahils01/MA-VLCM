@@ -7,4 +7,6 @@ python train.py \
   --reward_reduce mean \
   --done_reduce any \
   --gamma 0.99 \
-  --text_mode raw
+  --text_mode raw \
+  --return_mode nstep \
+  --n_step 50

@@ -31,7 +31,7 @@ def parse_args():
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
     p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
-    p.add_argument("--preprocess_in_loader", action="store_true", help="Use VLM image processor in dataloader")
+    p.add_argument("--preprocess_in_loader", default=True, action="store_true", help="Use VLM image processor in dataloader")
     p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
 
