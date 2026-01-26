@@ -491,12 +491,12 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             if args.vl_backend == "llava_video":
                 token = None
                 vocab = text_tokenizer.get_vocab()
-                if "<image>" in vocab:
-                    print('token is image')
-                    token = "<image>"
-                elif "<video>" in vocab:
+                if "<video>" in vocab:
                     print('token is video')
                     token = "<video>"
+                elif "<image>" in vocab:
+                    print('token is image')
+                    token = "<image>"
                 else:
                     print('token is Neither')
                     for t in getattr(text_tokenizer, "additional_special_tokens", []) or []:
