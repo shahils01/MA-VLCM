@@ -180,20 +180,26 @@ class LLaVAVideoBackbone(nn.Module):
             try:
                 from transformers import AutoModelForVision2Seq
             except Exception:
-                from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
+                try:
+                    from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
+                except Exception:
+                    AutoModelForVision2Seq = None
         except Exception as e:
-            raise ImportError(
-                "LLaVA-Video backend requires transformers with AutoModelForVision2Seq available."
-            ) from e
+            raise ImportError("LLaVA-Video backend requires transformers installed.") from e
 
         self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
         self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
             cfg.vl_model_name
         )
 
-        try:
-            self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
-        except Exception:
+        if AutoModelForVision2Seq is not None:
+            try:
+                self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
+            except Exception:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    cfg.vl_model_name, torch_dtype=dtype, trust_remote_code=True
+                )
+        else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 cfg.vl_model_name, torch_dtype=dtype, trust_remote_code=True
             )
