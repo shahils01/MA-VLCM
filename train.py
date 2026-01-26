@@ -427,38 +427,21 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     image_processor = None
     text_tokenizer = None
     if args.preprocess_in_loader:
-        if args.vl_backend == "deepseek_vl2":
-            from deepseek_vl.models import DeepseekVLV2Processor
-
-            proc = DeepseekVLV2Processor.from_pretrained(args.vl_model_name)
-            image_processor = proc.image_processor
-            text_tokenizer = proc.tokenizer
-        elif args.vl_backend == "llava_video":
-            from transformers import AutoProcessor
-
-            proc = AutoProcessor.from_pretrained(args.vl_model_name)
-            image_processor = getattr(proc, "video_processor", None) or getattr(
-                proc, "image_processor", None
-            ) or getattr(proc, "vision_processor", None)
-            text_tokenizer = getattr(proc, "tokenizer", None)
-        else:
-            from transformers import AutoProcessor
-
-            proc = AutoProcessor.from_pretrained(args.vl_model_name)
-            image_processor = getattr(proc, "image_processor", None) or getattr(proc, "vision_processor", None)
-            text_tokenizer = getattr(proc, "tokenizer", None)
-
+        from transformers import AutoProcessor
+        proc = AutoProcessor.from_pretrained(args.vl_model_name)
+        image_processor = getattr(proc, "video_processor", None) or getattr(
+            proc, "image_processor", None
+        ) or getattr(proc, "vision_processor", None)
+        text_tokenizer = getattr(proc, "tokenizer", None)
+        
         if image_processor is None:
-            raise RuntimeError("Could not find image processor for the selected VLM backend.")
+            raise RuntimeError("Could not find image processor for the LLaVA-NeXT-Video FM.")
         if text_tokenizer is None:
-            from transformers import AutoTokenizer
+            raise RuntimeError("Could not find text tokenizerr for the sLLaVA-NeXT-Video FM.")
 
-            text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
-
-    if args.text_mode == "raw" and text_tokenizer is None:
-        from transformers import AutoTokenizer
-
-        text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
+    # if args.text_mode == "raw" and text_tokenizer is None:
+    #     from transformers import AutoTokenizer
+    #     text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
 
     dataset = SequenceWebDataset(
         shards=shards,
@@ -508,6 +491,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             if args.vl_backend == "llava_video":
                 token = None
                 vocab = text_tokenizer.get_vocab()
+                print('vocab = ', vocab)
                 if "<image>" in vocab:
                     token = "<image>"
                 elif "<video>" in vocab:
