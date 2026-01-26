@@ -184,6 +184,10 @@ class LLaVAVideoBackbone(nn.Module):
                     from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
                 except Exception:
                     AutoModelForVision2Seq = None
+            try:
+                from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
+            except Exception:
+                LlavaNextVideoForConditionalGeneration = None
         except Exception as e:
             raise ImportError("LLaVA-Video backend requires transformers installed.") from e
 
@@ -192,14 +196,26 @@ class LLaVAVideoBackbone(nn.Module):
             cfg.vl_model_name
         )
 
-        if AutoModelForVision2Seq is not None:
+        if LlavaNextVideoForConditionalGeneration is not None:
             try:
-                self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
-            except Exception:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    cfg.vl_model_name, torch_dtype=dtype, trust_remote_code=True
+                self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+                    cfg.vl_model_name, torch_dtype=dtype
                 )
+            except Exception:
+                self.model = None
         else:
+            self.model = None
+
+        if self.model is None:
+            if AutoModelForVision2Seq is not None:
+                try:
+                    self.model = AutoModelForVision2Seq.from_pretrained(
+                        cfg.vl_model_name, torch_dtype=dtype
+                    )
+                except Exception:
+                    self.model = None
+
+        if self.model is None:
             self.model = AutoModelForCausalLM.from_pretrained(
                 cfg.vl_model_name, torch_dtype=dtype, trust_remote_code=True
             )
