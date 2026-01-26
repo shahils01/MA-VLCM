@@ -187,44 +187,6 @@ class LLaVAVideoBackbone(nn.Module):
         pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
         return pooled
 
-    def forward_fm(self, pixel_values, input_ids, attention_mask, image_sizes=None, max_new_tokens=64):
-        pixel_values = pixel_values.to(self.device, dtype=self._dtype)
-        if pixel_values.ndim == 6 and pixel_values.shape[1] == 1:
-            pixel_values = pixel_values.squeeze(1)
-        if image_sizes is None:
-            h, w = pixel_values.shape[-2], pixel_values.shape[-1]
-            n = pixel_values.shape[0]
-            image_sizes = [(h, w)] * n
-        outputs = self.model.generate(
-            input_ids=input_ids.to(self.device),
-            attention_mask=attention_mask.to(self.device),
-            pixel_values=pixel_values,
-            image_sizes=image_sizes,
-            max_new_tokens=max_new_tokens,
-        )
-        return outputs
-
-    def forward_fm_from_raw(self, frames, texts, max_new_tokens=64):
-        if not hasattr(self, "processor"):
-            raise RuntimeError("LLaVA processor is required for raw FM forward.")
-        proc = self.processor(text=texts, videos=frames, return_tensors="pt")
-        input_ids = proc["input_ids"]
-        attention_mask = proc["attention_mask"]
-        pixel_values = (
-            proc.get("pixel_values", None)
-            or proc.get("video_values", None)
-            or proc.get("pixel_values_videos", None)
-        )
-        image_sizes = proc.get("image_sizes", None)
-        if pixel_values is None:
-            raise RuntimeError(f"Processor did not return pixel values. Keys: {list(proc.keys())}")
-        return self.forward_fm(
-            pixel_values=pixel_values,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            image_sizes=image_sizes,
-            max_new_tokens=max_new_tokens,
-        )
 
 
 class TemporalTransformer(nn.Module):
@@ -466,15 +428,3 @@ class MultimodalValueModel(nn.Module):
         fused = self.fusion(fused)
         value = self.value_head(fused).squeeze(-1)
         return value
-
-    def forward_fm(self, video, text_ids, text_mask, image_sizes=None, max_new_tokens=64):
-        if not isinstance(self.backbone, LLaVAVideoBackbone):
-            raise RuntimeError("forward_fm is only supported with LLaVA-Video backbone.")
-        return self.backbone.forward_fm(
-            video, text_ids, text_mask, image_sizes=image_sizes, max_new_tokens=max_new_tokens
-        )
-
-    def forward_fm_from_raw(self, frames, texts, max_new_tokens=64):
-        if not isinstance(self.backbone, LLaVAVideoBackbone):
-            raise RuntimeError("forward_fm_from_raw is only supported with LLaVA-Video backbone.")
-        return self.backbone.forward_fm_from_raw(frames, texts, max_new_tokens=max_new_tokens)

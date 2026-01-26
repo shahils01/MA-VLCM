@@ -39,8 +39,6 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--fm_debug", action="store_true", help="Run one sample through LLaVA and print decoded text output")
-    p.add_argument("--fm_max_new_tokens", type=int, default=64)
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
@@ -475,7 +473,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         return_mode=args.return_mode,
         n_step=args.n_step,
         gamma=args.gamma,
-        keep_raw_video=args.fm_debug,
+        keep_raw_video=False,
     )
 
     def _collate(batch):
@@ -578,8 +576,6 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
             run_epoch._debug_saved = True
-        if train and args.fm_debug:
-            raise RuntimeError("fm_debug should run before accelerator training. Please see main().")
 
         if train:
             optimizer.zero_grad(set_to_none=True)
@@ -644,33 +640,6 @@ def main():
         )
     else:
         model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
-
-    if args.fm_debug:
-        # Run a single raw sample through the FM using the processor and exit
-        raw_dataset = SequenceWebDataset(
-            shards=args.train_shards,
-            clip_len=args.clip_len,
-            clip_stride=args.clip_stride,
-            text_mode=args.text_mode,
-            robot_source=args.robot_source,
-            reward_reduce=args.reward_reduce,
-            done_reduce=args.done_reduce,
-            image_processor=None,
-            text_prompt_template=args.text_prompt_template,
-            return_mode=args.return_mode,
-            n_step=args.n_step,
-            gamma=args.gamma,
-            keep_raw_video=True,
-        )
-        sample = next(iter(raw_dataset))
-        text_raw = sample.get("text_raw", "")
-        frames = sample.get("raw_video", None)
-        if frames is None:
-            frames = sample.get("video", None)
-        outputs = model.forward_fm_from_raw(frames, [text_raw], max_new_tokens=args.fm_max_new_tokens)
-        decoded = model.backbone.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        accelerator.print(f"FM decoded output[0]: {decoded[0] if len(decoded) else ''}")
-        return
 
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(model, train_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=True)
