@@ -92,6 +92,7 @@ class DeepSeekVLMBackbone(nn.Module):
 
         self._language_model = self._get_language_model()
         self.text_hidden_size = self._language_model.config.hidden_size
+        self.vision_hidden_size = self.text_hidden_size
         self._dtype = dtype
 
     def _get_language_model(self):
@@ -227,6 +228,11 @@ class LLaVAVideoBackbone(nn.Module):
 
         self._language_model = self._get_language_model()
         self.text_hidden_size = self._language_model.config.hidden_size
+        vision_tower = self._get_vision_tower()
+        if vision_tower is not None and hasattr(vision_tower, "config") and hasattr(vision_tower.config, "hidden_size"):
+            self.vision_hidden_size = vision_tower.config.hidden_size
+        else:
+            self.vision_hidden_size = self.text_hidden_size
         self._dtype = dtype
 
     def _get_language_model(self):
