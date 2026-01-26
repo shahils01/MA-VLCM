@@ -79,29 +79,10 @@ class LLaVAVideoBackbone(nn.Module):
             cfg.vl_model_name
         )
 
-        if LlavaNextVideoForConditionalGeneration is not None:
-            try:
-                self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-                    cfg.vl_model_name, torch_dtype=dtype, attn_implementation="flash_attention_2"
-                )
-            except Exception:
-                self.model = None
-        else:
-            self.model = None
 
-        if self.model is None:
-            if AutoModelForVision2Seq is not None:
-                try:
-                    self.model = AutoModelForVision2Seq.from_pretrained(
-                        cfg.vl_model_name, torch_dtype=dtype
-                    )
-                except Exception:
-                    self.model = None
-
-        if self.model is None:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                cfg.vl_model_name, torch_dtype=dtype, trust_remote_code=True
-            )
+        self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+            cfg.vl_model_name, torch_dtype=dtype, attn_implementation="flash_attention_2"
+        )
 
         self.model.to(device)
         if cfg.freeze_vl:
