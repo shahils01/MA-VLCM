@@ -306,19 +306,22 @@ class SequenceWebDataset(IterableDataset):
                         except TypeError:
                             proc = self.image_processor(images=frames, return_tensors="pt")
                         if "pixel_values" in proc:
-                            return proc["pixel_values"]
-                        if "video_values" in proc:
-                            return proc["video_values"]
-                        if "pixel_values_videos" in proc:
-                            return proc["pixel_values_videos"]
-                        if hasattr(proc, "pixel_values"):
-                            return proc.pixel_values
-                        if hasattr(proc, "video_values"):
-                            return proc.video_values
-                        raise KeyError("image processor output has no pixel_values/video_values")
+                            pixel_values = proc["pixel_values"]
+                        elif "video_values" in proc:
+                            pixel_values = proc["video_values"]
+                        elif "pixel_values_videos" in proc:
+                            pixel_values = proc["pixel_values_videos"]
+                        elif hasattr(proc, "pixel_values"):
+                            pixel_values = proc.pixel_values
+                        elif hasattr(proc, "video_values"):
+                            pixel_values = proc.video_values
+                        else:
+                            raise KeyError("image processor output has no pixel_values/video_values")
+                        image_sizes = proc.get("image_sizes", None)
+                        return pixel_values, image_sizes
 
-                    video = _proc([f["image"] for f in clip])
-                    next_video = _proc([f["image"] for f in next_clip])
+                    video, image_sizes = _proc([f["image"] for f in clip])
+                    next_video, next_image_sizes = _proc([f["image"] for f in next_clip])
                 else:
                     video = [f["image"] for f in clip]
                     next_video = [f["image"] for f in next_clip]
@@ -348,6 +351,10 @@ class SequenceWebDataset(IterableDataset):
                     "reward": reward.view(1),
                     "done": done.view(1),
                 }
+                if self.image_processor is not None and image_sizes is not None:
+                    out["image_sizes"] = image_sizes
+                if self.image_processor is not None and next_image_sizes is not None:
+                    out["next_image_sizes"] = next_image_sizes
                 if n_step_return is not None:
                     out["return"] = n_step_return.view(1)
                 if self.text_mode == "raw":
@@ -482,6 +489,10 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
+        if "image_sizes" in batch[0]:
+            out["image_sizes"] = [b["image_sizes"] for b in batch]
+        if "next_image_sizes" in batch[0]:
+            out["next_image_sizes"] = [b["next_image_sizes"] for b in batch]
         if args.return_mode == "nstep":
             out["return"] = torch.stack([b["return"] for b in batch], dim=0).view(-1)
         if args.text_mode == "raw":
@@ -519,6 +530,8 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
+        image_sizes = batch.get("image_sizes", None)
+        next_image_sizes = batch.get("next_image_sizes", None)
         if args.return_mode == "td":
             next_video = batch["next_video"]
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
@@ -553,6 +566,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 text_emb=text_emb,
                 text_ids=text_ids.clone() if text_ids is not None else None,
                 text_mask=text_mask.clone() if text_mask is not None else None,
+                image_sizes=image_sizes,
             )
             if args.return_mode == "td":
                 with torch.no_grad():
@@ -563,6 +577,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                         text_emb=text_emb,
                         text_ids=text_ids.clone() if text_ids is not None else None,
                         text_mask=text_mask.clone() if text_mask is not None else None,
+                        image_sizes=next_image_sizes,
                     )
                 target = reward + gamma * (1.0 - done) * next_pred
             else:

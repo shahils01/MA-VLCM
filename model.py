@@ -258,7 +258,7 @@ class LLaVAVideoBackbone(nn.Module):
         pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
         return pixel_values
 
-    def encode_image(self, pixel_values_or_images):
+    def encode_image(self, pixel_values_or_images, image_sizes=None):
         if isinstance(pixel_values_or_images, (list, tuple)):
             pixel_values = self._processor_images(pixel_values_or_images)
         else:
@@ -269,7 +269,10 @@ class LLaVAVideoBackbone(nn.Module):
             pixel_values = pixel_values.to(self.device, dtype=self._dtype)
 
         if hasattr(self.model, "get_image_features"):
-            img = self.model.get_image_features(pixel_values)
+            if image_sizes is not None:
+                img = self.model.get_image_features(pixel_values, image_sizes=image_sizes)
+            else:
+                img = self.model.get_image_features(pixel_values)
             return img.mean(dim=1)
 
         vision_tower = self._get_vision_tower()
@@ -422,7 +425,17 @@ class MultimodalValueModel(nn.Module):
 
         self.value_head = nn.Linear(fused_dim, 1)
 
-    def forward(self, video, robot_obs, adj, text_emb=None, text_raw=None, text_ids=None, text_mask=None):
+    def forward(
+        self,
+        video,
+        robot_obs,
+        adj,
+        text_emb=None,
+        text_raw=None,
+        text_ids=None,
+        text_mask=None,
+        image_sizes=None,
+    ):
         # video: torch.Tensor [B, T, C, H, W] or list of list of PIL images
         # robot_obs: [B, T, N, obs_dim]
         # adj: [B, T, N, N]
@@ -431,12 +444,12 @@ class MultimodalValueModel(nn.Module):
         if isinstance(video, torch.Tensor):
             b, t = video.shape[0], video.shape[1]
             video_flat = video.view(b * t, *video.shape[2:])
-            vid_tokens = self.backbone.encode_image(video_flat)
+            vid_tokens = self.backbone.encode_image(video_flat, image_sizes=image_sizes)
         else:
             b = len(video)
             t = len(video[0]) if b > 0 else 0
             flat = [img for seq in video for img in seq]
-            vid_tokens = self.backbone.encode_image(flat)
+            vid_tokens = self.backbone.encode_image(flat, image_sizes=image_sizes)
 
         proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
         vid_tokens = vid_tokens.to(proj_dtype)
