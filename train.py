@@ -7,11 +7,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
 
-try:
-    import webdataset as wds
-except Exception:
-    wds = None
-
+import webdataset as wds
 from model import ModelConfig, MultimodalValueModel
 
 

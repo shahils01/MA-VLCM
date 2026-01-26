@@ -258,7 +258,7 @@ class MultimodalValueModel(nn.Module):
         )
 
         self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
+        # self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
         self.graph_temporal = TemporalTransformer(
             cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
         )
@@ -300,7 +300,10 @@ class MultimodalValueModel(nn.Module):
         vid_feat = vid_tokens.mean(dim=1)
 
         robot_feats = self.robot_enc(robot_obs)
-        robot_feats = self.graph_enc(robot_feats, adj)
+        # print('robot_feats shape = ', robot_feats.shape)
+        # robot_feats = self.graph_enc(robot_feats, adj)
+        # print('robot_feats shape after GNN = ', robot_feats.shape)
+
         team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
         team_tokens = self.graph_temporal(team_tokens)
         team_feat = team_tokens.mean(dim=1)
