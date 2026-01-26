@@ -396,6 +396,8 @@ class MultimodalValueModel(nn.Module):
                     )
                 proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_feat.dtype
                 vid_feat = self.vision_proj(vid_feat.to(proj_dtype))
+                print('vid_feat shape = ', vid_feat.shape)
+
         else:
             # Lazily fix vision projection if backbone dim differs from config
             if isinstance(self.vision_proj, nn.Identity):
@@ -414,6 +416,7 @@ class MultimodalValueModel(nn.Module):
             vid_tokens = self.video_temporal(vid_tokens)
             vid_feat = vid_tokens.mean(dim=1)
 
+        print('vid_feat shape outside loop = ', vid_feat.shape)
         print('robot_obs shape = ', robot_obs.shape)
 
         robot_feats = self.robot_enc(robot_obs)
