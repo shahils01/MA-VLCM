@@ -499,6 +499,20 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             out["return"] = torch.stack([b["return"] for b in batch], dim=0).view(-1)
         if args.text_mode == "raw":
             texts = [b["text_raw"] for b in batch]
+            if args.vl_backend == "llava_video":
+                token = None
+                vocab = text_tokenizer.get_vocab()
+                if "<image>" in vocab:
+                    token = "<image>"
+                elif "<video>" in vocab:
+                    token = "<video>"
+                else:
+                    for t in getattr(text_tokenizer, "additional_special_tokens", []) or []:
+                        if "image" in t or "video" in t:
+                            token = t
+                            break
+                if token is not None:
+                    texts = [f"{token}\n{t}" for t in texts]
             tokens = text_tokenizer(
                 texts,
                 padding=True,
