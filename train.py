@@ -2,6 +2,8 @@ import argparse
 import os
 import io
 
+from PIL import Image
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
@@ -29,6 +31,8 @@ def parse_args():
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
     p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
     p.add_argument("--preprocess_in_loader", action="store_true", help="Use VLM image processor in dataloader")
+    p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
+    p.add_argument("--debug_out_dir", type=str, default="debug_samples")
 
     # TD value loss
     p.add_argument("--gamma", type=float, default=0.99)
@@ -156,6 +160,45 @@ def _reduce_done(x, reduce_mode):
     if reduce_mode == "mean":
         return x.float().mean() > 0.5
     return (x > 0).any()
+
+
+def _save_debug_video(batch, args, accelerator, tag="train"):
+    if not accelerator.is_main_process:
+        return
+    os.makedirs(args.debug_out_dir, exist_ok=True)
+    video = batch["video"]
+    out_dir = os.path.join(args.debug_out_dir, f"{tag}_sample")
+    os.makedirs(out_dir, exist_ok=True)
+
+    def save_tensor_frames(frames):
+        if args.video_preprocessed:
+            mean = torch.tensor(args.video_mean, dtype=frames.dtype, device=frames.device).view(1, 3, 1, 1)
+            std = torch.tensor(args.video_std, dtype=frames.dtype, device=frames.device).view(1, 3, 1, 1)
+            frames = frames * std + mean
+        frames = frames.clamp(0, 1)
+        frames = (frames * 255).to(torch.uint8).cpu()
+        for t, frame in enumerate(frames):
+            img = frame.permute(1, 2, 0).numpy()
+            Image.fromarray(img).save(os.path.join(out_dir, f"frame_{t:04d}.png"))
+
+    if torch.is_tensor(video):
+        frames = video[0]
+        save_tensor_frames(frames)
+    else:
+        frames = video[0]
+        for t, frame in enumerate(frames):
+            if torch.is_tensor(frame):
+                frame = frame.unsqueeze(0)
+                if args.video_preprocessed:
+                    mean = torch.tensor(args.video_mean, dtype=frame.dtype, device=frame.device).view(1, 3, 1, 1)
+                    std = torch.tensor(args.video_std, dtype=frame.dtype, device=frame.device).view(1, 3, 1, 1)
+                    frame = frame * std + mean
+                frame = frame.clamp(0, 1)
+                frame = (frame * 255).to(torch.uint8).cpu()[0]
+                img = frame.permute(1, 2, 0).numpy()
+                Image.fromarray(img).save(os.path.join(out_dir, f"frame_{t:04d}.png"))
+            else:
+                frame.save(os.path.join(out_dir, f"frame_{t:04d}.png"))
 
 
 def _reward_from_frame(sample, reduce_mode):
@@ -391,7 +434,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
 
 
-def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, train=True):
+def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True):
     if train:
         model.train()
     else:
@@ -421,6 +464,10 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, train=Tru
             text_ids = text_ids.to(accelerator.device)
         if text_mask is not None:
             text_mask = text_mask.to(accelerator.device)
+
+        if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
+            _save_debug_video(batch, args, accelerator, tag="train")
+            run_epoch._debug_saved = True
 
         if train:
             optimizer.zero_grad(set_to_none=True)
@@ -482,10 +529,10 @@ def main():
         model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = run_epoch(model, train_loader, optimizer, accelerator, args.log_every, args.gamma, train=True)
+        train_loss = run_epoch(model, train_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=True)
         val_loss = None
         if val_loader is not None:
-            val_loss = run_epoch(model, val_loader, optimizer, accelerator, args.log_every, args.gamma, train=False)
+            val_loss = run_epoch(model, val_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=False)
 
         accelerator.print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss if val_loss is not None else 'n/a'}")
 
