@@ -257,6 +257,7 @@ class SequenceWebDataset(IterableDataset):
         return_mode="td",
         n_step=50,
         gamma=0.99,
+        keep_raw_video=False,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -270,6 +271,7 @@ class SequenceWebDataset(IterableDataset):
         self.return_mode = return_mode
         self.n_step = n_step
         self.gamma = gamma
+        self.keep_raw_video = keep_raw_video
 
     def __iter__(self):
         if wds is None:
@@ -301,6 +303,8 @@ class SequenceWebDataset(IterableDataset):
                 clip = buffer[i : i + self.clip_len]
                 next_clip = buffer[i + 1 : i + 1 + self.clip_len]
 
+                raw_video = [f["image"] for f in clip]
+                raw_next_video = [f["image"] for f in next_clip]
                 if self.image_processor is not None:
                     def _proc(frames):
                         try:
@@ -322,11 +326,11 @@ class SequenceWebDataset(IterableDataset):
                         image_sizes = proc.get("image_sizes", None)
                         return pixel_values, image_sizes
 
-                    video, image_sizes = _proc([f["image"] for f in clip])
-                    next_video, next_image_sizes = _proc([f["image"] for f in next_clip])
+                    video, image_sizes = _proc(raw_video)
+                    next_video, next_image_sizes = _proc(raw_next_video)
                 else:
-                    video = [f["image"] for f in clip]
-                    next_video = [f["image"] for f in next_clip]
+                    video = raw_video
+                    next_video = raw_next_video
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
                 next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
@@ -357,6 +361,9 @@ class SequenceWebDataset(IterableDataset):
                     out["image_sizes"] = image_sizes
                 if self.image_processor is not None and next_image_sizes is not None:
                     out["next_image_sizes"] = next_image_sizes
+                if self.keep_raw_video:
+                    out["raw_video"] = raw_video
+                    out["raw_next_video"] = raw_next_video
                 if n_step_return is not None:
                     out["return"] = n_step_return.view(1)
                 if self.text_mode == "raw":
@@ -468,6 +475,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         return_mode=args.return_mode,
         n_step=args.n_step,
         gamma=args.gamma,
+        keep_raw_video=args.fm_debug,
     )
 
     def _collate(batch):
@@ -495,6 +503,8 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             out["image_sizes"] = [b["image_sizes"] for b in batch]
         if "next_image_sizes" in batch[0]:
             out["next_image_sizes"] = [b["next_image_sizes"] for b in batch]
+        if "raw_video" in batch[0]:
+            out["raw_video"] = [b["raw_video"] for b in batch]
         if args.return_mode == "nstep":
             out["return"] = torch.stack([b["return"] for b in batch], dim=0).view(-1)
         if args.text_mode == "raw":
@@ -571,13 +581,13 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
             _save_debug_video(batch, args, accelerator, tag="train")
             run_epoch._debug_saved = True
         if train and args.fm_debug and not getattr(run_epoch, "_fm_debug_done", False):
-            if text_ids is None or text_mask is None:
-                raise RuntimeError("fm_debug requires --text_mode raw to supply text_ids/text_mask.")
-            outputs = model.forward_fm(
-                video,
-                text_ids,
-                text_mask,
-                image_sizes=image_sizes,
+            text_raw = batch.get("text_raw", None)
+            raw_video = batch.get("raw_video", None)
+            if text_raw is None or raw_video is None:
+                raise RuntimeError("fm_debug requires raw text and raw video frames.")
+            outputs = model.forward_fm_from_raw(
+                raw_video[0],
+                [text_raw[0]],
                 max_new_tokens=args.fm_max_new_tokens,
             )
             decoded = model.backbone.tokenizer.batch_decode(outputs, skip_special_tokens=True)

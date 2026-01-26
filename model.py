@@ -204,6 +204,22 @@ class LLaVAVideoBackbone(nn.Module):
         )
         return outputs
 
+    def forward_fm_from_raw(self, frames, texts, max_new_tokens=64):
+        if not hasattr(self, "processor"):
+            raise RuntimeError("LLaVA processor is required for raw FM forward.")
+        proc = self.processor(text=texts, videos=frames, return_tensors="pt")
+        input_ids = proc["input_ids"]
+        attention_mask = proc["attention_mask"]
+        pixel_values = proc.get("pixel_values", None) or proc.get("video_values", None)
+        image_sizes = proc.get("image_sizes", None)
+        return self.forward_fm(
+            pixel_values=pixel_values,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            image_sizes=image_sizes,
+            max_new_tokens=max_new_tokens,
+        )
+
 
 class TemporalTransformer(nn.Module):
     def __init__(self, d_model: int, layers: int, heads: int, dropout: float):
@@ -451,3 +467,8 @@ class MultimodalValueModel(nn.Module):
         return self.backbone.forward_fm(
             video, text_ids, text_mask, image_sizes=image_sizes, max_new_tokens=max_new_tokens
         )
+
+    def forward_fm_from_raw(self, frames, texts, max_new_tokens=64):
+        if not isinstance(self.backbone, LLaVAVideoBackbone):
+            raise RuntimeError("forward_fm_from_raw is only supported with LLaVA-Video backbone.")
+        return self.backbone.forward_fm_from_raw(frames, texts, max_new_tokens=max_new_tokens)
