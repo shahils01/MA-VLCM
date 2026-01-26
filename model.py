@@ -324,39 +324,34 @@ class MultimodalValueModel(nn.Module):
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        if isinstance(video, torch.Tensor):
-            b, t = video.shape[0], video.shape[1]
-            if isinstance(self.backbone, LLaVAVideoBackbone):
-                vid_tokens = self.backbone.encode_image(video, image_sizes=image_sizes)
-            else:
-                video_flat = video.view(b * t, *video.shape[2:])
-                flat_sizes = None
-                if image_sizes is not None:
-                    if torch.is_tensor(image_sizes):
-                        if image_sizes.ndim == 3:
-                            flat_sizes = image_sizes.view(b * t, -1)
-                        else:
-                            flat_sizes = image_sizes
-                    elif isinstance(image_sizes, (list, tuple)) and len(image_sizes) == b:
-                        flat_sizes = []
-                        for item in image_sizes:
-                            if torch.is_tensor(item):
-                                if item.ndim == 2:
-                                    flat_sizes.extend(item.tolist())
-                                else:
-                                    flat_sizes.append(item.tolist())
-                            elif isinstance(item, (list, tuple)):
-                                flat_sizes.extend(list(item))
-                            else:
-                                flat_sizes.append(item)
+        print('video shape = ', video.shape)
+        b, t = video.shape[0], video.shape[1]
+        if isinstance(self.backbone, LLaVAVideoBackbone):
+            vid_tokens = self.backbone.encode_image(video, image_sizes=image_sizes)
+        else:
+            video_flat = video.view(b * t, *video.shape[2:])
+            flat_sizes = None
+            if image_sizes is not None:
+                if torch.is_tensor(image_sizes):
+                    if image_sizes.ndim == 3:
+                        flat_sizes = image_sizes.view(b * t, -1)
                     else:
                         flat_sizes = image_sizes
-                vid_tokens = self.backbone.encode_image(video_flat, image_sizes=flat_sizes)
-        else:
-            b = len(video)
-            t = len(video[0]) if b > 0 else 0
-            flat = [img for seq in video for img in seq]
-            vid_tokens = self.backbone.encode_image(flat, image_sizes=image_sizes)
+                elif isinstance(image_sizes, (list, tuple)) and len(image_sizes) == b:
+                    flat_sizes = []
+                    for item in image_sizes:
+                        if torch.is_tensor(item):
+                            if item.ndim == 2:
+                                flat_sizes.extend(item.tolist())
+                            else:
+                                flat_sizes.append(item.tolist())
+                        elif isinstance(item, (list, tuple)):
+                            flat_sizes.extend(list(item))
+                        else:
+                            flat_sizes.append(item)
+                else:
+                    flat_sizes = image_sizes
+            vid_tokens = self.backbone.encode_image(video_flat, image_sizes=flat_sizes)
 
         if isinstance(self.backbone, LLaVAVideoBackbone):
             if vid_tokens.ndim == 3:
