@@ -331,7 +331,7 @@ class MultimodalValueModel(nn.Module):
             for i in range(video.shape[0])
         ]
         print('video_list = ', video_list)
-        video_inputs = self.backbone.processor(videos=video_list, return_tensors="pt")
+        video_inputs = self.backbone.processor(text=text_raw, videos=video_list, return_tensors="pt")
         pixel_values_videos = video_inputs["pixel_values_videos"].to(self.backbone.device)
 
         inputs = {
