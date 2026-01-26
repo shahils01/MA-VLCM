@@ -23,6 +23,7 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--samples_per_epoch", type=int, default=10000)
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
+    p.add_argument("--text_prompt_template", type=str, default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.")
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=8)
@@ -228,6 +229,7 @@ class SequenceWebDataset(IterableDataset):
         reward_reduce,
         done_reduce,
         image_processor=None,
+        text_prompt_template=None,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -237,6 +239,7 @@ class SequenceWebDataset(IterableDataset):
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
         self.image_processor = image_processor
+        self.text_prompt_template = text_prompt_template
 
     def __iter__(self):
         if wds is None:
@@ -335,9 +338,7 @@ class SequenceWebDataset(IterableDataset):
             adj = _edge_index_to_adj(edge_index, num_nodes)
 
             if self.text_mode == "raw":
-                text = sample["caption.txt"]
-                if isinstance(text, bytes):
-                    text = text.decode("utf-8", errors="ignore")
+                text = self.text_prompt_template
             else:
                 text = _as_numpy(sample["text_emb.npy"])
                 if hasattr(text, "numpy"):
@@ -399,18 +400,25 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
         image_processor=image_processor,
+        text_prompt_template=args.text_prompt_template,
     )
 
     def _collate(batch):
+        if not torch.is_tensor(batch[0]["video"]):
+            raise RuntimeError(
+                "video is not a tensor. Use --preprocess_in_loader to convert frames to tensors "
+                "or precompute video tensors in the dataset."
+            )
+        if not torch.is_tensor(batch[0]["next_video"]):
+            raise RuntimeError(
+                "next_video is not a tensor. Use --preprocess_in_loader to convert frames to tensors "
+                "or precompute video tensors in the dataset."
+            )
         out = {
-            "video": torch.stack([b["video"] for b in batch], dim=0)
-            if torch.is_tensor(batch[0]["video"])
-            else [b["video"] for b in batch],
+            "video": torch.stack([b["video"] for b in batch], dim=0),
             "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
             "adj": torch.stack([b["adj"] for b in batch], dim=0),
-            "next_video": torch.stack([b["next_video"] for b in batch], dim=0)
-            if torch.is_tensor(batch[0]["next_video"])
-            else [b["next_video"] for b in batch],
+            "next_video": torch.stack([b["next_video"] for b in batch], dim=0),
             "next_robot_obs": torch.stack([b["next_robot_obs"] for b in batch], dim=0),
             "next_adj": torch.stack([b["next_adj"] for b in batch], dim=0),
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
