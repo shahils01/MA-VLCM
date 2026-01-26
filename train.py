@@ -550,6 +550,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
             next_adj = None
 
         text_emb = batch.get("text_emb", None)
+        text_raw = batch.get("text_raw", None)
         text_ids = batch.get("text_ids", None)
         text_mask = batch.get("text_mask", None)
         if text_emb is not None:
@@ -571,6 +572,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 video,
                 robot_obs,
                 adj,
+                text_raw=text_raw,
                 text_emb=text_emb,
                 text_ids=text_ids.clone() if text_ids is not None else None,
                 text_mask=text_mask.clone() if text_mask is not None else None,
