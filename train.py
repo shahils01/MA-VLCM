@@ -63,7 +63,7 @@ def parse_args():
 
     # Robots / graph
     p.add_argument("--num_robots", type=int, default=8)
-    p.add_argument("--robot_obs_dim", type=int, default=32)
+    p.add_argument("--robot_obs_dim", type=int, default=40)
 
     # Text
     p.add_argument("--text_dim", type=int, default=512)

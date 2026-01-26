@@ -88,7 +88,7 @@ class LLaVAVideoBackbone(nn.Module):
         if LlavaNextVideoForConditionalGeneration is not None:
             try:
                 self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-                    cfg.vl_model_name, torch_dtype=dtype
+                    cfg.vl_model_name, torch_dtype=dtype, attn_implementation="flash_attention_2"
                 )
             except Exception:
                 self.model = None
@@ -419,6 +419,9 @@ class MultimodalValueModel(nn.Module):
         print('vid_feat shape outside loop = ', vid_feat.shape)
         print('robot_obs shape = ', robot_obs.shape)
 
+        robot_obs = robot_obs[:,:,:,:8].reshape(-1,40)
+        print('robot_obs shape after = ', robot_obs.shape)
+
         robot_feats = self.robot_enc(robot_obs)
         # print('robot_feats shape = ', robot_feats.shape)
         # robot_feats = self.graph_enc(robot_feats, adj)
@@ -426,9 +429,9 @@ class MultimodalValueModel(nn.Module):
 
         print('robot_feats shape = ', robot_feats.shape)
 
-        team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
-        team_tokens = self.graph_temporal(team_tokens)
-        team_feat = team_tokens.mean(dim=1)
+        # team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
+        # team_tokens = self.graph_temporal(team_tokens)
+        # team_feat = team_tokens.mean(dim=1)
 
         if text_emb is not None:
             text_feat = self.text_proj(text_emb)
@@ -443,7 +446,9 @@ class MultimodalValueModel(nn.Module):
         else:
             raise ValueError("Provide either text_emb or text_raw.")
 
-        fused = torch.cat([vid_feat, team_feat, text_feat], dim=-1)
+        print('text_feat shape = ', text_feat.shape)
+
+        fused = torch.cat([vid_feat, robot_feats, text_feat], dim=-1)
         fused = self.fusion(fused)
         value = self.value_head(fused).squeeze(-1)
         return value
