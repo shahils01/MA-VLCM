@@ -158,6 +158,8 @@ class LLaVAVideoBackbone(nn.Module):
         else:
             pixel_values = pixel_values_or_images
             pixel_values = pixel_values.to(self.device, dtype=self._dtype)
+        if pixel_values.ndim == 6 and pixel_values.shape[1] == 1:
+            pixel_values = pixel_values.squeeze(1)
 
         if hasattr(self.model, "get_image_features"):
             h, w = pixel_values.shape[-2], pixel_values.shape[-1]
