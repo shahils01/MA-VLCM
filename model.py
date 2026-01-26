@@ -495,26 +495,30 @@ class MultimodalValueModel(nn.Module):
             vid_tokens = self.backbone.encode_image(flat, image_sizes=image_sizes)
 
         # Lazily fix vision projection if backbone dim differs from config
-        if isinstance(self.vision_proj, nn.Identity):
-            if vid_tokens.shape[-1] != self.cfg.d_model:
-                self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-                    vid_tokens.device, dtype=vid_tokens.dtype
-                )
-        elif isinstance(self.vision_proj, nn.Linear):
-            if self.vision_proj.in_features != vid_tokens.shape[-1]:
-                self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-                    vid_tokens.device, dtype=vid_tokens.dtype
-                )
-        proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
-        vid_tokens = vid_tokens.to(proj_dtype)
-        vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
-        vid_tokens = self.video_temporal(vid_tokens)
+        # if isinstance(self.vision_proj, nn.Identity):
+        #     if vid_tokens.shape[-1] != self.cfg.d_model:
+        #         self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
+        #             vid_tokens.device, dtype=vid_tokens.dtype
+        #         )
+        # elif isinstance(self.vision_proj, nn.Linear):
+        #     if self.vision_proj.in_features != vid_tokens.shape[-1]:
+        #         self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
+        #             vid_tokens.device, dtype=vid_tokens.dtype
+        #         )
+        # proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
+        # vid_tokens = vid_tokens.to(proj_dtype)
+        # vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
+        # vid_tokens = self.video_temporal(vid_tokens)
+
+        print('vid_tokens shape = ', vid_tokens.shape)
         vid_feat = vid_tokens.mean(dim=1)
 
         robot_feats = self.robot_enc(robot_obs)
         # print('robot_feats shape = ', robot_feats.shape)
         # robot_feats = self.graph_enc(robot_feats, adj)
         # print('robot_feats shape after GNN = ', robot_feats.shape)
+
+        print('robot_feats shape = ', robot_feats.shape)
 
         team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
         team_tokens = self.graph_temporal(team_tokens)
