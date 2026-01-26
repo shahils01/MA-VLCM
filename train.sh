@@ -9,4 +9,6 @@ python train.py \
   --gamma 0.99 \
   --text_mode raw \
   --return_mode nstep \
-  --n_step 50
+  --n_step 50 \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
+  --text_prompt_template "You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment."

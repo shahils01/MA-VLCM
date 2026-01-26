@@ -176,11 +176,14 @@ class LLaVAVideoBackbone(nn.Module):
             dtype = torch.bfloat16
 
         try:
-            from transformers import AutoProcessor, AutoTokenizer
-            from transformers import AutoModelForVision2Seq, AutoModelForCausalLM
+            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+            try:
+                from transformers import AutoModelForVision2Seq
+            except Exception:
+                from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
         except Exception as e:
             raise ImportError(
-                "LLaVA-Video backend requires recent transformers with AutoModelForVision2Seq."
+                "LLaVA-Video backend requires transformers with AutoModelForVision2Seq available."
             ) from e
 
         self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
@@ -191,7 +194,9 @@ class LLaVAVideoBackbone(nn.Module):
         try:
             self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
         except Exception:
-            self.model = AutoModelForCausalLM.from_pretrained(cfg.vl_model_name, torch_dtype=dtype)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                cfg.vl_model_name, torch_dtype=dtype, trust_remote_code=True
+            )
 
         self.model.to(device)
         if cfg.freeze_vl:
@@ -235,7 +240,11 @@ class LLaVAVideoBackbone(nn.Module):
         if isinstance(pixel_values_or_images, (list, tuple)):
             pixel_values = self._processor_images(pixel_values_or_images)
         else:
-            pixel_values = pixel_values_or_images.to(self.device, dtype=self._dtype)
+            pixel_values = pixel_values_or_images
+            if pixel_values.ndim == 5:
+                b, t, c, h, w = pixel_values.shape
+                pixel_values = pixel_values.view(b * t, c, h, w)
+            pixel_values = pixel_values.to(self.device, dtype=self._dtype)
 
         if hasattr(self.model, "get_image_features"):
             img = self.model.get_image_features(pixel_values)
