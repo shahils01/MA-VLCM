@@ -9,8 +9,8 @@ import torch.nn.functional as F
 @dataclass
 class ModelConfig:
     # Backbone
-    vl_backend: str = "deepseek_vl"  # deepseek_vl | deepseek_vl2 | llava_video
-    vl_model_name: str = "deepseek-community/deepseek-vl-1.3b-base"
+    vl_backend: str = "llava_video"
+    vl_model_name: str = "llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
@@ -47,118 +47,6 @@ class ModelConfig:
     moe_top_k: int = 2
 
 
-class DeepSeekVLMBackbone(nn.Module):
-    """Backbone wrapper for DeepSeek VLMs (DeepSeek-VL or DeepSeek-VL2)."""
-
-    def __init__(self, cfg: ModelConfig, device: torch.device):
-        super().__init__()
-        self.cfg = cfg
-        self.device = device
-
-        if cfg.vl_dtype == "float16":
-            dtype = torch.float16
-        elif cfg.vl_dtype == "float32":
-            dtype = torch.float32
-        else:
-            dtype = torch.bfloat16
-
-        if cfg.vl_backend == "deepseek_vl2":
-            try:
-                from deepseek_vl.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor
-            except Exception as e:
-                raise ImportError(
-                    "DeepSeek-VL2 backend requires the DeepSeek-VL2 repo installed. "
-                    "Install it from https://github.com/deepseek-ai/DeepSeek-VL2"
-                ) from e
-
-            self.processor = DeepseekVLV2Processor.from_pretrained(cfg.vl_model_name)
-            self.tokenizer = self.processor.tokenizer
-            self.model = DeepseekVLV2ForCausalLM.from_pretrained(
-                cfg.vl_model_name, torch_dtype=dtype
-            )
-        else:
-            from transformers import AutoProcessor, DeepseekVLModel, AutoTokenizer
-
-            self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
-            self.tokenizer = AutoTokenizer.from_pretrained(cfg.vl_model_name)
-            self.model = DeepseekVLModel.from_pretrained(
-                cfg.vl_model_name, torch_dtype=dtype
-            )
-
-        self.model.to(device)
-        if cfg.freeze_vl:
-            for p in self.model.parameters():
-                p.requires_grad = False
-
-        self._language_model = self._get_language_model()
-        self.text_hidden_size = self._language_model.config.hidden_size
-        self.vision_hidden_size = self.text_hidden_size
-        self._dtype = dtype
-
-    def _get_language_model(self):
-        if hasattr(self.model, "language_model"):
-            return self.model.language_model
-        if hasattr(self.model, "model") and hasattr(self.model.model, "language_model"):
-            return self.model.model.language_model
-        raise AttributeError("Could not find language_model on DeepSeek VLM.")
-
-    def _normalize_video(self, video):
-        # video: [B*T, C, H, W]
-        if video.dtype != torch.float32 and video.dtype != torch.float16 and video.dtype != torch.bfloat16:
-            video = video.float()
-        mean = torch.tensor(self.cfg.video_mean, device=video.device).view(1, -1, 1, 1)
-        std = torch.tensor(self.cfg.video_std, device=video.device).view(1, -1, 1, 1)
-        return (video - mean) / std
-
-    def _processor_images(self, images):
-        # Prefer dedicated image processor if available to avoid text-required processors
-        if hasattr(self.processor, "image_processor"):
-            proc = self.processor.image_processor(images=images, return_tensors="pt")
-        elif hasattr(self.processor, "vision_processor"):
-            proc = self.processor.vision_processor(images=images, return_tensors="pt")
-        else:
-            # Fallback: DeepSeek-VL processor expects text + images
-            texts = [""] * len(images)
-            proc = self.processor(text=texts, images=images, return_tensors="pt")
-        pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
-        return pixel_values
-
-    def encode_image(self, pixel_values_or_images):
-        if isinstance(pixel_values_or_images, (list, tuple)):
-            pixel_values = self._processor_images(pixel_values_or_images)
-        else:
-            pixel_values = pixel_values_or_images
-            if not self.cfg.video_preprocessed:
-                pixel_values = self._normalize_video(pixel_values)
-            pixel_values = pixel_values.to(self.device, dtype=self._dtype)
-
-        if hasattr(self.model, "get_image_features"):
-            img = self.model.get_image_features(pixel_values)
-        elif hasattr(self.model, "model") and hasattr(self.model.model, "get_image_features"):
-            img = self.model.model.get_image_features(pixel_values)
-        else:
-            raise AttributeError("DeepSeek VLM does not expose get_image_features.")
-
-        # img: [B, num_image_tokens, D]
-        return img.mean(dim=1)
-
-    def encode_text(self, texts):
-        tokens = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.cfg.vl_max_text_len,
-            return_tensors="pt",
-        ).to(self.device)
-        return self.encode_text_tokens(tokens["input_ids"], tokens["attention_mask"])
-
-    def encode_text_tokens(self, input_ids, attention_mask):
-        tokens = {"input_ids": input_ids.to(self.device), "attention_mask": attention_mask.to(self.device)}
-        outputs = self._language_model(**tokens)
-        hidden = outputs.last_hidden_state
-        mask = tokens["attention_mask"].unsqueeze(-1)
-        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-        return pooled
 
 
 class LLaVAVideoBackbone(nn.Module):
@@ -404,10 +292,7 @@ class MultimodalValueModel(nn.Module):
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
         self.cfg = cfg
-        if cfg.vl_backend == "llava_video":
-            self.backbone = LLaVAVideoBackbone(cfg, device=device)
-        else:
-            self.backbone = DeepSeekVLMBackbone(cfg, device=device)
+        self.backbone = LLaVAVideoBackbone(cfg, device=device)
         if self.backbone.vision_hidden_size != cfg.d_model:
             self.vision_proj = nn.Linear(self.backbone.vision_hidden_size, cfg.d_model)
         else:
