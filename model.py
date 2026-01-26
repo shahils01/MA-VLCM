@@ -414,11 +414,13 @@ class MultimodalValueModel(nn.Module):
             self.backbone = LLaVAVideoBackbone(cfg, device=device)
         else:
             self.backbone = DeepSeekVLMBackbone(cfg, device=device)
-        if self.backbone.text_hidden_size != cfg.d_model:
-            self.vision_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
-            self.text_raw_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
+        if self.backbone.vision_hidden_size != cfg.d_model:
+            self.vision_proj = nn.Linear(self.backbone.vision_hidden_size, cfg.d_model)
         else:
             self.vision_proj = nn.Identity()
+        if self.backbone.text_hidden_size != cfg.d_model:
+            self.text_raw_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
+        else:
             self.text_raw_proj = nn.Identity()
 
         self.video_temporal = TemporalTransformer(
