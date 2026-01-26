@@ -513,6 +513,8 @@ class MultimodalValueModel(nn.Module):
         print('vid_tokens shape = ', vid_tokens.shape)
         vid_feat = vid_tokens.mean(dim=1)
 
+        print('robot_obs shape = ', robot_obs.shape)
+
         robot_feats = self.robot_enc(robot_obs)
         # print('robot_feats shape = ', robot_feats.shape)
         # robot_feats = self.graph_enc(robot_feats, adj)
