@@ -180,7 +180,8 @@ class LLaVAVideoBackbone(nn.Module):
         vision_tower = self._get_vision_tower()
         if vision_tower is None:
             raise AttributeError("LLaVA backend does not expose a vision tower or get_image_features.")
-
+        
+        print('pixel_values shape = ', pixel_values.shape)
         if pixel_values.ndim == 5:
             b, t, c, h, w = pixel_values.shape
             pixel_values = pixel_values.view(b * t, c, h, w)
