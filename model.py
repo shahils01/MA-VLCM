@@ -81,10 +81,14 @@ class LLaVAVideoBackbone(nn.Module):
         self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
             cfg.vl_model_name
         )
+        if "<obs>" not in self.tokenizer.get_vocab():
+            self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
             cfg.vl_model_name, torch_dtype=dtype
         )
+        if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
+            self.model.resize_token_embeddings(len(self.tokenizer))
 
         self.model.to(device)
         if cfg.freeze_vl:
@@ -92,6 +96,15 @@ class LLaVAVideoBackbone(nn.Module):
                 p.requires_grad = False
 
         self._dtype = dtype
+
+    def get_input_embeddings(self):
+        if hasattr(self.model, "get_input_embeddings"):
+            return self.model.get_input_embeddings()
+        if hasattr(self.model, "language_model") and hasattr(self.model.language_model, "get_input_embeddings"):
+            return self.model.language_model.get_input_embeddings()
+        if hasattr(self.model, "model") and hasattr(self.model.model, "get_input_embeddings"):
+            return self.model.model.get_input_embeddings()
+        raise AttributeError("Could not access input embeddings on LLaVA backbone.")
 
     def _move_inputs_to_device(self, inputs):
         moved = {}
@@ -208,6 +221,7 @@ class MultimodalValueModel(nn.Module):
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
+        self.obs_to_lm = nn.Linear(cfg.d_model, self.backbone.get_input_embeddings().embedding_dim)
 
         self.video_temporal = TemporalTransformer(
             cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
@@ -277,7 +291,7 @@ class MultimodalValueModel(nn.Module):
             for i, _video in enumerate(video_list):
                 save_video_mp4(_video, f"video_{i}.mp4", fps=24)
 
-        text_raw = "<video>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
+        text_raw = "<video><obs>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
                     The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
                     without colliding with one another. They also have to be efficient by taking the shortest parth.\
                     How Good or Bad are the team of robots doing to accomplish the given task? Also tell me why and what you see. Keep your answer short."
@@ -297,11 +311,29 @@ class MultimodalValueModel(nn.Module):
 
         print('robot_feats shape = ', robot_feats.shape)
 
-        # Manual forward: inputs are available for inspection/modification before calling the backbone.
-        # Example: input_ids, attention_mask, and pixel_values (video frames) are in `inputs`.
+        # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         with torch.no_grad():
-            # fm_output = self.backbone.forward_backbone(inputs, output_hidden_states=True, return_dict=True)
             inputs = self.backbone._move_inputs_to_device(inputs)
+            input_ids = inputs["input_ids"]
+            inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+
+            # Pool robot features to a single token per batch, then project to LM hidden size.
+            bsz = input_ids.shape[0]
+            if robot_feats.shape[0] % bsz == 0:
+                robot_seq = robot_feats.view(bsz, -1, robot_feats.shape[-1])
+                obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
+            else:
+                obs_token = self.obs_to_lm(robot_feats.mean(dim=0, keepdim=True)).unsqueeze(0)
+
+            obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+            if obs_token_id is not None and obs_token_id >= 0:
+                obs_mask = input_ids.eq(obs_token_id)
+                for b in range(bsz):
+                    if obs_mask[b].any():
+                        inputs_embeds[b, obs_mask[b]] = obs_token[b].expand(obs_mask[b].sum(), -1)
+
+            inputs.pop("input_ids", None)
+            inputs["inputs_embeds"] = inputs_embeds
             output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
 
         # team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
