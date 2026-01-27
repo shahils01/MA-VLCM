@@ -328,10 +328,10 @@ class MultimodalValueModel(nn.Module):
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        video = video.squeeze()
+        video = video.squeeze().clip(0,1)
         print('video shape = ', video.shape)
         video_list = [
-            video[i].permute(0, 2, 3, 1).to(dtype=torch.bfloat16)#.cpu().numpy()
+            video[i].permute(0, 2, 3, 1).to(dtype=torch.float16)#.cpu().numpy()
             for i in range(video.shape[0])
         ]
 
@@ -342,9 +342,10 @@ class MultimodalValueModel(nn.Module):
             video: np.ndarray (T, H, W, C)
             path: output file path, e.g. 'output.mp4'
             """
+            video = video.cpu().numpy()
             # Ensure uint8
             if video.dtype != np.uint8:
-                video = np.clip(video, 0, 1)
+                # video = np.clip(video, 0, 1)
                 video = (video * 255).astype(np.uint8)
 
             writer = imageio.get_writer(path, fps=fps, codec='libx264')

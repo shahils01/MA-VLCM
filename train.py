@@ -176,36 +176,6 @@ def _save_debug_video(batch, args, accelerator, tag="train"):
     out_dir = os.path.join(args.debug_out_dir, f"{tag}_sample")
     os.makedirs(out_dir, exist_ok=True)
 
-    def save_tensor_frames(frames):
-        if args.video_preprocessed:
-            mean = torch.tensor(args.video_mean, dtype=frames.dtype, device=frames.device).view(1, 3, 1, 1)
-            std = torch.tensor(args.video_std, dtype=frames.dtype, device=frames.device).view(1, 3, 1, 1)
-            frames = frames * std + mean
-        frames = frames.clamp(0, 1)
-        frames = (frames * 255).to(torch.uint8).cpu()
-        for t, frame in enumerate(frames):
-            img = frame.permute(1, 2, 0).numpy()
-            Image.fromarray(img).save(os.path.join(out_dir, f"frame_{t:04d}.png"))
-
-    if torch.is_tensor(video):
-        frames = video[0]
-        save_tensor_frames(frames)
-    else:
-        frames = video[0]
-        for t, frame in enumerate(frames):
-            if torch.is_tensor(frame):
-                frame = frame.unsqueeze(0)
-                if args.video_preprocessed:
-                    mean = torch.tensor(args.video_mean, dtype=frame.dtype, device=frame.device).view(1, 3, 1, 1)
-                    std = torch.tensor(args.video_std, dtype=frame.dtype, device=frame.device).view(1, 3, 1, 1)
-                    frame = frame * std + mean
-                frame = frame.clamp(0, 1)
-                frame = (frame * 255).to(torch.uint8).cpu()[0]
-                img = frame.permute(1, 2, 0).numpy()
-                Image.fromarray(img).save(os.path.join(out_dir, f"frame_{t:04d}.png"))
-            else:
-                frame.save(os.path.join(out_dir, f"frame_{t:04d}.png"))
-
 
 def _reward_from_frame(sample, reduce_mode):
     arr = _as_numpy(sample["rewards.npy"])
