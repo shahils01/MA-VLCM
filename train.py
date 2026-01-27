@@ -26,7 +26,7 @@ def parse_args():
     p.add_argument("--text_prompt_template", type=str, default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.")
 
     # Sequence building
-    p.add_argument("--clip_len", type=int, default=8)
+    p.add_argument("--clip_len", type=int, default=20)
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
@@ -56,13 +56,13 @@ def parse_args():
     p.add_argument("--video_channels", type=int, default=3)
     p.add_argument("--video_height", type=int, default=224)
     p.add_argument("--video_width", type=int, default=224)
-    p.add_argument("--video_frames", type=int, default=8)
+    p.add_argument("--video_frames", type=int, default=100)
     p.add_argument("--video_preprocessed", action="store_true")
     p.add_argument("--video_mean", type=float, nargs=3, default=(0.5, 0.5, 0.5))
     p.add_argument("--video_std", type=float, nargs=3, default=(0.5, 0.5, 0.5))
 
     # Robots / graph
-    p.add_argument("--num_robots", type=int, default=8)
+    p.add_argument("--num_robots", type=int, default=5)
     p.add_argument("--robot_obs_dim", type=int, default=40)
 
     # Text
@@ -115,6 +115,7 @@ def build_model(args, device):
         use_moe=args.use_moe,
         moe_experts=args.moe_experts,
         moe_top_k=args.moe_top_k,
+        debug_save_video=args.debug_save_video,
     )
     return MultimodalValueModel(cfg, device=device)
 
@@ -492,13 +493,10 @@ def webdataset_loader(args, shards, batch_size, num_workers):
                 token = None
                 vocab = text_tokenizer.get_vocab()
                 if "<video>" in vocab:
-                    print('token is video')
                     token = "<video>"
                 elif "<image>" in vocab:
-                    print('token is image')
                     token = "<image>"
                 else:
-                    print('token is Neither')
                     for t in getattr(text_tokenizer, "additional_special_tokens", []) or []:
                         if "image" in t or "video" in t:
                             token = t

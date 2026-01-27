@@ -1,7 +1,7 @@
 python train.py \
-  --train_shards "/scratch/shahils/data/wds/shard-{000000..000065}.tar" \
+  --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000005}.tar" \
   --batch_size 4 \
-  --clip_len 8 \
+  --clip_len 20 \
   --clip_stride 1 \
   --robot_source obs \
   --reward_reduce mean \
@@ -11,5 +11,5 @@ python train.py \
   --return_mode nstep \
   --n_step 50 \
   --vl_backend llava_video \
-  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-hf \
   --text_prompt_template "You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment."

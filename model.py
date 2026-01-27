@@ -46,6 +46,9 @@ class ModelConfig:
     moe_experts: int = 4
     moe_top_k: int = 2
 
+    # Debug
+    debug_save_video: bool = False
+
 
 
 
@@ -65,7 +68,7 @@ class LLaVAVideoBackbone(nn.Module):
             dtype = torch.bfloat16
 
         try:
-            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, LlavaNextVideoProcessor
             from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
             try:
                 from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
@@ -74,7 +77,7 @@ class LLaVAVideoBackbone(nn.Module):
         except Exception as e:
             raise ImportError("LLaVA-Video backend requires transformers installed.") from e
 
-        self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
+        self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
         self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
             cfg.vl_model_name
         )
@@ -274,6 +277,7 @@ class MultimodalValueModel(nn.Module):
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
         self.cfg = cfg
+        self.debug_save_video = cfg.debug_save_video
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
         if self.backbone.vision_hidden_size != cfg.d_model:
             self.vision_proj = nn.Linear(self.backbone.vision_hidden_size, cfg.d_model)
@@ -327,24 +331,47 @@ class MultimodalValueModel(nn.Module):
         video = video.squeeze()
         print('video shape = ', video.shape)
         video_list = [
-            video[i].permute(0, 2, 3, 1).cpu().numpy()
+            video[i].permute(0, 2, 3, 1).to(dtype=torch.bfloat16)#.cpu().numpy()
             for i in range(video.shape[0])
         ]
-        # print('video_list = ', video_list)
-        print('text_raw = ', text_raw)
 
-        text_raw = "<video> You are a critic model. You are given video frames of a robot team. Assess how good or bad \
-                    the current policy is at the task of going to goal?"
+        import imageio
+        import numpy as np
+        def save_video_mp4(video, path, fps=30):
+            """
+            video: np.ndarray (T, H, W, C)
+            path: output file path, e.g. 'output.mp4'
+            """
+            # Ensure uint8
+            if video.dtype != np.uint8:
+                video = np.clip(video, 0, 1)
+                video = (video * 255).astype(np.uint8)
+
+            writer = imageio.get_writer(path, fps=fps, codec='libx264')
+            for frame in video:
+                writer.append_data(frame)
+            writer.close()
+
+        if self.debug_save_video:
+            for i, video in enumerate(video_list):
+                save_video_mp4(video, f"video_{i}.mp4", fps=24)
+
+
+        text_raw = "<video>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
+                    The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
+                    without colliding with one another. They also have to be efficient by taking the shortest parth.\
+                    How Good or Bad are the team of robots doing to accomplish the given task? Also tell me why and what you see. Keep your answer short."
+
+        # text_raw = "<video>You are a critic model. What colors do you see in this video? How many frames you see in this video?"
         text_list = [text_raw] * len(video_list)
 
-        inputs = self.backbone.processor(text=text_list, videos=video_list, return_tensors="pt", padding=True)
+        inputs = self.backbone.processor(text=text_list, videos=video_list, return_tensors="pt", padding=False)
 
         # Use processor-produced input_ids + attention_mask
         inputs = {k: v.to(self.backbone.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            outputs = self.backbone.model.generate(**inputs, max_new_tokens=2048, do_sample=True,
-                                                    temperature=0.7, top_p=0.9,)
+            outputs = self.backbone.model.generate(**inputs, max_new_tokens=512)
 
         # Strip the prompt portion
         prompt_len = inputs["input_ids"].shape[1]
