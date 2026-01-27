@@ -221,7 +221,8 @@ class MultimodalValueModel(nn.Module):
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
-        self.obs_to_lm = nn.Linear(cfg.d_model, self.backbone.get_input_embeddings().embedding_dim)
+        lm_hidden = self.backbone.get_input_embeddings().embedding_dim
+        self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
         self.video_temporal = TemporalTransformer(
             cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
@@ -245,7 +246,7 @@ class MultimodalValueModel(nn.Module):
                 nn.Linear(cfg.fusion_hidden, fused_dim),
             )
 
-        self.value_head = nn.Linear(fused_dim, 1)
+        self.value_head = nn.Linear(lm_hidden, 1)
 
     def forward(
         self,
@@ -312,30 +313,37 @@ class MultimodalValueModel(nn.Module):
         print('robot_feats shape = ', robot_feats.shape)
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
-        with torch.no_grad():
-            inputs = self.backbone._move_inputs_to_device(inputs)
-            input_ids = inputs["input_ids"]
-            inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+        inputs = self.backbone._move_inputs_to_device(inputs)
+        input_ids = inputs["input_ids"]
+        inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
-            # Pool robot features to a single token per batch, then project to LM hidden size.
-            bsz = input_ids.shape[0]
-            if robot_feats.shape[0] % bsz == 0:
-                robot_seq = robot_feats.view(bsz, -1, robot_feats.shape[-1])
-                obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
-            else:
-                obs_token = self.obs_to_lm(robot_feats.mean(dim=0, keepdim=True)).unsqueeze(0)
-            obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+        # Pool robot features to a single token per batch, then project to LM hidden size.
+        bsz = input_ids.shape[0]
+        if robot_feats.shape[0] % bsz == 0:
+            robot_seq = robot_feats.view(bsz, -1, robot_feats.shape[-1])
+            obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
+        else:
+            obs_token = self.obs_to_lm(robot_feats.mean(dim=0, keepdim=True)).unsqueeze(0)
+        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
 
-            obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
-            if obs_token_id is not None and obs_token_id >= 0:
-                obs_mask = input_ids.eq(obs_token_id)
-                for b in range(bsz):
-                    if obs_mask[b].any():
-                        inputs_embeds[b, obs_mask[b]] = obs_token[b].expand(obs_mask[b].sum(), -1)
+        obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+        if obs_token_id is not None and obs_token_id >= 0:
+            obs_mask = input_ids.eq(obs_token_id)
+            for b in range(bsz):
+                if obs_mask[b].any():
+                    inputs_embeds[b, obs_mask[b]] = obs_token[b].expand(obs_mask[b].sum(), -1)
 
-            inputs.pop("input_ids", None)
-            inputs["inputs_embeds"] = inputs_embeds
-            output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
+        inputs.pop("input_ids", None)
+        inputs["inputs_embeds"] = inputs_embeds
+        output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
 
-        value = self.value_head(fused).squeeze(-1)
+        final_hidden = output.hidden_states[-1]
+        attn = inputs.get("attention_mask")
+        if attn is not None:
+            mask = attn.unsqueeze(-1)
+            pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        else:
+            pooled = final_hidden[:, -1, :]
+
+        value = self.value_head(pooled).squeeze(-1)
         return value
