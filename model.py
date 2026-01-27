@@ -331,22 +331,26 @@ class MultimodalValueModel(nn.Module):
             for i in range(video.shape[0])
         ]
         # print('video_list = ', video_list)
-        video_inputs = self.backbone.processor(text=text_raw, videos=video_list, return_tensors="pt")
-        pixel_values_videos = video_inputs["pixel_values_videos"].to(self.backbone.device)
+        print('text_raw = ', text_raw)
 
-        inputs = {
-            "input_ids": text_ids.to(self.backbone.device),
-            "attention_mask": text_mask.to(self.backbone.device),
-            "pixel_values_videos": pixel_values_videos,
-        }
+        text_raw = "<video> You are a critic model. You are given video frames of a robot team. Assess how good or bad \
+                    the current policy is at the task of going to goal?"
+        text_list = [text_raw] * len(video_list)
+
+        inputs = self.backbone.processor(text=text_list, videos=video_list, return_tensors="pt", padding=True)
+
+        # Use processor-produced input_ids + attention_mask
+        inputs = {k: v.to(self.backbone.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            outputs = self.backbone(**inputs, max_new_tokens=128)
+            outputs = self.backbone.model.generate(**inputs, max_new_tokens=2048, do_sample=True,
+                                                    temperature=0.7, top_p=0.9,)
 
-        print('outputs = ', outputs)
+        # Strip the prompt portion
+        prompt_len = inputs["input_ids"].shape[1]
+        gen_only = outputs[:, prompt_len:]
 
-        # Decode
-        texts = self.backbone.processor.batch_decode(outputs, skip_special_tokens=True)
+        texts = self.backbone.processor.batch_decode(gen_only, skip_special_tokens=True)
         for i, t in enumerate(texts):
             print(f"[{i}] {t}")
 
