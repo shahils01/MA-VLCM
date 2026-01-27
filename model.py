@@ -113,8 +113,11 @@ class LLaVAVideoBackbone(nn.Module):
                 moved[k] = v
         return moved
 
-    def prepare_inputs(self, text, videos, padding=False, truncation=True, max_length=None):
-        max_length = max_length or self.cfg.vl_max_text_len
+    def prepare_inputs(self, text, videos, padding=False, truncation=False, max_length=None):
+        # For LLaVA video prompts, truncation can break special token alignment.
+        # Only pass max_length when truncation is explicitly enabled.
+        if truncation and max_length is None:
+            max_length = self.cfg.vl_max_text_len
         inputs = self.processor(
             text=text,
             videos=videos,
