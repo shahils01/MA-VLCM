@@ -324,6 +324,7 @@ class MultimodalValueModel(nn.Module):
                 obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
             else:
                 obs_token = self.obs_to_lm(robot_feats.mean(dim=0, keepdim=True)).unsqueeze(0)
+            obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
 
             obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
             if obs_token_id is not None and obs_token_id >= 0:
