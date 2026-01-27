@@ -337,26 +337,5 @@ class MultimodalValueModel(nn.Module):
             inputs["inputs_embeds"] = inputs_embeds
             output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
 
-        # team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
-        # team_tokens = self.graph_temporal(team_tokens)
-        # team_feat = team_tokens.mean(dim=1)
-
-        if text_emb is not None:
-            text_feat = self.text_proj(text_emb)
-        elif text_ids is not None and text_mask is not None:
-            txt = self.backbone.encode_text_tokens(text_ids, text_mask)
-            txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt
-            text_feat = self.text_raw_proj(txt)
-        elif text_raw is not None:
-            txt = self.backbone.encode_text(text_raw)
-            txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt
-            text_feat = self.text_raw_proj(txt)
-        else:
-            raise ValueError("Provide either text_emb or text_raw.")
-
-        print('text_feat shape = ', text_feat.shape)
-
-        fused = torch.cat([vid_feat, robot_feats, text_feat], dim=-1)
-        fused = self.fusion(fused)
         value = self.value_head(fused).squeeze(-1)
         return value
