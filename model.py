@@ -82,7 +82,6 @@ class LLaVAVideoBackbone(nn.Module):
             cfg.vl_model_name
         )
 
-
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
             cfg.vl_model_name, torch_dtype=dtype
         )
@@ -92,13 +91,6 @@ class LLaVAVideoBackbone(nn.Module):
             for p in self.model.parameters():
                 p.requires_grad = False
 
-        self._language_model = self._get_language_model()
-        self.text_hidden_size = self._language_model.config.hidden_size
-        vision_tower = self._get_vision_tower()
-        if vision_tower is not None and hasattr(vision_tower, "config") and hasattr(vision_tower.config, "hidden_size"):
-            self.vision_hidden_size = vision_tower.config.hidden_size
-        else:
-        self.vision_hidden_size = self.text_hidden_size
         self._dtype = dtype
 
     def _move_inputs_to_device(self, inputs):
@@ -127,107 +119,6 @@ class LLaVAVideoBackbone(nn.Module):
             max_length=max_length,
         )
         return self._move_inputs_to_device(inputs)
-
-    def forward_backbone(self, inputs, output_hidden_states=True, return_dict=True):
-        # Manual forward with full access to inputs before the backbone call.
-        # Caller can modify inputs (e.g., replace embeddings) before passing here.
-        inputs = self._move_inputs_to_device(inputs)
-        return self.model(**inputs, output_hidden_states=output_hidden_states, return_dict=return_dict)
-
-    def get_text_input_embeddings(self, input_ids):
-        # Useful for manual pipelines that replace/augment embeddings later.
-        embed = self._language_model.get_input_embeddings()
-        return embed(input_ids.to(self.device))
-
-    def _get_language_model(self):
-        if hasattr(self.model, "language_model"):
-            return self.model.language_model
-        if hasattr(self.model, "model") and hasattr(self.model.model, "language_model"):
-            return self.model.model.language_model
-        if hasattr(self.model, "llm"):
-            return self.model.llm
-        raise AttributeError("Could not find language model on LLaVA backend.")
-
-    def _get_vision_tower(self):
-        if hasattr(self.model, "get_vision_tower"):
-            return self.model.get_vision_tower()
-        if hasattr(self.model, "vision_tower"):
-            return self.model.vision_tower
-        if hasattr(self.model, "model") and hasattr(self.model.model, "vision_tower"):
-            return self.model.model.vision_tower
-        return None
-
-    def _processor_images(self, images):
-        if hasattr(self.processor, "image_processor"):
-            proc = self.processor.image_processor(images=images, return_tensors="pt")
-        elif hasattr(self.processor, "vision_processor"):
-            proc = self.processor.vision_processor(images=images, return_tensors="pt")
-        else:
-            texts = [""] * len(images)
-            proc = self.processor(text=texts, images=images, return_tensors="pt")
-        pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
-        return pixel_values
-
-    def encode_image(self, pixel_values_or_images, image_sizes=None):
-        if isinstance(pixel_values_or_images, (list, tuple)):
-            pixel_values = self._processor_images(pixel_values_or_images)
-        else:
-            pixel_values = pixel_values_or_images
-            pixel_values = pixel_values.to(self.device, dtype=self._dtype)
-        if pixel_values.ndim == 6 and pixel_values.shape[1] == 1:
-            pixel_values = pixel_values.squeeze(1)
-
-        if hasattr(self.model, "get_image_features"):
-            h, w = pixel_values.shape[-2], pixel_values.shape[-1]
-            if pixel_values.ndim == 5:
-                n = pixel_values.shape[0] * pixel_values.shape[1]
-            else:
-                n = pixel_values.shape[0]
-            use_sizes = None
-            if image_sizes is not None:
-                use_sizes = image_sizes
-            else:
-                use_sizes = [(h, w)] * n
-            try:
-                img = self.model.get_image_features(pixel_values, image_sizes=use_sizes)
-                return img.mean(dim=1) if img.ndim == 3 else img
-            except Exception:
-                # Some LLaVA video models expect different image_sizes semantics; fall back to vision tower.
-                pass
-
-        vision_tower = self._get_vision_tower()
-        if vision_tower is None:
-            raise AttributeError("LLaVA backend does not expose a vision tower or get_image_features.")
-        
-        print('pixel_values shape = ', pixel_values.shape)
-        if pixel_values.ndim == 5:
-            b, t, c, h, w = pixel_values.shape
-            pixel_values = pixel_values.view(b * t, c, h, w)
-        feats = vision_tower(pixel_values)
-        if hasattr(feats, "last_hidden_state"):
-            feats = feats.last_hidden_state
-        if feats.ndim == 3:
-            return feats.mean(dim=1)
-        return feats
-
-    def encode_text(self, texts):
-        tokens = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.cfg.vl_max_text_len,
-            return_tensors="pt",
-        ).to(self.device)
-        return self.encode_text_tokens(tokens["input_ids"], tokens["attention_mask"])
-
-    def encode_text_tokens(self, input_ids, attention_mask):
-        tokens = {"input_ids": input_ids.to(self.device), "attention_mask": attention_mask.to(self.device)}
-        outputs = self._language_model(**tokens)
-        hidden = outputs.last_hidden_state
-        mask = tokens["attention_mask"].unsqueeze(-1)
-        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-        return pooled
-
 
 
 class TemporalTransformer(nn.Module):
@@ -317,14 +208,6 @@ class MultimodalValueModel(nn.Module):
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
-        if self.backbone.vision_hidden_size != cfg.d_model:
-            self.vision_proj = nn.Linear(self.backbone.vision_hidden_size, cfg.d_model)
-        else:
-            self.vision_proj = nn.Identity()
-        if self.backbone.text_hidden_size != cfg.d_model:
-            self.text_raw_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
-        else:
-            self.text_raw_proj = nn.Identity()
 
         self.video_temporal = TemporalTransformer(
             cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
@@ -367,7 +250,6 @@ class MultimodalValueModel(nn.Module):
         # text_emb: [B, text_dim] or text_raw: list[str]
 
         video = video.squeeze().clip(0,1)
-        print('video shape = ', video.shape)
         video_list = [
             video[i].permute(0, 2, 3, 1).to(dtype=torch.float16)#.cpu().numpy()
             for i in range(video.shape[0])
@@ -375,26 +257,25 @@ class MultimodalValueModel(nn.Module):
 
         import imageio
         import numpy as np
-        def save_video_mp4(video, path, fps=30):
+        def save_video_mp4(_video, path, fps=30):
             """
             video: np.ndarray (T, H, W, C)
             path: output file path, e.g. 'output.mp4'
             """
-            video = video.cpu().numpy()
+            _video = _video.cpu().numpy()
             # Ensure uint8
-            if video.dtype != np.uint8:
-                # video = np.clip(video, 0, 1)
-                video = (video * 255).astype(np.uint8)
+            if _video.dtype != np.uint8:
+                # _video = np.clip(_video, 0, 1)
+                _video = (_video * 255).astype(np.uint8)
 
             writer = imageio.get_writer(path, fps=fps, codec='libx264')
-            for frame in video:
+            for frame in _video:
                 writer.append_data(frame)
             writer.close()
 
         if self.debug_save_video:
-            for i, video in enumerate(video_list):
-                save_video_mp4(video, f"video_{i}.mp4", fps=24)
-
+            for i, _video in enumerate(video_list):
+                save_video_mp4(_video, f"video_{i}.mp4", fps=24)
 
         text_raw = "<video>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
                     The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
@@ -406,77 +287,6 @@ class MultimodalValueModel(nn.Module):
 
         inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
 
-        # Manual forward: inputs are available for inspection/modification before calling the backbone.
-        # Example: input_ids, attention_mask, and pixel_values (video frames) are in `inputs`.
-        with torch.no_grad():
-            _ = self.backbone.forward_backbone(inputs, output_hidden_states=True, return_dict=True)
-
-
-        b, t = video.squeeze().shape[0], video.shape[1]
-        if isinstance(self.backbone, LLaVAVideoBackbone):
-            vid_tokens = self.backbone.encode_image(video, image_sizes=image_sizes)
-        else:
-            video_flat = video.view(b * t, *video.shape[2:])
-            flat_sizes = None
-            if image_sizes is not None:
-                if torch.is_tensor(image_sizes):
-                    if image_sizes.ndim == 3:
-                        flat_sizes = image_sizes.view(b * t, -1)
-                    else:
-                        flat_sizes = image_sizes
-                elif isinstance(image_sizes, (list, tuple)) and len(image_sizes) == b:
-                    flat_sizes = []
-                    for item in image_sizes:
-                        if torch.is_tensor(item):
-                            if item.ndim == 2:
-                                flat_sizes.extend(item.tolist())
-                            else:
-                                flat_sizes.append(item.tolist())
-                        elif isinstance(item, (list, tuple)):
-                            flat_sizes.extend(list(item))
-                        else:
-                            flat_sizes.append(item)
-                else:
-                    flat_sizes = image_sizes
-            vid_tokens = self.backbone.encode_image(video_flat, image_sizes=flat_sizes)
-
-        if isinstance(self.backbone, LLaVAVideoBackbone):
-            if vid_tokens.ndim == 3:
-                vid_feat = vid_tokens.mean(dim=1)
-            else:
-                vid_feat = vid_tokens
-            if vid_feat.ndim == 2 and vid_feat.shape[-1] != self.cfg.d_model:
-                if isinstance(self.vision_proj, nn.Identity) or (
-                    isinstance(self.vision_proj, nn.Linear) and self.vision_proj.in_features != vid_feat.shape[-1]
-                ):
-                    self.vision_proj = nn.Linear(vid_feat.shape[-1], self.cfg.d_model).to(
-                        vid_feat.device, dtype=vid_feat.dtype
-                    )
-                proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_feat.dtype
-                vid_feat = self.vision_proj(vid_feat.to(proj_dtype))
-                print('vid_feat shape = ', vid_feat.shape)
-
-        else:
-            # Lazily fix vision projection if backbone dim differs from config
-            if isinstance(self.vision_proj, nn.Identity):
-                if vid_tokens.shape[-1] != self.cfg.d_model:
-                    self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-                        vid_tokens.device, dtype=vid_tokens.dtype
-                    )
-            elif isinstance(self.vision_proj, nn.Linear):
-                if self.vision_proj.in_features != vid_tokens.shape[-1]:
-                    self.vision_proj = nn.Linear(vid_tokens.shape[-1], self.cfg.d_model).to(
-                        vid_tokens.device, dtype=vid_tokens.dtype
-                    )
-            proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
-            vid_tokens = vid_tokens.to(proj_dtype)
-            vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
-            vid_tokens = self.video_temporal(vid_tokens)
-            vid_feat = vid_tokens.mean(dim=1)
-
-        print('vid_feat shape outside loop = ', vid_feat.shape)
-        print('robot_obs shape = ', robot_obs.shape)
-
         robot_obs = robot_obs[:,:,:,:8].reshape(-1,40)
         print('robot_obs shape after = ', robot_obs.shape)
 
@@ -486,6 +296,13 @@ class MultimodalValueModel(nn.Module):
         # print('robot_feats shape after GNN = ', robot_feats.shape)
 
         print('robot_feats shape = ', robot_feats.shape)
+
+        # Manual forward: inputs are available for inspection/modification before calling the backbone.
+        # Example: input_ids, attention_mask, and pixel_values (video frames) are in `inputs`.
+        with torch.no_grad():
+            # fm_output = self.backbone.forward_backbone(inputs, output_hidden_states=True, return_dict=True)
+            inputs = self.backbone._move_inputs_to_device(inputs)
+            output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
 
         # team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
         # team_tokens = self.graph_temporal(team_tokens)
