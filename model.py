@@ -345,5 +345,6 @@ class MultimodalValueModel(nn.Module):
         else:
             pooled = final_hidden[:, -1, :]
 
+        pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
         value = self.value_head(pooled).squeeze(-1)
         return value
