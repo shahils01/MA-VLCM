@@ -98,8 +98,43 @@ class LLaVAVideoBackbone(nn.Module):
         if vision_tower is not None and hasattr(vision_tower, "config") and hasattr(vision_tower.config, "hidden_size"):
             self.vision_hidden_size = vision_tower.config.hidden_size
         else:
-            self.vision_hidden_size = self.text_hidden_size
+        self.vision_hidden_size = self.text_hidden_size
         self._dtype = dtype
+
+    def _move_inputs_to_device(self, inputs):
+        moved = {}
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                if k in ("pixel_values", "video", "videos"):
+                    moved[k] = v.to(self.device, dtype=self._dtype)
+                else:
+                    moved[k] = v.to(self.device)
+            else:
+                moved[k] = v
+        return moved
+
+    def prepare_inputs(self, text, videos, padding=False, truncation=True, max_length=None):
+        max_length = max_length or self.cfg.vl_max_text_len
+        inputs = self.processor(
+            text=text,
+            videos=videos,
+            return_tensors="pt",
+            padding=padding,
+            truncation=truncation,
+            max_length=max_length,
+        )
+        return self._move_inputs_to_device(inputs)
+
+    def forward_backbone(self, inputs, output_hidden_states=True, return_dict=True):
+        # Manual forward with full access to inputs before the backbone call.
+        # Caller can modify inputs (e.g., replace embeddings) before passing here.
+        inputs = self._move_inputs_to_device(inputs)
+        return self.model(**inputs, output_hidden_states=output_hidden_states, return_dict=return_dict)
+
+    def get_text_input_embeddings(self, input_ids):
+        # Useful for manual pipelines that replace/augment embeddings later.
+        embed = self._language_model.get_input_embeddings()
+        return embed(input_ids.to(self.device))
 
     def _get_language_model(self):
         if hasattr(self.model, "language_model"):
@@ -366,21 +401,12 @@ class MultimodalValueModel(nn.Module):
         # text_raw = "<video>You are a critic model. What colors do you see in this video? How many frames you see in this video?"
         text_list = [text_raw] * len(video_list)
 
-        inputs = self.backbone.processor(text=text_list, videos=video_list, return_tensors="pt", padding=False)
+        inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
 
-        # Use processor-produced input_ids + attention_mask
-        inputs = {k: v.to(self.backbone.device) for k, v in inputs.items()}
-
+        # Manual forward: inputs are available for inspection/modification before calling the backbone.
+        # Example: input_ids, attention_mask, and pixel_values (video frames) are in `inputs`.
         with torch.no_grad():
-            outputs = self.backbone.model.generate(**inputs, max_new_tokens=512)
-
-        # Strip the prompt portion
-        prompt_len = inputs["input_ids"].shape[1]
-        gen_only = outputs[:, prompt_len:]
-
-        texts = self.backbone.processor.batch_decode(gen_only, skip_special_tokens=True)
-        for i, t in enumerate(texts):
-            print(f"[{i}] {t}")
+            _ = self.backbone.forward_backbone(inputs, output_hidden_states=True, return_dict=True)
 
 
         b, t = video.squeeze().shape[0], video.shape[1]
