@@ -1,14 +1,14 @@
 python train.py \
-  --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000005}.tar" \
-  --batch_size 4 \
-  --clip_len 20 \
-  --clip_stride 1 \
+  --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
+  --batch_size 2 \
+  --clip_len 10 \
+  --clip_stride 10 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \
   --gamma 0.99 \
   --text_mode raw \
-  --return_mode nstep \
+  --return_mode td \
   --n_step 50 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-hf \

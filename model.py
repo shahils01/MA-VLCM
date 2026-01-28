@@ -224,27 +224,27 @@ class MultimodalValueModel(nn.Module):
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
-        self.video_temporal = TemporalTransformer(
-            cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
-        )
+        # self.video_temporal = TemporalTransformer(
+        #     cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
+        # )
 
         self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
         # self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
-        self.graph_temporal = TemporalTransformer(
-            cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
-        )
+        # self.graph_temporal = TemporalTransformer(
+        #     cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
+        # )
 
-        self.text_proj = nn.Linear(cfg.text_dim, cfg.d_model)
+        # self.text_proj = nn.Linear(cfg.text_dim, cfg.d_model)
 
-        fused_dim = cfg.d_model * 3
-        if cfg.use_moe:
-            self.fusion = MoEFeedForward(fused_dim, cfg.fusion_hidden, cfg.moe_experts, cfg.moe_top_k)
-        else:
-            self.fusion = nn.Sequential(
-                nn.Linear(fused_dim, cfg.fusion_hidden),
-                nn.GELU(),
-                nn.Linear(cfg.fusion_hidden, fused_dim),
-            )
+        # fused_dim = cfg.d_model * 3
+        # if cfg.use_moe:
+        #     self.fusion = MoEFeedForward(fused_dim, cfg.fusion_hidden, cfg.moe_experts, cfg.moe_top_k)
+        # else:
+        #     self.fusion = nn.Sequential(
+        #         nn.Linear(fused_dim, cfg.fusion_hidden),
+        #         nn.GELU(),
+        #         nn.Linear(cfg.fusion_hidden, fused_dim),
+        #     )
 
         self.value_head = nn.Linear(lm_hidden, 1)
 
@@ -303,14 +303,14 @@ class MultimodalValueModel(nn.Module):
         inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
 
         robot_obs = robot_obs[:,:,:,:8].reshape(-1,40)
-        print('robot_obs shape after = ', robot_obs.shape)
+        # print('robot_obs shape after = ', robot_obs.shape)
 
         robot_feats = self.robot_enc(robot_obs)
         # print('robot_feats shape = ', robot_feats.shape)
         # robot_feats = self.graph_enc(robot_feats, adj)
         # print('robot_feats shape after GNN = ', robot_feats.shape)
 
-        print('robot_feats shape = ', robot_feats.shape)
+        # print('robot_feats shape = ', robot_feats.shape)
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
@@ -347,4 +347,5 @@ class MultimodalValueModel(nn.Module):
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
         value = self.value_head(pooled).squeeze(-1)
+        # print('value shape = ', value.shape)
         return value
