@@ -39,6 +39,8 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
+    p.add_argument("--loss_type", type=str, default="td", choices=["td", "contrastive"])
+    p.add_argument("--contrastive_margin", type=float, default=0.0)
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
@@ -489,6 +491,22 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
 
 
+def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
+    # scores: [B], rewards: [B]
+    # For each pair with different reward, enforce higher reward -> higher score.
+    diff_r = rewards[:, None] - rewards[None, :]
+    diff_s = scores[:, None] - scores[None, :]
+    sign = diff_r.sign()
+    mask = sign.ne(0)
+    if mask.sum() == 0:
+        return torch.tensor(0.0, device=scores.device, dtype=scores.dtype)
+    signed = diff_s * sign
+    if margin != 0.0:
+        signed = signed - margin
+    loss = F.softplus(-signed)
+    return loss[mask].mean()
+
+
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True):
     if train:
         model.train()
@@ -546,21 +564,29 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 text_mask=text_mask.clone() if text_mask is not None else None,
                 image_sizes=image_sizes,
             )
-            if args.return_mode == "td":
-                with torch.no_grad():
-                    next_pred = model(
-                        next_video,
-                        next_robot_obs,
-                        next_adj,
-                        text_emb=text_emb,
-                        text_ids=text_ids.clone() if text_ids is not None else None,
-                        text_mask=text_mask.clone() if text_mask is not None else None,
-                        image_sizes=next_image_sizes,
-                    )
-                target = reward + gamma * (1.0 - done) * next_pred
+            if args.loss_type == "contrastive":
+                # Use returns if available, otherwise use per-clip reward.
+                if args.return_mode == "nstep" and "return" in batch:
+                    returns = batch["return"].to(accelerator.device)
+                else:
+                    returns = reward
+                loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
             else:
-                target = batch["return"].to(accelerator.device)
-            loss = loss_fn(pred, target)
+                if args.return_mode == "td":
+                    with torch.no_grad():
+                        next_pred = model(
+                            next_video,
+                            next_robot_obs,
+                            next_adj,
+                            text_emb=text_emb,
+                            text_ids=text_ids.clone() if text_ids is not None else None,
+                            text_mask=text_mask.clone() if text_mask is not None else None,
+                            image_sizes=next_image_sizes,
+                        )
+                    target = reward + gamma * (1.0 - done) * next_pred
+                else:
+                    target = batch["return"].to(accelerator.device)
+                loss = loss_fn(pred, target)
             if train:
                 accelerator.backward(loss)
                 optimizer.step()
