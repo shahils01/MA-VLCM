@@ -63,6 +63,7 @@ def parse_args():
     p.add_argument("--fsdp", action="store_true", help="Use FSDP to shard model parameters across GPUs")
     p.add_argument("--fsdp_min_num_params", type=int, default=1_000_000, help="Auto-wrap threshold for FSDP")
     p.add_argument("--fsdp_cpu_offload", action="store_true", help="Offload FSDP parameters to CPU when not in use")
+    p.add_argument("--fsdp_use_orig_params", action="store_true", help="Use FSDP use_orig_params to allow mixed requires_grad")
     p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 
     # DeepSeek VLM backbone
@@ -697,6 +698,7 @@ def main():
         if FullyShardedDataParallelPlugin is None:
             raise RuntimeError("FSDP requested but accelerate FSDP plugin is unavailable.")
         fsdp_kwargs = {}
+        use_orig_params = args.fsdp_use_orig_params or (args.peft != "none")
         if size_based_auto_wrap_policy is not None:
             fsdp_kwargs["auto_wrap_policy"] = functools.partial(
                 size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params
@@ -708,6 +710,12 @@ def main():
                     fsdp_kwargs["min_num_params"] = args.fsdp_min_num_params
             except Exception:
                 pass
+        try:
+            params = inspect.signature(FullyShardedDataParallelPlugin).parameters
+            if "use_orig_params" in params:
+                fsdp_kwargs["use_orig_params"] = use_orig_params
+        except Exception:
+            pass
         if args.fsdp_cpu_offload:
             if CPUOffload is None:
                 raise RuntimeError("FSDP CPU offload requested but torch.distributed.fsdp is unavailable.")
