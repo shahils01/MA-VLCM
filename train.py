@@ -658,6 +658,13 @@ def main():
         else:
             target_dtype = torch.float32
         model = model.to(dtype=target_dtype)
+        # Enforce a uniform dtype across all params/buffers for FSDP flattening.
+        for p in model.parameters():
+            if p.dtype != target_dtype:
+                p.data = p.data.to(dtype=target_dtype)
+        for b in model.buffers():
+            if torch.is_floating_point(b) and b.dtype != target_dtype:
+                b.data = b.data.to(dtype=target_dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
