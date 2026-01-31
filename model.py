@@ -336,9 +336,11 @@ class MultimodalValueModel(nn.Module):
         obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
-            for b in range(bsz):
-                if obs_mask[b].any():
-                    inputs_embeds[b, obs_mask[b]] = obs_token[b].expand(obs_mask[b].sum(), -1)
+            if obs_mask.any():
+                # Avoid in-place writes on views when using QLoRA/PEFT
+                obs_expanded = obs_token.expand(bsz, input_ids.shape[1], -1)
+                obs_mask_f = obs_mask.unsqueeze(-1).to(dtype=inputs_embeds.dtype)
+                inputs_embeds = inputs_embeds * (1.0 - obs_mask_f) + obs_expanded * obs_mask_f
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
