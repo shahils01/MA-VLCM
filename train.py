@@ -6,6 +6,7 @@ from PIL import Image
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
 
@@ -499,7 +500,7 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     sign = diff_r.sign()
     mask = sign.ne(0)
     if mask.sum() == 0:
-        return torch.tensor(0.0, device=scores.device, dtype=scores.dtype)
+        return scores.sum() * 0.0
     signed = diff_s * sign
     if margin != 0.0:
         signed = signed - margin
