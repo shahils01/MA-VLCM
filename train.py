@@ -1,6 +1,8 @@
 import argparse
 import os
 import io
+import functools
+import inspect
 
 from PIL import Image
 
@@ -9,6 +11,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
+try:
+    from accelerate.utils import FullyShardedDataParallelPlugin
+except Exception:
+    try:
+        from accelerate.utils import FSDPPlugin as FullyShardedDataParallelPlugin
+    except Exception:
+        FullyShardedDataParallelPlugin = None
+try:
+    from torch.distributed.fsdp import CPUOffload
+    from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+except Exception:
+    CPUOffload = None
+    size_based_auto_wrap_policy = None
 
 import webdataset as wds
 from model import ModelConfig, MultimodalValueModel
@@ -45,6 +60,9 @@ def parse_args():
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
+    p.add_argument("--fsdp", action="store_true", help="Use FSDP to shard model parameters across GPUs")
+    p.add_argument("--fsdp_min_num_params", type=int, default=1_000_000, help="Auto-wrap threshold for FSDP")
+    p.add_argument("--fsdp_cpu_offload", action="store_true", help="Offload FSDP parameters to CPU when not in use")
 
     # DeepSeek VLM backbone
     p.add_argument(
@@ -608,7 +626,29 @@ def main():
     if args.preprocess_in_loader:
         args.video_preprocessed = True
 
-    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    fsdp_plugin = None
+    if args.fsdp:
+        if FullyShardedDataParallelPlugin is None:
+            raise RuntimeError("FSDP requested but accelerate FSDP plugin is unavailable.")
+        fsdp_kwargs = {}
+        if size_based_auto_wrap_policy is not None:
+            fsdp_kwargs["auto_wrap_policy"] = functools.partial(
+                size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params
+            )
+        else:
+            try:
+                params = inspect.signature(FullyShardedDataParallelPlugin).parameters
+                if "min_num_params" in params:
+                    fsdp_kwargs["min_num_params"] = args.fsdp_min_num_params
+            except Exception:
+                pass
+        if args.fsdp_cpu_offload:
+            if CPUOffload is None:
+                raise RuntimeError("FSDP CPU offload requested but torch.distributed.fsdp is unavailable.")
+            fsdp_kwargs["cpu_offload"] = CPUOffload(offload_params=True)
+        fsdp_plugin = FullyShardedDataParallelPlugin(**fsdp_kwargs)
+
+    accelerator = Accelerator(mixed_precision=args.mixed_precision, fsdp_plugin=fsdp_plugin)
     model = build_model(args, device=accelerator.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 

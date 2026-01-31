@@ -48,6 +48,28 @@ python train.py \
   --epochs 2
 ```
 
+## Multi-GPU (FSDP)
+To shard the model across GPUs (instead of full model replica per GPU), launch with Accelerate and enable FSDP:
+```
+accelerate launch --num_processes 4 train.py \
+  --train_shards "/path/to/train/{00000..00099}.tar" \
+  --batch_size 4 \
+  --clip_len 8 \
+  --clip_stride 1 \
+  --robot_source obs \
+  --reward_reduce mean \
+  --done_reduce any \
+  --gamma 0.99 \
+  --text_mode raw \
+  --preprocess_in_loader \
+  --epochs 2 \
+  --fsdp \
+  --fsdp_min_num_params 1000000
+```
+Notes:
+- Use `--fsdp_cpu_offload` if GPU memory is tight (slower).
+- `--fsdp_min_num_params` controls how aggressively submodules are wrapped/sharded.
+
 ## DeepSeek VLM choices
 - Default: `--vl_backend deepseek_vl --vl_model_name deepseek-community/deepseek-vl-1.3b-base`
 - For MoE backbone: use `--vl_backend deepseek_vl2` and a DeepSeek-VL2 model name (requires DeepSeek-VL2 repo)
