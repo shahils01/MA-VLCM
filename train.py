@@ -12,6 +12,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
 try:
+    from accelerate.utils import DistributedDataParallelKwargs
+except Exception:
+    DistributedDataParallelKwargs = None
+try:
     from accelerate.utils import FullyShardedDataParallelPlugin
 except Exception:
     try:
@@ -64,6 +68,7 @@ def parse_args():
     p.add_argument("--fsdp_min_num_params", type=int, default=1_000_000, help="Auto-wrap threshold for FSDP")
     p.add_argument("--fsdp_cpu_offload", action="store_true", help="Offload FSDP parameters to CPU when not in use")
     p.add_argument("--fsdp_use_orig_params", action="store_true", help="Use FSDP use_orig_params to allow mixed requires_grad")
+    p.add_argument("--ddp_find_unused_parameters", action="store_true", help="Set DDP find_unused_parameters=True")
     p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 
     # DeepSeek VLM backbone
@@ -722,10 +727,16 @@ def main():
             fsdp_kwargs["cpu_offload"] = CPUOffload(offload_params=True)
         fsdp_plugin = FullyShardedDataParallelPlugin(**fsdp_kwargs)
 
+    ddp_kwargs = None
+    if not args.fsdp and DistributedDataParallelKwargs is not None:
+        find_unused = args.ddp_find_unused_parameters or (args.peft != "none") or args.freeze_vl
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
+
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         fsdp_plugin=fsdp_plugin,
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
+        kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
     )
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
