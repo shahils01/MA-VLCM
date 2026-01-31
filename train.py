@@ -650,6 +650,14 @@ def main():
 
     accelerator = Accelerator(mixed_precision=args.mixed_precision, fsdp_plugin=fsdp_plugin)
     model = build_model(args, device=accelerator.device)
+    if args.fsdp:
+        if args.mixed_precision == "bf16":
+            target_dtype = torch.bfloat16
+        elif args.mixed_precision == "fp16":
+            target_dtype = torch.float16
+        else:
+            target_dtype = torch.float32
+        model = model.to(dtype=target_dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
