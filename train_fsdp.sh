@@ -15,5 +15,5 @@ accelerate launch --num_processes 2 train.py \
   --text_prompt_template "You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment." \
   --fsdp \
   --fsdp_min_num_params 1000000 \
-  --mixed_precision bf16
+  --mixed_precision fp16
 
