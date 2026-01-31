@@ -63,6 +63,7 @@ def parse_args():
     p.add_argument("--fsdp", action="store_true", help="Use FSDP to shard model parameters across GPUs")
     p.add_argument("--fsdp_min_num_params", type=int, default=1_000_000, help="Auto-wrap threshold for FSDP")
     p.add_argument("--fsdp_cpu_offload", action="store_true", help="Offload FSDP parameters to CPU when not in use")
+    p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 
     # DeepSeek VLM backbone
     p.add_argument(
@@ -569,46 +570,45 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
             _save_debug_video(batch, args, accelerator, tag="train")
             run_epoch._debug_saved = True
 
-        if train:
-            optimizer.zero_grad(set_to_none=True)
-
-        with torch.set_grad_enabled(train):
-            pred = model(
-                video,
-                robot_obs,
-                adj,
-                text_raw=text_raw,
-                text_emb=text_emb,
-                text_ids=text_ids.clone() if text_ids is not None else None,
-                text_mask=text_mask.clone() if text_mask is not None else None,
-                image_sizes=image_sizes,
-            )
-            if args.loss_type == "contrastive":
-                # Use returns if available, otherwise use per-clip reward.
-                if args.return_mode == "nstep" and "return" in batch:
-                    returns = batch["return"].to(accelerator.device)
+        with accelerator.accumulate(model):
+            with torch.set_grad_enabled(train):
+                pred = model(
+                    video,
+                    robot_obs,
+                    adj,
+                    text_raw=text_raw,
+                    text_emb=text_emb,
+                    text_ids=text_ids.clone() if text_ids is not None else None,
+                    text_mask=text_mask.clone() if text_mask is not None else None,
+                    image_sizes=image_sizes,
+                )
+                if args.loss_type == "contrastive":
+                    # Use returns if available, otherwise use per-clip reward.
+                    if args.return_mode == "nstep" and "return" in batch:
+                        returns = batch["return"].to(accelerator.device)
+                    else:
+                        returns = reward
+                    loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
                 else:
-                    returns = reward
-                loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
-            else:
-                if args.return_mode == "td":
-                    with torch.no_grad():
-                        next_pred = model(
-                            next_video,
-                            next_robot_obs,
-                            next_adj,
-                            text_emb=text_emb,
-                            text_ids=text_ids.clone() if text_ids is not None else None,
-                            text_mask=text_mask.clone() if text_mask is not None else None,
-                            image_sizes=next_image_sizes,
-                        )
-                    target = reward + gamma * (1.0 - done) * next_pred
-                else:
-                    target = batch["return"].to(accelerator.device)
-                loss = loss_fn(pred, target)
-            if train:
-                accelerator.backward(loss)
-                optimizer.step()
+                    if args.return_mode == "td":
+                        with torch.no_grad():
+                            next_pred = model(
+                                next_video,
+                                next_robot_obs,
+                                next_adj,
+                                text_emb=text_emb,
+                                text_ids=text_ids.clone() if text_ids is not None else None,
+                                text_mask=text_mask.clone() if text_mask is not None else None,
+                                image_sizes=next_image_sizes,
+                            )
+                        target = reward + gamma * (1.0 - done) * next_pred
+                    else:
+                        target = batch["return"].to(accelerator.device)
+                    loss = loss_fn(pred, target)
+                if train:
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
 
         total_loss += loss.item()
         if log_every > 0 and step % log_every == 0:
@@ -648,7 +648,11 @@ def main():
             fsdp_kwargs["cpu_offload"] = CPUOffload(offload_params=True)
         fsdp_plugin = FullyShardedDataParallelPlugin(**fsdp_kwargs)
 
-    accelerator = Accelerator(mixed_precision=args.mixed_precision, fsdp_plugin=fsdp_plugin)
+    accelerator = Accelerator(
+        mixed_precision=args.mixed_precision,
+        fsdp_plugin=fsdp_plugin,
+        gradient_accumulation_steps=max(1, args.grad_accum_steps),
+    )
     model = build_model(args, device=accelerator.device)
     if args.fsdp:
         if args.mixed_precision == "bf16":
