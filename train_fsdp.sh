@@ -1,4 +1,4 @@
-accelerate launch --num_processes 4 train.py \
+accelerate launch --num_processes 2 train.py \
   --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
   --batch_size 2 \
   --clip_len 10 \
@@ -14,4 +14,6 @@ accelerate launch --num_processes 4 train.py \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-hf \
   --text_prompt_template "You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment." \
   --fsdp \
-  --fsdp_min_num_params 1000000
+  --fsdp_min_num_params 1000000 \
+  --mixed_precision bf16
+
