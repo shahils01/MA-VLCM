@@ -74,6 +74,14 @@ def parse_args():
     p.add_argument("--vl_max_text_len", type=int, default=256)
     p.add_argument("--freeze_vl", action="store_true")
 
+    # PEFT / LoRA
+    p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
+    p.add_argument("--lora_r", type=int, default=16)
+    p.add_argument("--lora_alpha", type=int, default=32)
+    p.add_argument("--lora_dropout", type=float, default=0.05)
+    p.add_argument("--lora_target_modules", type=str, default="")
+    p.add_argument("--lora_bias", type=str, default="none", choices=["none", "all", "lora_only"])
+
     # Video
     p.add_argument("--video_channels", type=int, default=3)
     p.add_argument("--video_height", type=int, default=224)
@@ -118,6 +126,7 @@ def build_model(args, device):
         vl_dtype=args.vl_dtype,
         vl_max_text_len=args.vl_max_text_len,
         freeze_vl=args.freeze_vl,
+        quantization_config=getattr(args, "quantization_config", None),
         video_channels=args.video_channels,
         video_height=args.video_height,
         video_width=args.video_width,
@@ -140,6 +149,40 @@ def build_model(args, device):
         debug_save_video=args.debug_save_video,
     )
     return MultimodalValueModel(cfg, device=device)
+
+
+def _parse_lora_targets(args):
+    if args.lora_target_modules:
+        return [t.strip() for t in args.lora_target_modules.split(",") if t.strip()]
+    # Default targets for LLaMA-style blocks used by LLaVA
+    return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+
+def _apply_peft(model, args):
+    if args.peft == "none":
+        return model
+    try:
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    except Exception as e:
+        raise RuntimeError("PEFT requested but 'peft' is not installed. `pip install peft`.") from e
+
+    # Freeze backbone weights; keep custom heads trainable.
+    for p in model.backbone.model.parameters():
+        p.requires_grad = False
+
+    if args.peft == "qlora":
+        model.backbone.model = prepare_model_for_kbit_training(model.backbone.model)
+
+    lora_cfg = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias=args.lora_bias,
+        target_modules=_parse_lora_targets(args),
+        task_type="CAUSAL_LM",
+    )
+    model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
+    return model
 
 
 def _as_numpy(x):
@@ -626,6 +669,29 @@ def main():
     if args.preprocess_in_loader:
         args.video_preprocessed = True
 
+    if args.peft == "qlora" and args.fsdp:
+        raise RuntimeError("FSDP + QLoRA is not supported. Use DDP (no --fsdp) or LoRA.")
+
+    if args.peft == "qlora":
+        try:
+            from transformers import BitsAndBytesConfig
+        except Exception as e:
+            raise RuntimeError("QLoRA requested but bitsandbytes/transformers are not available.") from e
+        if args.vl_dtype == "float16":
+            compute_dtype = torch.float16
+        elif args.vl_dtype == "float32":
+            compute_dtype = torch.float32
+        else:
+            compute_dtype = torch.bfloat16
+        args.quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+        )
+    else:
+        args.quantization_config = None
+
     fsdp_plugin = None
     if args.fsdp:
         if FullyShardedDataParallelPlugin is None:
@@ -654,6 +720,7 @@ def main():
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
     )
     model = build_model(args, device=accelerator.device)
+    model = _apply_peft(model, args)
     if args.fsdp:
         if args.mixed_precision == "bf16":
             target_dtype = torch.bfloat16

@@ -14,6 +14,7 @@ class ModelConfig:
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
+    quantization_config: object = None
 
     # Video
     video_channels: int = 3
@@ -84,13 +85,19 @@ class LLaVAVideoBackbone(nn.Module):
         if "<obs>" not in self.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
+        model_kwargs = {"torch_dtype": dtype}
+        if cfg.quantization_config is not None:
+            model_kwargs["quantization_config"] = cfg.quantization_config
+            model_kwargs["device_map"] = {"": device}
+
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, torch_dtype=dtype
+            cfg.vl_model_name, **model_kwargs
         )
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
             self.model.resize_token_embeddings(len(self.tokenizer))
 
-        self.model.to(device)
+        if cfg.quantization_config is None:
+            self.model.to(device)
         if cfg.freeze_vl:
             for p in self.model.parameters():
                 p.requires_grad = False
