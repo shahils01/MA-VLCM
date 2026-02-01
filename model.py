@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -14,7 +15,7 @@ class ModelConfig:
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
-    quantization_config: object = None
+    quantization_config: Optional[Any] = None
 
     # Video
     video_channels: int = 3
@@ -88,16 +89,13 @@ class LLaVAVideoBackbone(nn.Module):
         model_kwargs = {"torch_dtype": dtype}
         if cfg.quantization_config is not None:
             model_kwargs["quantization_config"] = cfg.quantization_config
-            model_kwargs["device_map"] = {"": device}
-
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
             cfg.vl_model_name, **model_kwargs
         )
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
             self.model.resize_token_embeddings(len(self.tokenizer))
 
-        if cfg.quantization_config is None:
-            self.model.to(device)
+        self.model.to(device)
         if cfg.freeze_vl:
             for p in self.model.parameters():
                 p.requires_grad = False
@@ -117,7 +115,7 @@ class LLaVAVideoBackbone(nn.Module):
         moved = {}
         for k, v in inputs.items():
             if torch.is_tensor(v):
-                if k in ("pixel_values", "video", "videos"):
+                if k in ("pixel_values", "pixel_values_videos", "video_values", "video", "videos"):
                     moved[k] = v.to(self.device, dtype=self._dtype)
                 else:
                     moved[k] = v.to(self.device)
@@ -266,16 +264,32 @@ class MultimodalValueModel(nn.Module):
         text_mask=None,
         image_sizes=None,
     ):
-        # video: torch.Tensor [B, T, C, H, W] or list of list of PIL images
+        # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        video = video.squeeze().clip(0,1)
-        video_list = [
-            video[i].permute(0, 2, 3, 1).to(dtype=torch.float16)#.cpu().numpy()
-            for i in range(video.shape[0])
-        ]
+        inputs = None
+        video_list = None
+        if isinstance(video, dict):
+            inputs = video
+        elif torch.is_tensor(video):
+            video = video.clamp(0, 1)
+            if video.dim() == 4:
+                video = video.unsqueeze(0)
+            video_list = [
+                video[i].permute(0, 2, 3, 1).to(dtype=torch.float16)
+                for i in range(video.shape[0])
+            ]
+        elif isinstance(video, list):
+            if len(video) == 0:
+                raise RuntimeError("Empty video batch.")
+            if isinstance(video[0], list):
+                video_list = video
+            else:
+                video_list = [video]
+        else:
+            raise TypeError(f"Unsupported video type: {type(video)}")
 
         import imageio
         import numpy as np
@@ -284,10 +298,33 @@ class MultimodalValueModel(nn.Module):
             video: np.ndarray (T, H, W, C)
             path: output file path, e.g. 'output.mp4'
             """
-            _video = _video.cpu().numpy()
+            def _frames_to_numpy(frames):
+                if torch.is_tensor(frames):
+                    return frames.detach().cpu().numpy()
+                if isinstance(frames, list):
+                    out = []
+                    for frame in frames:
+                        if torch.is_tensor(frame):
+                            arr = frame.detach().cpu().numpy()
+                            if arr.ndim == 3 and arr.shape[0] in (1, 3):
+                                arr = arr.transpose(1, 2, 0)
+                        else:
+                            try:
+                                from PIL import Image
+                                if isinstance(frame, Image.Image):
+                                    arr = np.array(frame)
+                                else:
+                                    arr = frame
+                            except Exception:
+                                arr = frame
+                        out.append(arr)
+                    return np.stack(out, axis=0)
+                return np.array(frames)
+
+            _video = _frames_to_numpy(_video)
             # Ensure uint8
             if _video.dtype != np.uint8:
-                # _video = np.clip(_video, 0, 1)
+                _video = np.clip(_video, 0, 1)
                 _video = (_video * 255).astype(np.uint8)
 
             writer = imageio.get_writer(path, fps=fps, codec='libx264')
@@ -295,21 +332,23 @@ class MultimodalValueModel(nn.Module):
                 writer.append_data(frame)
             writer.close()
 
-        if self.debug_save_video:
+        if self.debug_save_video and video_list is not None:
             for i, _video in enumerate(video_list):
                 save_video_mp4(_video, f"video_{i}.mp4", fps=24)
 
-        text_raw = "<video><obs>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
-                    The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
-                    without colliding with one another. They also have to be efficient by taking the shortest parth.\
-                    How Good or Bad are the team of robots doing to accomplish the given task? Also tell me why and what you see. Keep your answer short."
+        if inputs is None:
+            text_raw = "<video><obs>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
+                        The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
+                        without colliding with one another. They also have to be efficient by taking the shortest parth.\
+                        How Good or Bad are the team of robots doing to accomplish the given task? Also tell me why and what you see. Keep your answer short."
 
-        # text_raw = "<video>You are a critic model. What colors do you see in this video? How many frames you see in this video?"
-        text_list = [text_raw] * len(video_list)
+            # text_raw = "<video>You are a critic model. What colors do you see in this video? How many frames you see in this video?"
+            text_list = [text_raw] * len(video_list)
 
-        inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
+            inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
 
-        robot_obs = robot_obs[:,:,:,:8].reshape(-1,40)
+        bsz = robot_obs.shape[0]
+        robot_obs = robot_obs[:, :, :, :8].reshape(-1, 40)
         # print('robot_obs shape after = ', robot_obs.shape)
 
         robot_feats = self.robot_enc(robot_obs)
@@ -321,11 +360,13 @@ class MultimodalValueModel(nn.Module):
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
-        input_ids = inputs["input_ids"]
+        input_ids = inputs["input_ids"].clone()
+        attn_mask = inputs.get("attention_mask")
+        if attn_mask is not None:
+            inputs["attention_mask"] = attn_mask.clone()
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool robot features to a single token per batch, then project to LM hidden size.
-        bsz = input_ids.shape[0]
         if robot_feats.shape[0] % bsz == 0:
             robot_seq = robot_feats.view(bsz, -1, robot_feats.shape[-1])
             obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
@@ -337,10 +378,19 @@ class MultimodalValueModel(nn.Module):
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
             if obs_mask.any():
-                # Avoid in-place writes on views when using QLoRA/PEFT
-                obs_expanded = obs_token.expand(bsz, input_ids.shape[1], -1)
-                obs_mask_f = obs_mask.unsqueeze(-1).to(dtype=inputs_embeds.dtype)
-                inputs_embeds = inputs_embeds * (1.0 - obs_mask_f) + obs_expanded * obs_mask_f
+                # Avoid in-place updates that can break autograd version tracking.
+                obs_mask = obs_mask.unsqueeze(-1)
+                if input_ids.shape[0] == bsz:
+                    # input_ids: [B, S]
+                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
+                elif input_ids.shape[1] == bsz:
+                    # input_ids: [S, B]
+                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                else:
+                    raise RuntimeError(
+                        f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
+                    )
+                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds

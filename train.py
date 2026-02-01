@@ -59,7 +59,7 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--loss_type", type=str, default="td", choices=["td", "contrastive"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
     p.add_argument("--contrastive_margin", type=float, default=0.0)
 
     # Accelerate
@@ -243,6 +243,8 @@ def _save_debug_video(batch, args, accelerator, tag="train"):
     if not accelerator.is_main_process:
         return
     os.makedirs(args.debug_out_dir, exist_ok=True)
+    if "video" not in batch:
+        return
     video = batch["video"]
     out_dir = os.path.join(args.debug_out_dir, f"{tag}_sample")
     os.makedirs(out_dir, exist_ok=True)
@@ -292,12 +294,16 @@ class SequenceWebDataset(IterableDataset):
         robot_source,
         reward_reduce,
         done_reduce,
-        image_processor=None,
+        vlm_processor=None,
         text_prompt_template=None,
         return_mode="td",
         n_step=50,
         gamma=0.99,
         keep_raw_video=False,
+        include_next=False,
+        vlm_max_text_len=64,
+        vlm_truncation=False,
+        vlm_padding="longest",
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -306,12 +312,16 @@ class SequenceWebDataset(IterableDataset):
         self.robot_source = robot_source
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
-        self.image_processor = image_processor
+        self.vlm_processor = vlm_processor
         self.text_prompt_template = text_prompt_template
         self.return_mode = return_mode
         self.n_step = n_step
         self.gamma = gamma
         self.keep_raw_video = keep_raw_video
+        self.include_next = include_next
+        self.vlm_max_text_len = vlm_max_text_len
+        self.vlm_truncation = vlm_truncation
+        self.vlm_padding = vlm_padding
 
     def __iter__(self):
         if wds is None:
@@ -336,80 +346,92 @@ class SequenceWebDataset(IterableDataset):
         buffer = []
 
         def flush_buffer():
-            if len(buffer) < self.clip_len + 1:
+            min_len = self.clip_len + (1 if self.include_next else 0)
+            if len(buffer) < min_len:
                 return
-            max_i = len(buffer) - self.clip_len - 1
+            max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
             for i in range(0, max_i + 1, self.clip_stride):
                 clip = buffer[i : i + self.clip_len]
-                next_clip = buffer[i + 1 : i + 1 + self.clip_len]
 
                 raw_video = [f["image"] for f in clip]
-                raw_next_video = [f["image"] for f in next_clip]
-                if self.image_processor is not None:
-                    def _proc(frames):
+                raw_next_video = None
+                if self.include_next:
+                    next_clip = buffer[i + 1 : i + 1 + self.clip_len]
+                    raw_next_video = [f["image"] for f in next_clip]
+                if self.vlm_processor is not None:
+                    def _proc(frames, text):
+                        if not isinstance(text, str):
+                            text = self.text_prompt_template
+                        tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                        if tokenizer is not None:
+                            vocab = tokenizer.get_vocab()
+                            if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
+                                text = f"<video>\n{text}"
+                            if "<obs>" in vocab and "<obs>" not in text:
+                                if "<video>" in text:
+                                    text = text.replace("<video>\n", "<video><obs>\n", 1)
+                                else:
+                                    text = f"<obs>\n{text}"
                         try:
-                            proc = self.image_processor(videos=frames, return_tensors="pt")
+                            max_len = self.vlm_max_text_len if self.vlm_truncation else None
+                            inputs = self.vlm_processor(
+                                text=text,
+                                videos=frames,
+                                return_tensors="pt",
+                                padding=self.vlm_padding,
+                                truncation=self.vlm_truncation,
+                                max_length=max_len,
+                            )
                         except TypeError:
-                            proc = self.image_processor(images=frames, return_tensors="pt")
-                        if "pixel_values" in proc:
-                            pixel_values = proc["pixel_values"]
-                        elif "video_values" in proc:
-                            pixel_values = proc["video_values"]
-                        elif "pixel_values_videos" in proc:
-                            pixel_values = proc["pixel_values_videos"]
-                        elif hasattr(proc, "pixel_values"):
-                            pixel_values = proc.pixel_values
-                        elif hasattr(proc, "video_values"):
-                            pixel_values = proc.video_values
-                        else:
-                            raise KeyError("image processor output has no pixel_values/video_values")
-                        image_sizes = proc.get("image_sizes", None)
-                        return pixel_values, image_sizes
+                            print('using image processor instead of video processor')
+                            inputs = self.vlm_processor(
+                                images=frames,
+                                return_tensors="pt",
+                            )
+                        packed = {}
+                        for k, v in dict(inputs).items():
+                            if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
+                                v = v.squeeze(0)
+                            packed[k] = v
+                        return packed
 
-                    video, image_sizes = _proc(raw_video)
-                    next_video, next_image_sizes = _proc(raw_next_video)
+                    text = clip[0]["text"]
+                    inputs = _proc(raw_video, text)
+                    next_inputs = None
+                    if self.include_next:
+                        next_inputs = _proc(raw_next_video, text)
                 else:
-                    video = raw_video
-                    next_video = raw_next_video
+                    raise RuntimeError("Dataloader proprocessor not set.")
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
-                next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
-
                 adj = torch.stack([f["adj"] for f in clip], dim=0)
-                next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
-
-                text = clip[0]["text"]
+                if self.include_next:
+                    next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
+                    next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
 
                 reward = clip[-1]["reward"]
                 done = clip[-1]["done"]
+
+                returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
+
                 n_step_return = None
                 if self.return_mode == "nstep":
                     start_idx = i + self.clip_len - 1
                     n_step_return = _compute_n_step_return(buffer, start_idx, self.n_step, self.gamma)
 
                 out = {
-                    "video": video,
                     "robot_obs": robot_obs,
                     "adj": adj,
-                    "next_video": next_video,
-                    "next_robot_obs": next_robot_obs,
-                    "next_adj": next_adj,
                     "reward": reward.view(1),
+                    "returns": returns.view(1),
                     "done": done.view(1),
                 }
-                if self.image_processor is not None and image_sizes is not None:
-                    out["image_sizes"] = image_sizes
-                if self.image_processor is not None and next_image_sizes is not None:
-                    out["next_image_sizes"] = next_image_sizes
-                if self.keep_raw_video:
-                    out["raw_video"] = raw_video
-                    out["raw_next_video"] = raw_next_video
-                if n_step_return is not None:
-                    out["return"] = n_step_return.view(1)
-                if self.text_mode == "raw":
-                    out["text_raw"] = text
-                else:
-                    out["text_emb"] = text
+                out["inputs"] = inputs
+                if self.include_next:
+                    out["next_inputs"] = next_inputs
+                    out["next_robot_obs"] = next_robot_obs
+                    out["next_adj"] = next_adj
+
                 yield out
 
         for sample in dataset:
@@ -466,20 +488,13 @@ class SequenceWebDataset(IterableDataset):
 
 
 def webdataset_loader(args, shards, batch_size, num_workers):
-    image_processor = None
-    text_tokenizer = None
+    vlm_processor = None
     if args.preprocess_in_loader:
-        from transformers import AutoProcessor
-        proc = AutoProcessor.from_pretrained(args.vl_model_name)
-        image_processor = getattr(proc, "video_processor", None) or getattr(
-            proc, "image_processor", None
-        ) or getattr(proc, "vision_processor", None)
-        text_tokenizer = getattr(proc, "tokenizer", None)
-        
-        if image_processor is None:
-            raise RuntimeError("Could not find image processor for the LLaVA-NeXT-Video FM.")
-        if text_tokenizer is None:
-            raise RuntimeError("Could not find text tokenizerr for the sLLaVA-NeXT-Video FM.")
+        from transformers import LlavaNextVideoProcessor
+        vlm_processor = LlavaNextVideoProcessor.from_pretrained(args.vl_model_name)
+        tokenizer = getattr(vlm_processor, "tokenizer", None)
+        if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
     # if args.text_mode == "raw" and text_tokenizer is None:
     #     from transformers import AutoTokenizer
@@ -493,68 +508,43 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
-        image_processor=image_processor,
+        vlm_processor=vlm_processor,
         text_prompt_template=args.text_prompt_template,
         return_mode=args.return_mode,
         n_step=args.n_step,
         gamma=args.gamma,
         keep_raw_video=False,
+        include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
+        vlm_max_text_len=args.vl_max_text_len,
+        vlm_truncation=(args.vl_backend != "llava_video"),
+        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
     )
 
     def _collate(batch):
-        if not torch.is_tensor(batch[0]["video"]):
-            raise RuntimeError(
-                "video is not a tensor. Use --preprocess_in_loader to convert frames to tensors "
-                "or precompute video tensors in the dataset."
-            )
-        if not torch.is_tensor(batch[0]["next_video"]):
-            raise RuntimeError(
-                "next_video is not a tensor. Use --preprocess_in_loader to convert frames to tensors "
-                "or precompute video tensors in the dataset."
-            )
+        def _stack_inputs(items):
+            out = {}
+            keys = items[0].keys()
+            for k in keys:
+                vals = [d[k] for d in items]
+                if torch.is_tensor(vals[0]):
+                    out[k] = torch.stack(vals, dim=0)
+                else:
+                    out[k] = vals
+            return out
+
         out = {
-            "video": torch.stack([b["video"] for b in batch], dim=0),
+            "inputs": _stack_inputs([b["inputs"] for b in batch]),
             "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
             "adj": torch.stack([b["adj"] for b in batch], dim=0),
-            "next_video": torch.stack([b["next_video"] for b in batch], dim=0),
-            "next_robot_obs": torch.stack([b["next_robot_obs"] for b in batch], dim=0),
-            "next_adj": torch.stack([b["next_adj"] for b in batch], dim=0),
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
-        if "image_sizes" in batch[0]:
-            out["image_sizes"] = [b["image_sizes"] for b in batch]
-        if "next_image_sizes" in batch[0]:
-            out["next_image_sizes"] = [b["next_image_sizes"] for b in batch]
-        if args.return_mode == "nstep":
-            out["return"] = torch.stack([b["return"] for b in batch], dim=0).view(-1)
-        if args.text_mode == "raw":
-            texts = [b["text_raw"] for b in batch]
-            if args.vl_backend == "llava_video":
-                token = None
-                vocab = text_tokenizer.get_vocab()
-                if "<video>" in vocab:
-                    token = "<video>"
-                elif "<image>" in vocab:
-                    token = "<image>"
-                else:
-                    for t in getattr(text_tokenizer, "additional_special_tokens", []) or []:
-                        if "image" in t or "video" in t:
-                            token = t
-                            break
-                if token is not None:
-                    texts = [f"{token}\n{t}" for t in texts]
-            tokens = text_tokenizer(
-                texts,
-                padding=True,
-                truncation=True,
-                max_length=args.vl_max_text_len,
-                return_tensors="pt",
-            )
-            out["text_ids"] = tokens["input_ids"]
-            out["text_mask"] = tokens["attention_mask"]
-        else:
-            out["text_emb"] = torch.stack([b["text_emb"] for b in batch], dim=0)
+        if "next_inputs" in batch[0]:
+            out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
+            out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)
+            out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
+        if "returns" in batch[0]:
+            out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
         return out
 
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
@@ -588,32 +578,29 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
     for batch in loader:
         step += 1
-        video = batch["video"]
+        def _move_inputs(inputs):
+            moved = {}
+            for k, v in inputs.items():
+                if torch.is_tensor(v):
+                    moved[k] = v.to(accelerator.device)
+                else:
+                    moved[k] = v
+            return moved
+
+        inputs = _move_inputs(batch["inputs"])
         robot_obs = batch["robot_obs"].to(accelerator.device)
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        image_sizes = batch.get("image_sizes", None)
-        next_image_sizes = batch.get("next_image_sizes", None)
-        if args.return_mode == "td":
-            next_video = batch["next_video"]
+        use_td = args.loss_type != "contrastive" and args.return_mode == "td"
+        if use_td:
+            next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
         else:
-            next_video = None
+            next_inputs = None
             next_robot_obs = None
             next_adj = None
-
-        text_emb = batch.get("text_emb", None)
-        text_raw = batch.get("text_raw", None)
-        text_ids = batch.get("text_ids", None)
-        text_mask = batch.get("text_mask", None)
-        if text_emb is not None:
-            text_emb = text_emb.to(accelerator.device)
-        if text_ids is not None:
-            text_ids = text_ids.to(accelerator.device)
-        if text_mask is not None:
-            text_mask = text_mask.to(accelerator.device)
 
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
@@ -622,19 +609,13 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
                 pred = model(
-                    video,
+                    inputs,
                     robot_obs,
-                    adj,
-                    text_raw=text_raw,
-                    text_emb=text_emb,
-                    text_ids=text_ids.clone() if text_ids is not None else None,
-                    text_mask=text_mask.clone() if text_mask is not None else None,
-                    image_sizes=image_sizes,
-                )
+                    adj)
                 if args.loss_type == "contrastive":
                     # Use returns if available, otherwise use per-clip reward.
-                    if args.return_mode == "nstep" and "return" in batch:
-                        returns = batch["return"].to(accelerator.device)
+                    if args.return_mode == "nstep" and "returns" in batch:
+                        returns = batch["returns"].to(accelerator.device)
                     else:
                         returns = reward
                     loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
@@ -642,13 +623,9 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     if args.return_mode == "td":
                         with torch.no_grad():
                             next_pred = model(
-                                next_video,
+                                next_inputs,
                                 next_robot_obs,
                                 next_adj,
-                                text_emb=text_emb,
-                                text_ids=text_ids.clone() if text_ids is not None else None,
-                                text_mask=text_mask.clone() if text_mask is not None else None,
-                                image_sizes=next_image_sizes,
                             )
                         target = reward + gamma * (1.0 - done) * next_pred
                     else:
