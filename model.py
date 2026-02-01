@@ -252,6 +252,7 @@ class MultimodalValueModel(nn.Module):
         #     )
 
         self.value_head = nn.Linear(lm_hidden, 1)
+        # self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
 
     def forward(
         self,
@@ -273,90 +274,12 @@ class MultimodalValueModel(nn.Module):
         video_list = None
         if isinstance(video, dict):
             inputs = video
-        elif torch.is_tensor(video):
-            video = video.clamp(0, 1)
-            if video.dim() == 4:
-                video = video.unsqueeze(0)
-            video_list = [
-                video[i].permute(0, 2, 3, 1).to(dtype=torch.float16)
-                for i in range(video.shape[0])
-            ]
-        elif isinstance(video, list):
-            if len(video) == 0:
-                raise RuntimeError("Empty video batch.")
-            if isinstance(video[0], list):
-                video_list = video
-            else:
-                video_list = [video]
-        else:
-            raise TypeError(f"Unsupported video type: {type(video)}")
-
-        import imageio
-        import numpy as np
-        def save_video_mp4(_video, path, fps=30):
-            """
-            video: np.ndarray (T, H, W, C)
-            path: output file path, e.g. 'output.mp4'
-            """
-            def _frames_to_numpy(frames):
-                if torch.is_tensor(frames):
-                    return frames.detach().cpu().numpy()
-                if isinstance(frames, list):
-                    out = []
-                    for frame in frames:
-                        if torch.is_tensor(frame):
-                            arr = frame.detach().cpu().numpy()
-                            if arr.ndim == 3 and arr.shape[0] in (1, 3):
-                                arr = arr.transpose(1, 2, 0)
-                        else:
-                            try:
-                                from PIL import Image
-                                if isinstance(frame, Image.Image):
-                                    arr = np.array(frame)
-                                else:
-                                    arr = frame
-                            except Exception:
-                                arr = frame
-                        out.append(arr)
-                    return np.stack(out, axis=0)
-                return np.array(frames)
-
-            _video = _frames_to_numpy(_video)
-            # Ensure uint8
-            if _video.dtype != np.uint8:
-                _video = np.clip(_video, 0, 1)
-                _video = (_video * 255).astype(np.uint8)
-
-            writer = imageio.get_writer(path, fps=fps, codec='libx264')
-            for frame in _video:
-                writer.append_data(frame)
-            writer.close()
-
-        if self.debug_save_video and video_list is not None:
-            for i, _video in enumerate(video_list):
-                save_video_mp4(_video, f"video_{i}.mp4", fps=24)
-
-        if inputs is None:
-            text_raw = "<video><obs>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
-                        The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
-                        without colliding with one another. They also have to be efficient by taking the shortest parth.\
-                        How Good or Bad are the team of robots doing to accomplish the given task? Also tell me why and what you see. Keep your answer short."
-
-            # text_raw = "<video>You are a critic model. What colors do you see in this video? How many frames you see in this video?"
-            text_list = [text_raw] * len(video_list)
-
-            inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
-
+        
         bsz = robot_obs.shape[0]
+        # print('robot_obs shape = ', robot_obs.shape)
         robot_obs = robot_obs[:, :, :, :8].reshape(-1, 40)
         # print('robot_obs shape after = ', robot_obs.shape)
-
         robot_feats = self.robot_enc(robot_obs)
-        # print('robot_feats shape = ', robot_feats.shape)
-        # robot_feats = self.graph_enc(robot_feats, adj)
-        # print('robot_feats shape after GNN = ', robot_feats.shape)
-
-        # print('robot_feats shape = ', robot_feats.shape)
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
@@ -405,6 +328,11 @@ class MultimodalValueModel(nn.Module):
             pooled = final_hidden[:, -1, :]
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
+
+        # print('pooled shape = ', pooled.shape)
+        # print('robot_feats shape = ', robot_feats.shape)
+
+        # value_head_input = torch.cat((pooled, robot_feats), dim=-1)
         value = self.value_head(pooled).squeeze(-1)
         # print('value shape = ', value.shape)
         return value

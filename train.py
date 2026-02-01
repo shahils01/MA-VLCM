@@ -266,24 +266,6 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
-def _compute_n_step_return(buffer, start_idx, n_step, gamma):
-    r0 = buffer[start_idx]["reward"]
-    ret = torch.zeros_like(r0)
-    discount = 1.0
-    for k in range(n_step):
-        idx = start_idx + k
-        if idx >= len(buffer):
-            break
-        r = buffer[idx]["reward"]
-        ret = ret + discount * r
-        done = buffer[idx]["done"]
-        done_flag = bool(done.item() if torch.is_tensor(done) else done)
-        if done_flag:
-            break
-        discount *= gamma
-    return ret
-
-
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -301,7 +283,7 @@ class SequenceWebDataset(IterableDataset):
         gamma=0.99,
         keep_raw_video=False,
         include_next=False,
-        vlm_max_text_len=64,
+        vlm_max_text_len=256,
         vlm_truncation=False,
         vlm_padding="longest",
     ):
@@ -414,11 +396,6 @@ class SequenceWebDataset(IterableDataset):
 
                 returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
 
-                n_step_return = None
-                if self.return_mode == "nstep":
-                    start_idx = i + self.clip_len - 1
-                    n_step_return = _compute_n_step_return(buffer, start_idx, self.n_step, self.gamma)
-
                 out = {
                     "robot_obs": robot_obs,
                     "adj": adj,
@@ -495,10 +472,6 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         tokenizer = getattr(vlm_processor, "tokenizer", None)
         if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
             tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
-
-    # if args.text_mode == "raw" and text_tokenizer is None:
-    #     from transformers import AutoTokenizer
-    #     text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
 
     dataset = SequenceWebDataset(
         shards=shards,
