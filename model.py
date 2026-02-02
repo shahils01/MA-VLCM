@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass
 from typing import Any, Optional
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -40,7 +41,7 @@ class ModelConfig:
     temporal_dropout: float = 0.1
 
     # GNN
-    gnn_layers: int = 2
+    gnn_layers: int = 4
 
     # Fusion
     fusion_hidden: int = 512
@@ -229,30 +230,53 @@ class MultimodalValueModel(nn.Module):
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
-        # self.video_temporal = TemporalTransformer(
-        #     cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
-        # )
+        try:
+            from gat import GNN_Model
+        except Exception as e:
+            raise ImportError(
+                "Failed to import GNN_Model from aero_gnn.py. "
+                "Make sure torch-geometric and torch-scatter are installed."
+            ) from e
 
-        self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        # self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
-        # self.graph_temporal = TemporalTransformer(
-        #     cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
-        # )
+        # Keep the same node feature slice used before flattening (first 8 dims per robot).
+        self.robot_node_dim = min(8, cfg.robot_obs_dim)
+        gnn_heads = max(1, cfg.temporal_heads)
+        gnn_hidden = max(1, math.ceil(cfg.d_model / gnn_heads))
+        gnn_args = SimpleNamespace(
+            num_heads=gnn_heads,
+            iterations=max(1, cfg.gnn_layers),
+            dropout=cfg.temporal_dropout,
+            num_layers=1,
+            add_dropout=False,
+            algorithm_name="mappo_dgnn",
+            lambd_gnn=1.0,
+        )
+        self.robot_gnn = GNN_Model(
+            args=gnn_args,
+            in_channels=self.robot_node_dim,
+            hid_channels=gnn_hidden,
+            out_channels=cfg.d_model,
+            num_agents=cfg.num_robots,
+        )
 
-        # self.text_proj = nn.Linear(cfg.text_dim, cfg.d_model)
+        # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
+        self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
 
-        # fused_dim = cfg.d_model * 3
-        # if cfg.use_moe:
-        #     self.fusion = MoEFeedForward(fused_dim, cfg.fusion_hidden, cfg.moe_experts, cfg.moe_top_k)
-        # else:
-        #     self.fusion = nn.Sequential(
-        #         nn.Linear(fused_dim, cfg.fusion_hidden),
-        #         nn.GELU(),
-        #         nn.Linear(cfg.fusion_hidden, fused_dim),
-        #     )
+    def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
+        # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
+        bsz, num_nodes, _ = adj.shape
+        nz = (adj > 0).nonzero(as_tuple=False)
+        if nz.numel() == 0:
+            # Fallback to self-loops when there are no edges.
+            base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
+            return torch.stack([base, base], dim=0)
 
-        self.value_head = nn.Linear(lm_hidden, 1)
-        # self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
+        batch_idx = nz[:, 0]
+        src = nz[:, 1]
+        dst = nz[:, 2]
+        flat_src = batch_idx * num_nodes + src
+        flat_dst = batch_idx * num_nodes + dst
+        return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
 
     def forward(
         self,
@@ -276,10 +300,24 @@ class MultimodalValueModel(nn.Module):
             inputs = video
         
         bsz = robot_obs.shape[0]
-        # print('robot_obs shape = ', robot_obs.shape)
-        robot_obs = robot_obs[:, :, :, :8].reshape(-1, 40)
-        # print('robot_obs shape after = ', robot_obs.shape)
-        robot_feats = self.robot_enc(robot_obs)
+        # # print('robot_obs shape = ', robot_obs.shape)
+        # robot_obs = robot_obs[:, -1, :, :8].reshape(-1, 40)
+        # # print('robot_obs shape after = ', robot_obs.shape)
+        # robot_feats = self.robot_enc(robot_obs)
+
+        num_nodes = robot_obs.shape[2]
+        if num_nodes != self.cfg.num_robots:
+            raise RuntimeError(
+                f"robot_obs has {num_nodes} nodes, but config expects {self.cfg.num_robots}. "
+                "Set --num_robots to match your dataset."
+            )
+
+        # Use only the last-step robot obs and encode team structure with GNN.
+        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
+        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
+        edge_index = self._adj_to_batched_edge_index(adj_last)
+        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
@@ -289,17 +327,14 @@ class MultimodalValueModel(nn.Module):
             inputs["attention_mask"] = attn_mask.clone()
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
-        # Pool robot features to a single token per batch, then project to LM hidden size.
-        if robot_feats.shape[0] % bsz == 0:
-            robot_seq = robot_feats.view(bsz, -1, robot_feats.shape[-1])
-            obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
-        else:
-            obs_token = self.obs_to_lm(robot_feats.mean(dim=0, keepdim=True)).unsqueeze(0)
+        # Pool team graph features to one token and inject at <obs>.
+        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
         obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
 
         obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
+
             if obs_mask.any():
                 # Avoid in-place updates that can break autograd version tracking.
                 obs_mask = obs_mask.unsqueeze(-1)
@@ -329,10 +364,7 @@ class MultimodalValueModel(nn.Module):
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
 
-        # print('pooled shape = ', pooled.shape)
-        # print('robot_feats shape = ', robot_feats.shape)
-
-        # value_head_input = torch.cat((pooled, robot_feats), dim=-1)
-        value = self.value_head(pooled).squeeze(-1)
+        value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
+        value = self.value_head(value_head_input).squeeze(-1)
         # print('value shape = ', value.shape)
         return value
