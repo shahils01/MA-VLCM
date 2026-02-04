@@ -1,5 +1,7 @@
 import math
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -14,6 +16,7 @@ class ModelConfig:
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
+    quantization_config: Optional[Any] = None
 
     # Video
     video_channels: int = 3
@@ -84,8 +87,11 @@ class LLaVAVideoBackbone(nn.Module):
         if "<obs>" not in self.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
+        model_kwargs = {"torch_dtype": dtype}
+        if cfg.quantization_config is not None:
+            model_kwargs["quantization_config"] = cfg.quantization_config
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, torch_dtype=dtype
+            cfg.vl_model_name, **model_kwargs
         )
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
             self.model.resize_token_embeddings(len(self.tokenizer))
@@ -110,7 +116,7 @@ class LLaVAVideoBackbone(nn.Module):
         moved = {}
         for k, v in inputs.items():
             if torch.is_tensor(v):
-                if k in ("pixel_values", "video", "videos"):
+                if k in ("pixel_values", "pixel_values_videos", "video_values", "video", "videos"):
                     moved[k] = v.to(self.device, dtype=self._dtype)
                 else:
                     moved[k] = v.to(self.device)
@@ -228,7 +234,34 @@ class MultimodalValueModel(nn.Module):
         #     cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
         # )
 
-        self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
+        try:
+            from aero_gnn import GNN_Model
+        except Exception as e:
+            raise ImportError(
+                "Failed to import GNN_Model from aero_gnn.py. "
+                "Make sure torch-geometric and torch-scatter are installed."
+            ) from e
+
+        # Keep the same node feature slice used before flattening (first 8 dims per robot).
+        self.robot_node_dim = min(8, cfg.robot_obs_dim)
+        gnn_heads = max(1, cfg.temporal_heads)
+        gnn_hidden = max(1, math.ceil(cfg.d_model / gnn_heads))
+        gnn_args = SimpleNamespace(
+            num_heads=gnn_heads,
+            iterations=max(1, cfg.gnn_layers),
+            dropout=cfg.temporal_dropout,
+            num_layers=1,
+            add_dropout=False,
+            algorithm_name="mappo_dgnn",
+            lambd_gnn=1.0,
+        )
+        self.robot_gnn = GNN_Model(
+            args=gnn_args,
+            in_channels=self.robot_node_dim,
+            hid_channels=gnn_hidden,
+            out_channels=cfg.d_model,
+            num_agents=cfg.num_robots,
+        )
         # self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
         # self.graph_temporal = TemporalTransformer(
         #     cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
@@ -247,6 +280,23 @@ class MultimodalValueModel(nn.Module):
         #     )
 
         self.value_head = nn.Linear(lm_hidden, 1)
+        # self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
+
+    def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
+        # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
+        bsz, num_nodes, _ = adj.shape
+        nz = (adj > 0).nonzero(as_tuple=False)
+        if nz.numel() == 0:
+            # Fallback to self-loops when there are no edges.
+            base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
+            return torch.stack([base, base], dim=0)
+
+        batch_idx = nz[:, 0]
+        src = nz[:, 1]
+        dst = nz[:, 2]
+        flat_src = batch_idx * num_nodes + src
+        flat_dst = batch_idx * num_nodes + dst
+        return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
 
     def forward(
         self,
@@ -259,79 +309,59 @@ class MultimodalValueModel(nn.Module):
         text_mask=None,
         image_sizes=None,
     ):
-        # video: torch.Tensor [B, T, C, H, W] or list of list of PIL images
+        # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        video = video.squeeze().clip(0,1)
-        video_list = [
-            video[i].permute(0, 2, 3, 1).to(dtype=torch.float16)#.cpu().numpy()
-            for i in range(video.shape[0])
-        ]
+        inputs = None
+        if isinstance(video, dict):
+            inputs = video
+        
+        bsz = robot_obs.shape[0]
+        num_nodes = robot_obs.shape[2]
+        if num_nodes != self.cfg.num_robots:
+            raise RuntimeError(
+                f"robot_obs has {num_nodes} nodes, but config expects {self.cfg.num_robots}. "
+                "Set --num_robots to match your dataset."
+            )
 
-        import imageio
-        import numpy as np
-        def save_video_mp4(_video, path, fps=30):
-            """
-            video: np.ndarray (T, H, W, C)
-            path: output file path, e.g. 'output.mp4'
-            """
-            _video = _video.cpu().numpy()
-            # Ensure uint8
-            if _video.dtype != np.uint8:
-                # _video = np.clip(_video, 0, 1)
-                _video = (_video * 255).astype(np.uint8)
-
-            writer = imageio.get_writer(path, fps=fps, codec='libx264')
-            for frame in _video:
-                writer.append_data(frame)
-            writer.close()
-
-        if self.debug_save_video:
-            for i, _video in enumerate(video_list):
-                save_video_mp4(_video, f"video_{i}.mp4", fps=24)
-
-        text_raw = "<video><obs>You are a critic model. You are given video of a tean of robots (denoted as circular dots with heading denoted by an arrow).\
-                    The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal\
-                    without colliding with one another. They also have to be efficient by taking the shortest parth.\
-                    How Good or Bad are the team of robots doing to accomplish the given task? Also tell me why and what you see. Keep your answer short."
-
-        # text_raw = "<video>You are a critic model. What colors do you see in this video? How many frames you see in this video?"
-        text_list = [text_raw] * len(video_list)
-
-        inputs = self.backbone.prepare_inputs(text=text_list, videos=video_list, padding=False)
-
-        robot_obs = robot_obs[:,:,:,:8].reshape(-1,40)
-        # print('robot_obs shape after = ', robot_obs.shape)
-
-        robot_feats = self.robot_enc(robot_obs)
-        # print('robot_feats shape = ', robot_feats.shape)
-        # robot_feats = self.graph_enc(robot_feats, adj)
-        # print('robot_feats shape after GNN = ', robot_feats.shape)
-
-        # print('robot_feats shape = ', robot_feats.shape)
+        # Use only the last-step robot obs and encode team structure with GNN.
+        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
+        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
+        edge_index = self._adj_to_batched_edge_index(adj_last)
+        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
-        input_ids = inputs["input_ids"]
+        input_ids = inputs["input_ids"].clone()
+        attn_mask = inputs.get("attention_mask")
+        if attn_mask is not None:
+            inputs["attention_mask"] = attn_mask.clone()
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
-        # Pool robot features to a single token per batch, then project to LM hidden size.
-        bsz = input_ids.shape[0]
-        if robot_feats.shape[0] % bsz == 0:
-            robot_seq = robot_feats.view(bsz, -1, robot_feats.shape[-1])
-            obs_token = self.obs_to_lm(robot_seq.mean(dim=1, keepdim=True))
-        else:
-            obs_token = self.obs_to_lm(robot_feats.mean(dim=0, keepdim=True)).unsqueeze(0)
+        # Pool team graph features to one token and inject at <obs>.
+        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
         obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
 
         obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
-            for b in range(bsz):
-                if obs_mask[b].any():
-                    inputs_embeds[b, obs_mask[b]] = obs_token[b].expand(obs_mask[b].sum(), -1)
+            if obs_mask.any():
+                # Avoid in-place updates that can break autograd version tracking.
+                obs_mask = obs_mask.unsqueeze(-1)
+                if input_ids.shape[0] == bsz:
+                    # input_ids: [B, S]
+                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
+                elif input_ids.shape[1] == bsz:
+                    # input_ids: [S, B]
+                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                else:
+                    raise RuntimeError(
+                        f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
+                    )
+                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
@@ -346,6 +376,7 @@ class MultimodalValueModel(nn.Module):
             pooled = final_hidden[:, -1, :]
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
+
         value = self.value_head(pooled).squeeze(-1)
         # print('value shape = ', value.shape)
         return value

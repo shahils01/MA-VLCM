@@ -1,13 +1,33 @@
 import argparse
 import os
 import io
+import functools
+import inspect
 
 from PIL import Image
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
+try:
+    from accelerate.utils import DistributedDataParallelKwargs
+except Exception:
+    DistributedDataParallelKwargs = None
+try:
+    from accelerate.utils import FullyShardedDataParallelPlugin
+except Exception:
+    try:
+        from accelerate.utils import FSDPPlugin as FullyShardedDataParallelPlugin
+    except Exception:
+        FullyShardedDataParallelPlugin = None
+try:
+    from torch.distributed.fsdp import CPUOffload
+    from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+except Exception:
+    CPUOffload = None
+    size_based_auto_wrap_policy = None
 
 import webdataset as wds
 from model import ModelConfig, MultimodalValueModel
@@ -39,11 +59,17 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--loss_type", type=str, default="td", choices=["td", "contrastive"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
     p.add_argument("--contrastive_margin", type=float, default=0.0)
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
+    p.add_argument("--fsdp", action="store_true", help="Use FSDP to shard model parameters across GPUs")
+    p.add_argument("--fsdp_min_num_params", type=int, default=1_000_000, help="Auto-wrap threshold for FSDP")
+    p.add_argument("--fsdp_cpu_offload", action="store_true", help="Offload FSDP parameters to CPU when not in use")
+    p.add_argument("--fsdp_use_orig_params", action="store_true", help="Use FSDP use_orig_params to allow mixed requires_grad")
+    p.add_argument("--ddp_find_unused_parameters", action="store_true", help="Set DDP find_unused_parameters=True")
+    p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 
     # DeepSeek VLM backbone
     p.add_argument(
@@ -53,6 +79,14 @@ def parse_args():
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
     p.add_argument("--freeze_vl", action="store_true")
+
+    # PEFT / LoRA
+    p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
+    p.add_argument("--lora_r", type=int, default=16)
+    p.add_argument("--lora_alpha", type=int, default=32)
+    p.add_argument("--lora_dropout", type=float, default=0.05)
+    p.add_argument("--lora_target_modules", type=str, default="")
+    p.add_argument("--lora_bias", type=str, default="none", choices=["none", "all", "lora_only"])
 
     # Video
     p.add_argument("--video_channels", type=int, default=3)
@@ -98,6 +132,7 @@ def build_model(args, device):
         vl_dtype=args.vl_dtype,
         vl_max_text_len=args.vl_max_text_len,
         freeze_vl=args.freeze_vl,
+        quantization_config=getattr(args, "quantization_config", None),
         video_channels=args.video_channels,
         video_height=args.video_height,
         video_width=args.video_width,
@@ -120,6 +155,40 @@ def build_model(args, device):
         debug_save_video=args.debug_save_video,
     )
     return MultimodalValueModel(cfg, device=device)
+
+
+def _parse_lora_targets(args):
+    if args.lora_target_modules:
+        return [t.strip() for t in args.lora_target_modules.split(",") if t.strip()]
+    # Default targets for LLaMA-style blocks used by LLaVA
+    return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+
+def _apply_peft(model, args):
+    if args.peft == "none":
+        return model
+    try:
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    except Exception as e:
+        raise RuntimeError("PEFT requested but 'peft' is not installed. `pip install peft`.") from e
+
+    # Freeze backbone weights; keep custom heads trainable.
+    for p in model.backbone.model.parameters():
+        p.requires_grad = False
+
+    if args.peft == "qlora":
+        model.backbone.model = prepare_model_for_kbit_training(model.backbone.model)
+
+    lora_cfg = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias=args.lora_bias,
+        target_modules=_parse_lora_targets(args),
+        task_type="CAUSAL_LM",
+    )
+    model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
+    return model
 
 
 def _as_numpy(x):
@@ -174,6 +243,8 @@ def _save_debug_video(batch, args, accelerator, tag="train"):
     if not accelerator.is_main_process:
         return
     os.makedirs(args.debug_out_dir, exist_ok=True)
+    if "video" not in batch:
+        return
     video = batch["video"]
     out_dir = os.path.join(args.debug_out_dir, f"{tag}_sample")
     os.makedirs(out_dir, exist_ok=True)
@@ -195,24 +266,6 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
-def _compute_n_step_return(buffer, start_idx, n_step, gamma):
-    r0 = buffer[start_idx]["reward"]
-    ret = torch.zeros_like(r0)
-    discount = 1.0
-    for k in range(n_step):
-        idx = start_idx + k
-        if idx >= len(buffer):
-            break
-        r = buffer[idx]["reward"]
-        ret = ret + discount * r
-        done = buffer[idx]["done"]
-        done_flag = bool(done.item() if torch.is_tensor(done) else done)
-        if done_flag:
-            break
-        discount *= gamma
-    return ret
-
-
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -223,12 +276,16 @@ class SequenceWebDataset(IterableDataset):
         robot_source,
         reward_reduce,
         done_reduce,
-        image_processor=None,
+        vlm_processor=None,
         text_prompt_template=None,
         return_mode="td",
         n_step=50,
         gamma=0.99,
         keep_raw_video=False,
+        include_next=False,
+        vlm_max_text_len=256,
+        vlm_truncation=False,
+        vlm_padding="longest",
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -237,12 +294,55 @@ class SequenceWebDataset(IterableDataset):
         self.robot_source = robot_source
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
-        self.image_processor = image_processor
+        self.vlm_processor = vlm_processor
         self.text_prompt_template = text_prompt_template
         self.return_mode = return_mode
         self.n_step = n_step
         self.gamma = gamma
         self.keep_raw_video = keep_raw_video
+        self.include_next = include_next
+        self.vlm_max_text_len = vlm_max_text_len
+        self.vlm_truncation = vlm_truncation
+        self.vlm_padding = vlm_padding
+
+    @staticmethod
+    def _as_bool(x):
+        if torch.is_tensor(x):
+            if x.numel() == 0:
+                return False
+            return bool(x.detach().float().max().item() > 0.0)
+        return bool(x)
+
+    @staticmethod
+    def _terminal_pad_from(frame):
+        padded = dict(frame)
+        reward = frame["reward"]
+        done = frame["done"]
+        if torch.is_tensor(reward):
+            padded["reward"] = reward.new_zeros(())
+        else:
+            padded["reward"] = 0.0
+        if torch.is_tensor(done):
+            padded["done"] = torch.ones_like(done, dtype=done.dtype)
+        else:
+            padded["done"] = True
+        return padded
+
+    def _apply_done_termination(self, clip):
+        """Terminate clip at first done=True and pad the tail with terminal-frame copies."""
+        done_idx = None
+        for idx, frame in enumerate(clip):
+            if self._as_bool(frame["done"]):
+                done_idx = idx
+                break
+        if done_idx is None or done_idx == len(clip) - 1:
+            return clip
+
+        terminal = clip[done_idx]
+        out = list(clip[: done_idx + 1])
+        for _ in range(done_idx + 1, len(clip)):
+            out.append(self._terminal_pad_from(terminal))
+        return out
 
     def __iter__(self):
         if wds is None:
@@ -267,80 +367,92 @@ class SequenceWebDataset(IterableDataset):
         buffer = []
 
         def flush_buffer():
-            if len(buffer) < self.clip_len + 1:
+            min_len = self.clip_len + (1 if self.include_next else 0)
+            if len(buffer) < min_len:
                 return
-            max_i = len(buffer) - self.clip_len - 1
-            for i in range(0, max_i + 1, self.clip_stride):
-                clip = buffer[i : i + self.clip_len]
-                next_clip = buffer[i + 1 : i + 1 + self.clip_len]
+            max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
+            start_idxs = list(range(0, max_i + 1, self.clip_stride))
+            if len(start_idxs) > 1:
+                perm = torch.randperm(len(start_idxs)).tolist()
+                start_idxs = [start_idxs[p] for p in perm]
+
+            for i in start_idxs:
+                clip = self._apply_done_termination(buffer[i : i + self.clip_len])
 
                 raw_video = [f["image"] for f in clip]
-                raw_next_video = [f["image"] for f in next_clip]
-                if self.image_processor is not None:
-                    def _proc(frames):
+                raw_next_video = None
+                if self.include_next:
+                    next_clip = self._apply_done_termination(buffer[i + 1 : i + 1 + self.clip_len])
+                    raw_next_video = [f["image"] for f in next_clip]
+                if self.vlm_processor is not None:
+                    def _proc(frames, text):
+                        if not isinstance(text, str):
+                            text = self.text_prompt_template
+                        tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                        if tokenizer is not None:
+                            vocab = tokenizer.get_vocab()
+                            if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
+                                text = f"<video>\n{text}"
+                            if "<obs>" in vocab and "<obs>" not in text:
+                                if "<video>" in text:
+                                    text = text.replace("<video>\n", "<video><obs>\n", 1)
+                                else:
+                                    text = f"<obs>\n{text}"
                         try:
-                            proc = self.image_processor(videos=frames, return_tensors="pt")
+                            max_len = self.vlm_max_text_len if self.vlm_truncation else None
+                            inputs = self.vlm_processor(
+                                text=text,
+                                videos=frames,
+                                return_tensors="pt",
+                                padding=self.vlm_padding,
+                                truncation=self.vlm_truncation,
+                                max_length=max_len,
+                            )
                         except TypeError:
-                            proc = self.image_processor(images=frames, return_tensors="pt")
-                        if "pixel_values" in proc:
-                            pixel_values = proc["pixel_values"]
-                        elif "video_values" in proc:
-                            pixel_values = proc["video_values"]
-                        elif "pixel_values_videos" in proc:
-                            pixel_values = proc["pixel_values_videos"]
-                        elif hasattr(proc, "pixel_values"):
-                            pixel_values = proc.pixel_values
-                        elif hasattr(proc, "video_values"):
-                            pixel_values = proc.video_values
-                        else:
-                            raise KeyError("image processor output has no pixel_values/video_values")
-                        image_sizes = proc.get("image_sizes", None)
-                        return pixel_values, image_sizes
+                            print('using image processor instead of video processor')
+                            inputs = self.vlm_processor(
+                                images=frames,
+                                return_tensors="pt",
+                            )
+                        packed = {}
+                        for k, v in dict(inputs).items():
+                            if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
+                                v = v.squeeze(0)
+                            packed[k] = v
+                        return packed
 
-                    video, image_sizes = _proc(raw_video)
-                    next_video, next_image_sizes = _proc(raw_next_video)
+                    text = clip[0]["text"]
+                    inputs = _proc(raw_video, text)
+                    next_inputs = None
+                    if self.include_next:
+                        next_inputs = _proc(raw_next_video, text)
                 else:
-                    video = raw_video
-                    next_video = raw_next_video
+                    raise RuntimeError("Dataloader proprocessor not set.")
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
-                next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
-
                 adj = torch.stack([f["adj"] for f in clip], dim=0)
-                next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
-
-                text = clip[0]["text"]
+                if self.include_next:
+                    next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
+                    next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
 
                 reward = clip[-1]["reward"]
                 done = clip[-1]["done"]
-                n_step_return = None
-                if self.return_mode == "nstep":
-                    start_idx = i + self.clip_len - 1
-                    n_step_return = _compute_n_step_return(buffer, start_idx, self.n_step, self.gamma)
+
+                returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
 
                 out = {
-                    "video": video,
                     "robot_obs": robot_obs,
                     "adj": adj,
-                    "next_video": next_video,
-                    "next_robot_obs": next_robot_obs,
-                    "next_adj": next_adj,
                     "reward": reward.view(1),
+                    "returns": returns.view(1),
                     "done": done.view(1),
                 }
-                if self.image_processor is not None and image_sizes is not None:
-                    out["image_sizes"] = image_sizes
-                if self.image_processor is not None and next_image_sizes is not None:
-                    out["next_image_sizes"] = next_image_sizes
-                if self.keep_raw_video:
-                    out["raw_video"] = raw_video
-                    out["raw_next_video"] = raw_next_video
-                if n_step_return is not None:
-                    out["return"] = n_step_return.view(1)
-                if self.text_mode == "raw":
-                    out["text_raw"] = text
-                else:
-                    out["text_emb"] = text
+                out["inputs"] = inputs
+                if self.include_next:
+                    out["next_inputs"] = next_inputs
+                    out["next_robot_obs"] = next_robot_obs
+                    out["next_adj"] = next_adj
+
                 yield out
 
         for sample in dataset:
@@ -397,24 +509,13 @@ class SequenceWebDataset(IterableDataset):
 
 
 def webdataset_loader(args, shards, batch_size, num_workers):
-    image_processor = None
-    text_tokenizer = None
+    vlm_processor = None
     if args.preprocess_in_loader:
-        from transformers import AutoProcessor
-        proc = AutoProcessor.from_pretrained(args.vl_model_name)
-        image_processor = getattr(proc, "video_processor", None) or getattr(
-            proc, "image_processor", None
-        ) or getattr(proc, "vision_processor", None)
-        text_tokenizer = getattr(proc, "tokenizer", None)
-        
-        if image_processor is None:
-            raise RuntimeError("Could not find image processor for the LLaVA-NeXT-Video FM.")
-        if text_tokenizer is None:
-            raise RuntimeError("Could not find text tokenizerr for the sLLaVA-NeXT-Video FM.")
-
-    # if args.text_mode == "raw" and text_tokenizer is None:
-    #     from transformers import AutoTokenizer
-    #     text_tokenizer = AutoTokenizer.from_pretrained(args.vl_model_name)
+        from transformers import LlavaNextVideoProcessor
+        vlm_processor = LlavaNextVideoProcessor.from_pretrained(args.vl_model_name)
+        tokenizer = getattr(vlm_processor, "tokenizer", None)
+        if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
     dataset = SequenceWebDataset(
         shards=shards,
@@ -424,68 +525,43 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
-        image_processor=image_processor,
+        vlm_processor=vlm_processor,
         text_prompt_template=args.text_prompt_template,
         return_mode=args.return_mode,
         n_step=args.n_step,
         gamma=args.gamma,
         keep_raw_video=False,
+        include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
+        vlm_max_text_len=args.vl_max_text_len,
+        vlm_truncation=(args.vl_backend != "llava_video"),
+        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
     )
 
     def _collate(batch):
-        if not torch.is_tensor(batch[0]["video"]):
-            raise RuntimeError(
-                "video is not a tensor. Use --preprocess_in_loader to convert frames to tensors "
-                "or precompute video tensors in the dataset."
-            )
-        if not torch.is_tensor(batch[0]["next_video"]):
-            raise RuntimeError(
-                "next_video is not a tensor. Use --preprocess_in_loader to convert frames to tensors "
-                "or precompute video tensors in the dataset."
-            )
+        def _stack_inputs(items):
+            out = {}
+            keys = items[0].keys()
+            for k in keys:
+                vals = [d[k] for d in items]
+                if torch.is_tensor(vals[0]):
+                    out[k] = torch.stack(vals, dim=0)
+                else:
+                    out[k] = vals
+            return out
+
         out = {
-            "video": torch.stack([b["video"] for b in batch], dim=0),
+            "inputs": _stack_inputs([b["inputs"] for b in batch]),
             "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
             "adj": torch.stack([b["adj"] for b in batch], dim=0),
-            "next_video": torch.stack([b["next_video"] for b in batch], dim=0),
-            "next_robot_obs": torch.stack([b["next_robot_obs"] for b in batch], dim=0),
-            "next_adj": torch.stack([b["next_adj"] for b in batch], dim=0),
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
-        if "image_sizes" in batch[0]:
-            out["image_sizes"] = [b["image_sizes"] for b in batch]
-        if "next_image_sizes" in batch[0]:
-            out["next_image_sizes"] = [b["next_image_sizes"] for b in batch]
-        if args.return_mode == "nstep":
-            out["return"] = torch.stack([b["return"] for b in batch], dim=0).view(-1)
-        if args.text_mode == "raw":
-            texts = [b["text_raw"] for b in batch]
-            if args.vl_backend == "llava_video":
-                token = None
-                vocab = text_tokenizer.get_vocab()
-                if "<video>" in vocab:
-                    token = "<video>"
-                elif "<image>" in vocab:
-                    token = "<image>"
-                else:
-                    for t in getattr(text_tokenizer, "additional_special_tokens", []) or []:
-                        if "image" in t or "video" in t:
-                            token = t
-                            break
-                if token is not None:
-                    texts = [f"{token}\n{t}" for t in texts]
-            tokens = text_tokenizer(
-                texts,
-                padding=True,
-                truncation=True,
-                max_length=args.vl_max_text_len,
-                return_tensors="pt",
-            )
-            out["text_ids"] = tokens["input_ids"]
-            out["text_mask"] = tokens["attention_mask"]
-        else:
-            out["text_emb"] = torch.stack([b["text_emb"] for b in batch], dim=0)
+        if "next_inputs" in batch[0]:
+            out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
+            out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)
+            out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
+        if "returns" in batch[0]:
+            out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
         return out
 
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
@@ -499,7 +575,7 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     sign = diff_r.sign()
     mask = sign.ne(0)
     if mask.sum() == 0:
-        return torch.tensor(0.0, device=scores.device, dtype=scores.dtype)
+        return scores.sum() * 0.0
     signed = diff_s * sign
     if margin != 0.0:
         signed = signed - margin
@@ -519,77 +595,63 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
     for batch in loader:
         step += 1
-        video = batch["video"]
+        def _move_inputs(inputs):
+            moved = {}
+            for k, v in inputs.items():
+                if torch.is_tensor(v):
+                    moved[k] = v.to(accelerator.device)
+                else:
+                    moved[k] = v
+            return moved
+
+        inputs = _move_inputs(batch["inputs"])
         robot_obs = batch["robot_obs"].to(accelerator.device)
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        image_sizes = batch.get("image_sizes", None)
-        next_image_sizes = batch.get("next_image_sizes", None)
-        if args.return_mode == "td":
-            next_video = batch["next_video"]
+        use_td = args.loss_type != "contrastive" and args.return_mode == "td"
+        if use_td:
+            next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
         else:
-            next_video = None
+            next_inputs = None
             next_robot_obs = None
             next_adj = None
-
-        text_emb = batch.get("text_emb", None)
-        text_raw = batch.get("text_raw", None)
-        text_ids = batch.get("text_ids", None)
-        text_mask = batch.get("text_mask", None)
-        if text_emb is not None:
-            text_emb = text_emb.to(accelerator.device)
-        if text_ids is not None:
-            text_ids = text_ids.to(accelerator.device)
-        if text_mask is not None:
-            text_mask = text_mask.to(accelerator.device)
 
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
             run_epoch._debug_saved = True
 
-        if train:
-            optimizer.zero_grad(set_to_none=True)
-
-        with torch.set_grad_enabled(train):
-            pred = model(
-                video,
-                robot_obs,
-                adj,
-                text_raw=text_raw,
-                text_emb=text_emb,
-                text_ids=text_ids.clone() if text_ids is not None else None,
-                text_mask=text_mask.clone() if text_mask is not None else None,
-                image_sizes=image_sizes,
-            )
-            if args.loss_type == "contrastive":
-                # Use returns if available, otherwise use per-clip reward.
-                if args.return_mode == "nstep" and "return" in batch:
-                    returns = batch["return"].to(accelerator.device)
+        with accelerator.accumulate(model):
+            with torch.set_grad_enabled(train):
+                pred = model(
+                    inputs,
+                    robot_obs,
+                    adj)
+                if args.loss_type == "contrastive":
+                    # Use returns if available, otherwise use per-clip reward.
+                    if args.return_mode == "nstep" and "returns" in batch:
+                        returns = batch["returns"].to(accelerator.device)
+                    else:
+                        returns = reward
+                    loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
                 else:
-                    returns = reward
-                loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
-            else:
-                if args.return_mode == "td":
-                    with torch.no_grad():
-                        next_pred = model(
-                            next_video,
-                            next_robot_obs,
-                            next_adj,
-                            text_emb=text_emb,
-                            text_ids=text_ids.clone() if text_ids is not None else None,
-                            text_mask=text_mask.clone() if text_mask is not None else None,
-                            image_sizes=next_image_sizes,
-                        )
-                    target = reward + gamma * (1.0 - done) * next_pred
-                else:
-                    target = batch["return"].to(accelerator.device)
-                loss = loss_fn(pred, target)
-            if train:
-                accelerator.backward(loss)
-                optimizer.step()
+                    if args.return_mode == "td":
+                        with torch.no_grad():
+                            next_pred = model(
+                                next_inputs,
+                                next_robot_obs,
+                                next_adj,
+                            )
+                        target = reward + gamma * (1.0 - done) * next_pred
+                    else:
+                        target = batch["return"].to(accelerator.device)
+                    loss = loss_fn(pred, target)
+                if train:
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
 
         total_loss += loss.item()
         if log_every > 0 and step % log_every == 0:
@@ -607,8 +669,86 @@ def main():
     if args.preprocess_in_loader:
         args.video_preprocessed = True
 
-    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    if args.peft == "qlora" and args.fsdp:
+        raise RuntimeError("FSDP + QLoRA is not supported. Use DDP (no --fsdp) or LoRA.")
+
+    if args.peft == "qlora":
+        try:
+            from transformers import BitsAndBytesConfig
+        except Exception as e:
+            raise RuntimeError("QLoRA requested but bitsandbytes/transformers are not available.") from e
+        if args.vl_dtype == "float16":
+            compute_dtype = torch.float16
+        elif args.vl_dtype == "float32":
+            compute_dtype = torch.float32
+        else:
+            compute_dtype = torch.bfloat16
+        args.quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+        )
+    else:
+        args.quantization_config = None
+
+    fsdp_plugin = None
+    if args.fsdp:
+        if FullyShardedDataParallelPlugin is None:
+            raise RuntimeError("FSDP requested but accelerate FSDP plugin is unavailable.")
+        fsdp_kwargs = {}
+        use_orig_params = args.fsdp_use_orig_params or (args.peft != "none")
+        if size_based_auto_wrap_policy is not None:
+            fsdp_kwargs["auto_wrap_policy"] = functools.partial(
+                size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params
+            )
+        else:
+            try:
+                params = inspect.signature(FullyShardedDataParallelPlugin).parameters
+                if "min_num_params" in params:
+                    fsdp_kwargs["min_num_params"] = args.fsdp_min_num_params
+            except Exception:
+                pass
+        try:
+            params = inspect.signature(FullyShardedDataParallelPlugin).parameters
+            if "use_orig_params" in params:
+                fsdp_kwargs["use_orig_params"] = use_orig_params
+        except Exception:
+            pass
+        if args.fsdp_cpu_offload:
+            if CPUOffload is None:
+                raise RuntimeError("FSDP CPU offload requested but torch.distributed.fsdp is unavailable.")
+            fsdp_kwargs["cpu_offload"] = CPUOffload(offload_params=True)
+        fsdp_plugin = FullyShardedDataParallelPlugin(**fsdp_kwargs)
+
+    ddp_kwargs = None
+    if not args.fsdp and DistributedDataParallelKwargs is not None:
+        find_unused = args.ddp_find_unused_parameters or (args.peft != "none") or args.freeze_vl
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
+
+    accelerator = Accelerator(
+        mixed_precision=args.mixed_precision,
+        fsdp_plugin=fsdp_plugin,
+        gradient_accumulation_steps=max(1, args.grad_accum_steps),
+        kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
+    )
     model = build_model(args, device=accelerator.device)
+    model = _apply_peft(model, args)
+    if args.fsdp:
+        if args.mixed_precision == "bf16":
+            target_dtype = torch.bfloat16
+        elif args.mixed_precision == "fp16":
+            target_dtype = torch.float16
+        else:
+            target_dtype = torch.float32
+        model = model.to(dtype=target_dtype)
+        # Enforce a uniform dtype across all params/buffers for FSDP flattening.
+        for p in model.parameters():
+            if p.dtype != target_dtype:
+                p.data = p.data.to(dtype=target_dtype)
+        for b in model.buffers():
+            if torch.is_floating_point(b) and b.dtype != target_dtype:
+                b.data = b.data.to(dtype=target_dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)

@@ -1,4 +1,13 @@
+# Core
 torch
-transformers
-webdataset
 accelerate
+webdataset
+numpy
+Pillow
+
+# LLaVA-NeXT-Video backend (HF)
+transformers>=4.46.0
+sentencepiece
+
+# Optional (used by --peft lora / --peft qlora)
+peft
