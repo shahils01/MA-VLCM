@@ -2,3 +2,6 @@ torch
 transformers
 webdataset
 accelerate
+Pillow
+torch-scatter
+torch-geometric

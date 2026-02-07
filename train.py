@@ -43,7 +43,9 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--samples_per_epoch", type=int, default=10000)
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
-    p.add_argument("--text_prompt_template", type=str, default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.")
+    p.add_argument("--text_prompt_template", type=str, default=None)
+    p.add_argument("--dataset_type", type=str, default="default", choices=["default", "rware"])
+    p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=20)
@@ -266,6 +268,52 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
+def _parse_rware_state(state_json, num_robots=None):
+    # state_json: dict from state.json
+    # returns: torch.Tensor [num_robots, 8]
+    # Encoding: [x, y, dx, dy, carrying, 0, 0, 0]
+    
+    agents = state_json.get("agents", [])
+    # Sort by ID just in case
+    agents = sorted(agents, key=lambda x: x.get("id", 0))
+    
+    # If num_robots is specified, ensure we have that many rows
+    if num_robots is None:
+        num_robots = len(agents)
+        
+    obs = torch.zeros((num_robots, 8), dtype=torch.float32)
+    
+    # Direction mapping (matching standard trig unit vectors)
+    # NORTH (+Y), SOUTH (-Y), EAST (+X), WEST (-X)
+    dir_map = {
+        "NORTH": (0.0, 1.0),
+        "SOUTH": (0.0, -1.0),
+        "EAST": (1.0, 0.0),
+        "WEST": (-1.0, 0.0),
+    }
+    
+    for i, ag in enumerate(agents):
+        if i >= num_robots:
+            break
+            
+        # Pos
+        pos = ag.get("pos", [0, 0])
+        obs[i, 0] = float(pos[0])
+        obs[i, 1] = float(pos[1])
+        
+        # Dir
+        d_str = ag.get("dir", "EAST")
+        dx, dy = dir_map.get(d_str, (1.0, 0.0))
+        obs[i, 2] = dx
+        obs[i, 3] = dy
+        
+        # Carrying
+        carrying = ag.get("carrying")
+        obs[i, 4] = 1.0 if carrying is not None else 0.0
+        
+    return obs
+
+
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -286,6 +334,8 @@ class SequenceWebDataset(IterableDataset):
         vlm_max_text_len=256,
         vlm_truncation=False,
         vlm_padding="longest",
+        dataset_type="default",
+        rware_config="tiny-2ag-hard",
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -296,6 +346,8 @@ class SequenceWebDataset(IterableDataset):
         self.done_reduce = done_reduce
         self.vlm_processor = vlm_processor
         self.text_prompt_template = text_prompt_template
+        self.dataset_type = dataset_type
+        self.rware_config = rware_config
         self.return_mode = return_mode
         self.n_step = n_step
         self.gamma = gamma
@@ -429,26 +481,102 @@ class SequenceWebDataset(IterableDataset):
                 buffer = []
                 current_ep = ep_id
 
-            image = sample["image.png"]
-            robot_src = _as_numpy(sample[f"{self.robot_source}.npy"])
-            if hasattr(robot_src, "numpy"):
-                robot_src = robot_src.numpy()
-            robot_obs = torch.tensor(robot_src, dtype=torch.float32)
-
-            num_nodes = robot_obs.shape[0]
-            edge_index = _as_numpy(sample["edge_index.npy"])
-            adj = _edge_index_to_adj(edge_index, num_nodes)
-
-            if self.text_mode == "raw":
-                text = self.text_prompt_template
+            # Image loading
+            if "image.png" in sample:
+                image = sample["image.png"]
+            elif "overhead.png" in sample:
+                image = sample["overhead.png"]
             else:
-                text = _as_numpy(sample["text_emb.npy"])
-                if hasattr(text, "numpy"):
-                    text = text.numpy()
-                text = torch.tensor(text, dtype=torch.float32)
+                # print(f"Warning: No image found for key {key}. Skipping.")
+                continue
 
-            reward = _reward_from_frame(sample, self.reward_reduce)
-            done = _done_from_frame(sample, self.done_reduce)
+            # Robot Obs and Adj
+            if self.dataset_type == "rware":
+                # RWARE specific parsing
+                if "state.json" in sample:
+                    # Parse JSON state
+                    # We don't have easy access to num_robots here unless we hardcode or infer
+                    # Let's infer from list length for now, or use safe default if empty
+                    robot_obs = _parse_rware_state(sample["state.json"])
+                else:
+                    # Fallback or error?
+                    robot_obs = torch.zeros((1, 8), dtype=torch.float32)
+
+                if "adj.npy" in sample:
+                    adj_np = _as_numpy(sample["adj.npy"])
+                    if hasattr(adj_np, "numpy"):
+                        adj_np = adj_np.numpy()
+                    adj = torch.from_numpy(adj_np).float()
+                else:
+                     # Default fully connected or diagonal?
+                     n = robot_obs.shape[0]
+                     adj = torch.eye(n, dtype=torch.float32)
+                
+                # Reward (scalar json)
+                step_reward = 0.0
+                if "reward.json" in sample:
+                    step_reward = float(sample["reward.json"])
+                reward = torch.tensor(step_reward, dtype=torch.float32)
+                
+                # Done (inference)
+                # WebDataset doesn't explicitly mark done for RWARE steps usually until end of file?
+                # or is it in state? state.json doesn't seem to have "done".
+                # We will assume 0 until episode change logic handles it (which is implicit in buffer flush?)
+                # Actually buffer flushes on new episode ID.
+                # So we can set done=0 always here?
+                done = torch.tensor(0.0, dtype=torch.float32)
+
+                # Text Prompt Generation
+                if self.text_prompt_template is None:
+                     # Auto-generate based on config
+                     base_prompt = (
+                        "You are a highly skilled vision language critic model. "
+                        "Your goal is to criticise trajectories of data on the task at hand provided to you. "
+                        "You are trained to identify the differences between good policies and bad policies, and return a critic value."
+                     )
+                     
+                     # Parse config for details
+                     # e.g. "tiny-2ag-hard"
+                     parts = self.rware_config.split("-")
+                     size_map = {"tiny": "11x10", "small": "22x20"} # Approximation
+                     size = "standard"
+                     n_agents = "N"
+                     difficulty = "unknown"
+                     
+                     if len(parts) >= 1: size = size_map.get(parts[0], parts[0])
+                     if len(parts) >= 2: n_agents = parts[1].replace("ag", "")
+                     if len(parts) >= 3: difficulty = parts[2]
+                     
+                     specifics = (
+                         f" The environment is the robotic warehouse (RWARE). "
+                         f"Agents must pick up requested boxes, drop them at goal locations, then return boxes to empty spots. "
+                         f"Config: {self.rware_config}. This means {n_agents} agents in a {size} grid with {difficulty} load."
+                     )
+                     text = base_prompt + specifics
+                else:
+                    text = self.text_prompt_template
+
+            else:
+                # Default MA-VLCM behavior
+                robot_src = _as_numpy(sample[f"{self.robot_source}.npy"])
+                if hasattr(robot_src, "numpy"):
+                    robot_src = robot_src.numpy()
+                robot_obs = torch.tensor(robot_src, dtype=torch.float32)
+
+                num_nodes = robot_obs.shape[0]
+                edge_index = _as_numpy(sample["edge_index.npy"])
+                adj = _edge_index_to_adj(edge_index, num_nodes)
+
+                if self.text_mode == "raw":
+                    text = self.text_prompt_template
+                else:
+                    text = _as_numpy(sample["text_emb.npy"])
+                    if hasattr(text, "numpy"):
+                        text = text.numpy()
+                    text = torch.tensor(text, dtype=torch.float32)
+
+                reward = _reward_from_frame(sample, self.reward_reduce)
+                done = _done_from_frame(sample, self.done_reduce)
 
             buffer.append(
                 {
@@ -483,6 +611,8 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         done_reduce=args.done_reduce,
         vlm_processor=vlm_processor,
         text_prompt_template=args.text_prompt_template,
+        dataset_type=args.dataset_type,
+        rware_config=args.rware_config,
         return_mode=args.return_mode,
         n_step=args.n_step,
         gamma=args.gamma,
