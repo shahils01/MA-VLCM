@@ -116,7 +116,7 @@ def parse_args():
     p.add_argument("--moe_top_k", type=int, default=2)
 
     # Train
-    p.add_argument("--epochs", type=int, default=5)
+    p.add_argument("--epochs", type=int, default=500)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
@@ -305,6 +305,45 @@ class SequenceWebDataset(IterableDataset):
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
 
+    @staticmethod
+    def _as_bool(x):
+        if torch.is_tensor(x):
+            if x.numel() == 0:
+                return False
+            return bool(x.detach().float().max().item() > 0.0)
+        return bool(x)
+
+    @staticmethod
+    def _terminal_pad_from(frame):
+        padded = dict(frame)
+        reward = frame["reward"]
+        done = frame["done"]
+        if torch.is_tensor(reward):
+            padded["reward"] = reward.new_zeros(())
+        else:
+            padded["reward"] = 0.0
+        if torch.is_tensor(done):
+            padded["done"] = torch.ones_like(done, dtype=done.dtype)
+        else:
+            padded["done"] = True
+        return padded
+
+    def _apply_done_termination(self, clip):
+        """Terminate clip at first done=True and pad the tail with terminal-frame copies."""
+        done_idx = None
+        for idx, frame in enumerate(clip):
+            if self._as_bool(frame["done"]):
+                done_idx = idx
+                break
+        if done_idx is None or done_idx == len(clip) - 1:
+            return clip
+
+        terminal = clip[done_idx]
+        out = list(clip[: done_idx + 1])
+        for _ in range(done_idx + 1, len(clip)):
+            out.append(self._terminal_pad_from(terminal))
+        return out
+
     def __iter__(self):
         if wds is None:
             raise RuntimeError("webdataset is not installed.")
@@ -313,12 +352,12 @@ class SequenceWebDataset(IterableDataset):
         try:
             dataset = wds.WebDataset(
                 self.shards,
-                shardshuffle=False,
+                shardshuffle=100,
                 nodesplitter=getattr(wds, "split_by_node", None),
                 workersplitter=getattr(wds, "split_by_worker", None),
             ).decode("pil")
         except TypeError:
-            dataset = wds.WebDataset(self.shards, shardshuffle=False).decode("pil")
+            dataset = wds.WebDataset(self.shards, shardshuffle=100).decode("pil")
             if hasattr(dataset, "split_by_node"):
                 dataset = dataset.split_by_node()
             if hasattr(dataset, "split_by_worker"):
@@ -332,13 +371,18 @@ class SequenceWebDataset(IterableDataset):
             if len(buffer) < min_len:
                 return
             max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
-            for i in range(0, max_i + 1, self.clip_stride):
-                clip = buffer[i : i + self.clip_len]
+            start_idxs = list(range(0, max_i + 1, self.clip_stride))
+            if len(start_idxs) > 1:
+                perm = torch.randperm(len(start_idxs)).tolist()
+                start_idxs = [start_idxs[p] for p in perm]
+
+            for i in start_idxs:
+                clip = self._apply_done_termination(buffer[i : i + self.clip_len])
 
                 raw_video = [f["image"] for f in clip]
                 raw_next_video = None
                 if self.include_next:
-                    next_clip = buffer[i + 1 : i + 1 + self.clip_len]
+                    next_clip = self._apply_done_termination(buffer[i + 1 : i + 1 + self.clip_len])
                     raw_next_video = [f["image"] for f in next_clip]
                 if self.vlm_processor is not None:
                     def _proc(frames, text):

@@ -10,7 +10,6 @@ python train.py \
   --text_mode raw \
   --return_mode nstep \
   --n_step 10 \
-  --freeze_vl \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-hf \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\

@@ -105,7 +105,7 @@ class GNN_Model(MessagePassing):
         edge_index_batch = edge_index
         
         # Initial hop attention
-        z = h
+        z = h.clone()
         z_scale = z * self.decay_weights[0]
 
         for k in range(self.K):
@@ -128,14 +128,13 @@ class GNN_Model(MessagePassing):
             messages = a_ij.unsqueeze(-1) * x_j
             
             # Aggregate messages
-            out = torch.zeros_like(h_flat)
-            out = scatter_add(messages, row, dim=0, out=out)
+            out = scatter_add(messages, row, dim=0, dim_size=h_flat.size(0))
             
             # Reshape back
             h = out.view(batch_size, self.num_nodes, self.heads, self.hid_channels)
             
             # Update z and z_scale
-            z += h
+            z = z + h
             if (k + 1) < len(self.decay_weights):
                 z_scale = z * self.decay_weights[k + 1]
             else:
@@ -185,7 +184,9 @@ class GNN_Model(MessagePassing):
         num_flat_nodes = int(edge_index_batch.max().item()) + 1
         deg = scatter_add(a_ij, col, dim=0, dim_size=num_flat_nodes)
         deg_inv_sqrt = deg.pow(-0.5)  
-        deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0  # Handle zero degrees
+        deg_inv_sqrt = torch.where(
+            torch.isinf(deg_inv_sqrt), torch.zeros_like(deg_inv_sqrt), deg_inv_sqrt
+        )  # Handle zero degrees
         a_ij = deg_inv_sqrt[row] * a_ij * deg_inv_sqrt[col]        
 
         if torch.isnan(a_ij).any():

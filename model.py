@@ -246,7 +246,7 @@ class MultimodalValueModel(nn.Module):
             num_heads=gnn_heads,
             iterations=max(1, cfg.gnn_layers),
             dropout=cfg.temporal_dropout,
-            num_layers=1,
+            num_layers=3,
             add_dropout=False,
             algorithm_name="mappo_dgnn",
             lambd_gnn=1.0,
