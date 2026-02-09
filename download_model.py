@@ -22,14 +22,17 @@ def download_model():
     print(f"HF_HOME is set to: {os.environ.get('HF_HOME', 'Not Set')}")
 
     try:
-        local_dir = snapshot_download(
-            repo_id=model_name,
-            repo_type="model",
-            # resume_download=True  # Deprecated in newer versions, but harmless usually.
-            # safe to omit as it's default behavior in hf_hub
-            local_dir_use_symlinks=False,
+        # Legacy huggingface_hub compatibility:
+        # - Remove repo_type (defaults to model)
+        # - Remove local_dir_use_symlinks (might be unsupported)
+        # - Explicitly pass cache_dir from env to ensure it is respected
+        cache_dir = os.environ.get("HF_HOME")
+        print(f"Calling snapshot_download with cache_dir={cache_dir}")
+
+        path = snapshot_download(
+            repo_id=model_name, cache_dir=cache_dir, resume_download=True
         )
-        print(f"Successfully downloaded to: {local_dir}")
+        print(f"Successfully downloaded to: {path}")
     except Exception as e:
         print(f"Download failed with error: {e}")
 
