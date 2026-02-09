@@ -660,35 +660,61 @@ class SequenceWebDataset(IterableDataset):
                 done = torch.tensor(0.0, dtype=torch.float32)
 
                 # Text Prompt Generation
+                # Text Prompt Generation
                 if self.text_prompt_template is None:
-                    # Auto-generate based on config
-                    base_prompt = (
+                     # Auto-generate based on config
+                     base_prompt = (
                         "You are a highly skilled vision language critic model. "
                         "Your goal is to criticise trajectories of data on the task at hand provided to you. "
                         "You are trained to identify the differences between good policies and bad policies, and return a critic value."
-                    )
-
-                    # Parse config for details
-                    # e.g. "tiny-2ag-hard"
-                    parts = self.rware_config.split("-")
-                    size_map = {"tiny": "11x10", "small": "22x20"}  # Approximation
-                    size = "standard"
-                    n_agents = "N"
-                    difficulty = "unknown"
-
-                    if len(parts) >= 1:
-                        size = size_map.get(parts[0], parts[0])
-                    if len(parts) >= 2:
-                        n_agents = parts[1].replace("ag", "")
-                    if len(parts) >= 3:
-                        difficulty = parts[2]
-
-                    specifics = (
-                        f" The environment is the robotic warehouse (RWARE). "
-                        f"Agents must pick up requested boxes, drop them at goal locations, then return boxes to empty spots. "
-                        f"Config: {self.rware_config}. This means {n_agents} agents in a {size} grid with {difficulty} load."
-                    )
-                    text = base_prompt + specifics
+                     )
+                     
+                     # Check if we can extract config from the sample url/path
+                     # sample['__url__'] typically contains the tar path
+                     # e.g. "path/to/rware-tiny-2ag-easy-v2/xxxx.tar"
+                     current_config = self.rware_config # fallback to default/arg
+                     
+                     if "__url__" in sample:
+                         url = sample["__url__"]
+                         # Heuristic: look for a segment that looks like rware config
+                         # or simplistic: assume structure data_scratch/{config}/...
+                         # We can try to split by / and find the one with "rware"
+                         parts = url.split("/")
+                         for p in parts:
+                             if "rware" in p.lower():
+                                 current_config = p
+                                 break
+                     
+                     # Parse config for details
+                     # e.g. "rware:rware-tiny-2ag-hard-v2" or "tiny-2ag-hard"
+                     # Cleanup prefix if needed
+                     clean_config = current_config.replace("rware:", "")
+                     
+                     parts = clean_config.split("-")
+                     size_map = {"tiny": "11x10", "small": "22x20"} # Approximation
+                     size = "standard"
+                     n_agents = "N"
+                     difficulty = "unknown"
+                     
+                     # Parse heuristic: rware-tiny-2ag-hard-v2
+                     # parts: [rware, tiny, 2ag, hard, v2]
+                     
+                     if "tiny" in parts: size = size_map["tiny"]
+                     if "small" in parts: size = size_map["small"]
+                     
+                     for p in parts:
+                         if "ag" in p and p != "ag":
+                             n_agents = p.replace("ag", "")
+                             
+                     if "hard" in parts: difficulty = "hard"
+                     if "easy" in parts: difficulty = "easy"
+                     
+                     specifics = (
+                         f" The environment is the robotic warehouse (RWARE). "
+                         f"Agents must pick up requested boxes, drop them at goal locations, then return boxes to empty spots. "
+                         f"Config: {clean_config}. This means {n_agents} agents in a {size} grid with {difficulty} load."
+                     )
+                     text = base_prompt + specifics
                 else:
                     text = self.text_prompt_template
 
