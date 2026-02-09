@@ -19,7 +19,15 @@ def download_model():
                 "Warning: Could not auto-detect scratch. Using default ~/.cache/huggingface"
             )
 
+    # Force default endpoint if not set to avoid "No scheme supplied" errors
+    if "HF_ENDPOINT" not in os.environ:
+        os.environ["HF_ENDPOINT"] = "https://huggingface.co"
+
     print(f"HF_HOME is set to: {os.environ.get('HF_HOME', 'Not Set')}")
+    print(f"HF_ENDPOINT is set to: {os.environ.get('HF_ENDPOINT', 'Not Set')}")
+    import huggingface_hub
+
+    print(f"huggingface_hub version: {huggingface_hub.__version__}")
 
     try:
         # Legacy huggingface_hub compatibility:
