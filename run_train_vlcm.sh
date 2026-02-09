@@ -76,20 +76,45 @@ if [ -z "$HF_TOKEN" ]; then
     fi
 fi
 
-# Determine optimal cache location (Prefer /scratch as it has 5TB capacity)
+# Determine optimal cache/tmp location (Prefer /scratch as it has 5TB capacity)
 if [ -n "$SCRATCH" ]; then
-    CACHE_DIR="$SCRATCH/hf_cache"
+    BASE_SCRATCH="$SCRATCH"
 elif [ -d "/scratch/$USER" ]; then
-    CACHE_DIR="/scratch/$USER/hf_cache"
+    BASE_SCRATCH="/scratch/$USER"
 else
-    CACHE_DIR="$PWD/hf_cache"
+    # Fallback to current directory if no scratch is found (likely will fail if quota is low)
+    BASE_SCRATCH="$PWD"
+    echo "WARNING: using $PWD for scratch space. This may fail if quota is low."
 fi
 
-echo "Using HF_HOME=$CACHE_DIR"
-mkdir -p "$CACHE_DIR"
+# Define specific directories in scratch
+HF_CACHE_DIR="$BASE_SCRATCH/hf_cache"
+TMP_DIR="$BASE_SCRATCH/tmp"
+APPTAINER_TMP_DIR="$BASE_SCRATCH/apptainer_tmp"
+APPTAINER_CACHE_DIR="$BASE_SCRATCH/apptainer_cache"
+
+# Create directories
+mkdir -p "$HF_CACHE_DIR" "$TMP_DIR" "$APPTAINER_TMP_DIR" "$APPTAINER_CACHE_DIR"
+
+echo "Redirecting storage to scratch at $BASE_SCRATCH"
+echo "  HF_HOME: $HF_CACHE_DIR"
+echo "  TMPDIR: $TMP_DIR"
+echo "  APPTAINER_TMPDIR: $APPTAINER_TMP_DIR"
+echo "  APPTAINER_CACHEDIR: $APPTAINER_CACHE_DIR"
+
+# Export variables for the host environment (Apptainer uses these)
+export HF_HOME="$HF_CACHE_DIR"
+export TMPDIR="$TMP_DIR"
+export APPTAINER_TMPDIR="$APPTAINER_TMP_DIR"
+export APPTAINER_CACHEDIR="$APPTAINER_CACHE_DIR"
 
 # Run with Singularity
-apptainer exec --nv -B "$PWD:$PWD" --env HF_HOME="$CACHE_DIR" --env HF_TOKEN="$HF_TOKEN" "$CONTAINER_PATH" python3 train.py \
+# We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
+apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
+  --env HF_HOME="$HF_CACHE_DIR" \
+  --env HF_TOKEN="$HF_TOKEN" \
+  --env TMPDIR="$TMP_DIR" \
+  "$CONTAINER_PATH" python3 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
