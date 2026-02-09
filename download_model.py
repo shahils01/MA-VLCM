@@ -29,7 +29,6 @@ def download_model():
             # safe to omit as it's default behavior in hf_hub
             local_dir_use_symlinks=False,
         )
-        )
         print(f"Successfully downloaded to: {local_dir}")
     except Exception as e:
         print(f"Download failed with error: {e}")
