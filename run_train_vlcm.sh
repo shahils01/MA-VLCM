@@ -66,7 +66,30 @@ CONTAINER_PATH="/home/aparame/Research/MA-VLCM/ma_vlcm.sif"
 
 # Run with Singularity
 # We intentionally mount the current directory ($PWD) to ensure train.py and data are accessible inside.
-apptainer exec --nv -B "$PWD:$PWD" "$CONTAINER_PATH" python3 MA-VLCM/train.py \
+# Handle Hugging Face Token (Environment variable or file)
+if [ -z "$HF_TOKEN" ]; then
+    if [ -f "hf_token.txt" ]; then
+        export HF_TOKEN=$(cat hf_token.txt | tr -d '\n')
+        echo "Loaded HF_TOKEN from hf_token.txt"
+    else
+        echo "WARNING: HF_TOKEN not set. Downloads may be rate limited."
+    fi
+fi
+
+# Determine optimal cache location (Prefer /scratch as it has 5TB capacity)
+if [ -n "$SCRATCH" ]; then
+    CACHE_DIR="$SCRATCH/hf_cache"
+elif [ -d "/scratch/$USER" ]; then
+    CACHE_DIR="/scratch/$USER/hf_cache"
+else
+    CACHE_DIR="$PWD/hf_cache"
+fi
+
+echo "Using HF_HOME=$CACHE_DIR"
+mkdir -p "$CACHE_DIR"
+
+# Run with Singularity
+apptainer exec --nv -B "$PWD:$PWD" --env HF_HOME="$CACHE_DIR" --env HF_TOKEN="$HF_TOKEN" "$CONTAINER_PATH" python3 MA-VLCM/train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
