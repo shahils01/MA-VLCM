@@ -11,3 +11,7 @@ outputs/
 logs/
 .wandb/
 .DS_Store
+Temp.ipynb
+train_sample/
+test_data/
+VLCM/
