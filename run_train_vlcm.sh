@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# Exit on error
+set -e
+
+echo "Starting Job on $(hostname)"
+echo "Date: $(date)"
+
+# 2. Data Setup
+echo "Checking data..."
+
+DATA_DIR="data_scratch"
+
+# User stated data is already extracted in data_scratch
+if [ ! -d "$DATA_DIR" ]; then
+    echo "ERROR: Directory $DATA_DIR not found!"
+    echo "Current directory content:"
+    ls -l
+    exit 1
+fi
+echo "Using existing data in $DATA_DIR"
+
+# 3. Code Setup
+# train.py, model.py, gat.py, requirements.txt are in PWD
+
+# 4. Run Training
+echo "Running Training..."
+
+# Logic to find the RWARE config folder.
+# Structure: data_scratch/{config_name}/{date_optional}/*.tar
+# We look for the first directory inside data_scratch that contains "rware"
+# or just the first sub directory.
+
+# Find the first subdirectory in data_scratch
+CONFIG_DIR=$(find $DATA_DIR -mindepth 1 -maxdepth 1 -type d | head -n 1)
+
+if [ -z "$CONFIG_DIR" ]; then
+    echo "ERROR: No config directory found in $DATA_DIR"
+    find $DATA_DIR
+    exit 1
+fi
+
+CONFIG_NAME=$(basename "$CONFIG_DIR")
+echo "Detected RWARE Config: $CONFIG_NAME"
+
+# Now find where the .tar files are. They might be in CONFIG_DIR or a subdirectory (date).
+# We search recursively for .tar files inside CONFIG_DIR
+BLOCK_DIR=$(find "$CONFIG_DIR" -name "*.tar" | head -n 1 | xargs dirname)
+
+if [ -z "$BLOCK_DIR" ]; then
+    echo "ERROR: No .tar files found inside $CONFIG_DIR"
+    exit 1
+fi
+
+echo "Found data shards in: $BLOCK_DIR"
+
+# Construct glob pattern for train.py
+# If BLOCK_DIR is something like "data_scratch/rware-tiny-2ag/2026-02-09"
+# Then pattern is "data_scratch/rware-tiny-2ag/2026-02-09/*.tar"
+SHARD_PATTERN="$BLOCK_DIR/*.tar"
+
+echo "Using Shard Pattern: $SHARD_PATTERN"
+
+# Define container path
+CONTAINER_PATH="/home/aparame/Research/MA-VLCM/ma_vlcm.sif"
+
+# Run with Singularity
+# We intentionally mount the current directory ($PWD) to ensure train.py and data are accessible inside.
+apptainer exec --nv -B "$PWD:$PWD" "$CONTAINER_PATH" python3 MA-VLCM/train.py \
+  --train_shards "$SHARD_PATTERN" \
+  --dataset_type rware \
+  --rware_config "$CONFIG_NAME" \
+  --batch_size 4 \
+  --clip_len 8 \
+  --num_robots 2 \
+  --robot_obs_dim 8 \
+  --epochs 2 \
+  --vl_backend llava_video \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
+  --save_dir checkpoints_rware
+
+# Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
