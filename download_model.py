@@ -10,13 +10,13 @@ def download_model():
 
     print("Downloading Processor...")
     processor = LlavaNextVideoProcessor.from_pretrained(model_name)
-    print("Processor downloaded successfully.")
+    print(f"Processor downloaded successfully: {type(processor)}")
 
     print("Downloading Model (this may take a while)...")
     model = LlavaNextVideoForConditionalGeneration.from_pretrained(
         model_name, torch_dtype=torch.float16, device_map="auto"
     )
-    print("Model downloaded successfully.")
+    print(f"Model downloaded successfully: {type(model)}")
 
 
 if __name__ == "__main__":

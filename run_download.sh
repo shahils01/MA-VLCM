@@ -110,21 +110,13 @@ export APPTAINER_CACHEDIR="$APPTAINER_CACHE_DIR"
 
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
+echo "Starting isolated model download..."
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_HOME="$HF_CACHE_DIR" \
   --env HF_TOKEN="$HF_TOKEN" \
   --env TMPDIR="$TMP_DIR" \
-  "$CONTAINER_PATH" python3 train.py \
-  --train_shards "$SHARD_PATTERN" \
-  --dataset_type rware \
-  --rware_config "$CONFIG_NAME" \
-  --batch_size 4 \
-  --clip_len 8 \
-  --num_robots 2 \
-  --robot_obs_dim 8 \
-  --epochs 2 \
-  --vl_backend llava_video \
-  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
-  --save_dir checkpoints_rware
+  "$CONTAINER_PATH" python3 MA-VLCM/download_model.py
 
-# Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
+echo "Model download complete (or failed, check output)."
+
+
