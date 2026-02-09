@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument(
         "--train_shards",
         type=str,
-        default="/home/adi2440/Desktop/MARL_Shahil_Aditya/Isaac Sim/RWARE/data_scratch/",
+        default="osdf:///ospool/ap40/data/aditya.parameshwaran",
         help="WebDataset shard pattern for training",
     )
     p.add_argument(
@@ -348,9 +348,9 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
-def _parse_rware_state(state_json, num_robots=None):
+def _parse_rware_state(state_json, num_robots=None, robot_obs_dim=8):
     # state_json: dict from state.json
-    # returns: torch.Tensor [num_robots, 8]
+    # returns: torch.Tensor [num_robots, robot_obs_dim]
     # Encoding: [x, y, dx, dy, carrying, 0, 0, 0]
 
     agents = state_json.get("agents", [])
@@ -361,7 +361,7 @@ def _parse_rware_state(state_json, num_robots=None):
     if num_robots is None:
         num_robots = len(agents)
 
-    obs = torch.zeros((num_robots, 8), dtype=torch.float32)
+    obs = torch.zeros((num_robots, robot_obs_dim), dtype=torch.float32)
 
     # Direction mapping (matching standard trig unit vectors)
     # NORTH (+Y), SOUTH (-Y), EAST (+X), WEST (-X)
@@ -405,6 +405,8 @@ class SequenceWebDataset(IterableDataset):
         reward_reduce,
         done_reduce,
         vlm_processor=None,
+        vl_model_name=None,
+        robot_obs_dim=8,
         text_prompt_template=None,
         return_mode="td",
         n_step=50,
@@ -445,6 +447,8 @@ class SequenceWebDataset(IterableDataset):
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
         self.vlm_processor = vlm_processor
+        self.vl_model_name = vl_model_name
+        self.robot_obs_dim = robot_obs_dim
         self.text_prompt_template = text_prompt_template
         self.dataset_type = dataset_type
         self.rware_config = rware_config
@@ -460,6 +464,22 @@ class SequenceWebDataset(IterableDataset):
     def __iter__(self):
         if wds is None:
             raise RuntimeError("webdataset is not installed.")
+
+        if self.vlm_processor is None and self.vl_model_name is not None:
+            from transformers import LlavaNextVideoProcessor
+
+            try:
+                self.vlm_processor = LlavaNextVideoProcessor.from_pretrained(
+                    self.vl_model_name
+                )
+                # Ensure special tokens
+                tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+                    tokenizer.add_special_tokens(
+                        {"additional_special_tokens": ["<obs>"]}
+                    )
+            except Exception as e:
+                print(f"Warning: Failed to load VLM processor: {e}")
 
         # Prefer explicit node/worker splitters for multi-GPU setups
         try:
@@ -608,7 +628,9 @@ class SequenceWebDataset(IterableDataset):
                     # Parse JSON state
                     # We don't have easy access to num_robots here unless we hardcode or infer
                     # Let's infer from list length for now, or use safe default if empty
-                    robot_obs = _parse_rware_state(sample["state.json"])
+                    robot_obs = _parse_rware_state(
+                        sample["state.json"], robot_obs_dim=self.robot_obs_dim
+                    )
                 else:
                     # Fallback or error?
                     robot_obs = torch.zeros((1, 8), dtype=torch.float32)
@@ -707,14 +729,19 @@ class SequenceWebDataset(IterableDataset):
 
 
 def webdataset_loader(args, shards, batch_size, num_workers):
-    vlm_processor = None
-    if args.preprocess_in_loader:
-        from transformers import LlavaNextVideoProcessor
+    # Support glob patterns if passed as shards string
+    if isinstance(shards, str) and "*" in shards:
+        import glob
+        expanded = sorted(glob.glob(shards))
+        if expanded:
+            shards = expanded
+            print(f"Expanded shard pattern specific to {len(shards)} files.")
+        else:
+            print(f"Warning: No files matched glob pattern {shards}")
 
-        vlm_processor = LlavaNextVideoProcessor.from_pretrained(args.vl_model_name)
-        tokenizer = getattr(vlm_processor, "tokenizer", None)
-        if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
-            tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
+    vlm_processor = None
+    # vlm_processor is now lazily loaded in the dataset worker to avoid pickling issues
+    # and ensure robustness.
 
     dataset = SequenceWebDataset(
         shards=shards,
@@ -724,7 +751,9 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
-        vlm_processor=vlm_processor,
+        vlm_processor=None,
+        vl_model_name=args.vl_model_name if args.preprocess_in_loader else None,
+        robot_obs_dim=args.robot_obs_dim,
         text_prompt_template=args.text_prompt_template,
         dataset_type=args.dataset_type,
         rware_config=args.rware_config,
@@ -734,8 +763,8 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         keep_raw_video=False,
         include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
         vlm_max_text_len=args.vl_max_text_len,
-        vlm_truncation=(args.vl_backend != "llava_video"),
-        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
+        vlm_truncation=True,
+        vlm_padding="max_length",
     )
 
     def _collate(batch):
