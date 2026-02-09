@@ -11,3 +11,5 @@ outputs/
 logs/
 .wandb/
 .DS_Store
+*.sif
+

@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+
+%post
+    # Set environment variables for non-interactive installs
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Etc/UTC
+
+    # Update and install system dependencies
+    apt-get update && apt-get install -y \
+        python3 \
+        python3-pip \
+        git \
+        ffmpeg \
+        wget \
+        build-essential \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Upgrade pip
+    python3 -m pip install --upgrade pip
+
+    # Set CUDA paths (if needed, though base image should handle it)
+    export CUDA_HOME=/usr/local/cuda
+
+    # Install Python dependencies
+    
+    # 1. Install PyTorch with CUDA 12.4 support
+    # We explicitly install compatible torch first to match the system CUDA version as closely as possible
+    python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+    # 2. Install PyG (Torch Geometric) and dependencies manually to ensure compatibility
+    # Using the detected torch version (2.6.0+cu124 based on earlier findings)
+    # The wheel URL pattern depends on the torch version. Assuming torch 2.6.0+cu124 is installed.
+    # Note: If torch version changes, this URL might need update.
+    # We use --no-index for these specific packages to force using the wheel link.
+    python3 -m pip install torch-scatter torch-geometric -f https://data.pyg.org/whl/torch-2.6.0+cu124.html
+    
+    # 3. Install other requirements from a temporary requirements file
+    # We list the remaining requirements here to avoid copying the file during build if possible, 
+    # but for reproducibility, it's better to install what we know works.
+    python3 -m pip install \
+        transformers \
+        webdataset \
+        accelerate \
+        Pillow \
+        wandb \
+        huggingface_hub \
+        scikit-learn \
+        einops \
+        moviepy \
+        imageio \
+        lightning \
+        jsonlines
+    
+    # Note: If you have a local requirements.txt, you can copy it in %files and install from there.
+    # But embedding key packages here makes the definition more standalone.
+
+%environment
+    export LC_ALL=C
+    export LANG=C
+    # Ensure nvidia-smi and cuda tools are in path if not already
+    export PATH=/usr/local/cuda/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+%runscript
+    # This script runs when the container is executed
+    echo "Container ready. Running command: $@"
+    exec "$@"
+
+%labels
+    Author MA-VLCM-Team
+    Version v1.0
+    Description Singularity container for MA-VLCM training
