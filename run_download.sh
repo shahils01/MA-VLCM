@@ -115,7 +115,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_HOME="$HF_CACHE_DIR" \
   --env HF_TOKEN="$HF_TOKEN" \
   --env TMPDIR="$TMP_DIR" \
-  "$CONTAINER_PATH" python3 MA-VLCM/download_model.py
+  "$CONTAINER_PATH" python3 download_model.py
 
 echo "Model download complete (or failed, check output)."
 
