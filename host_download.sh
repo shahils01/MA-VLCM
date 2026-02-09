@@ -16,6 +16,9 @@ echo "Working directory: $WORK_DIR"
 mkdir -p "$WORK_DIR"
 
 # 2. Setup Python Virtual Environment in Scratch
+# Try loading a newer python module if available (optimistic)
+module load python/3.8 2>/dev/null || module load anaconda3/2022.05 2>/dev/null || echo "Module load failed or not available, using system python"
+
 ENV_PATH="$WORK_DIR/venv"
 if [ ! -d "$ENV_PATH" ]; then
     echo "Creating virtual environment at $ENV_PATH..."
@@ -24,8 +27,10 @@ fi
 
 # 3. Activate and Install Dependencies
 source "$ENV_PATH/bin/activate"
-echo "Installing huggingface_hub..."
+echo "Installing dependencies..."
 pip install --upgrade pip
+# Python 3.6 needs dataclasses backport
+pip install dataclasses
 pip install huggingface_hub
 
 # 4. Run the Download Script
