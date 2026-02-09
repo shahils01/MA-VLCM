@@ -9,7 +9,7 @@ echo "Date: $(date)"
 # 2. Data Setup
 echo "Checking data..."
 
-DATA_DIR="data_scratch"
+DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch"
 
 # User stated data is already extracted in data_scratch
 if [ ! -d "$DATA_DIR" ]; then
@@ -89,7 +89,7 @@ echo "Using HF_HOME=$CACHE_DIR"
 mkdir -p "$CACHE_DIR"
 
 # Run with Singularity
-apptainer exec --nv -B "$PWD:$PWD" --env HF_HOME="$CACHE_DIR" --env HF_TOKEN="$HF_TOKEN" "$CONTAINER_PATH" python3 MA-VLCM/train.py \
+apptainer exec --nv -B "$PWD:$PWD" --env HF_HOME="$CACHE_DIR" --env HF_TOKEN="$HF_TOKEN" "$CONTAINER_PATH" python3 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
