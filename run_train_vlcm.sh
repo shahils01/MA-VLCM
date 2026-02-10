@@ -67,14 +67,6 @@ CONTAINER_PATH="/home/aparame/Research/MA-VLCM/ma_vlcm.sif"
 # Run with Singularity
 # We intentionally mount the current directory ($PWD) to ensure train.py and data are accessible inside.
 # Handle Hugging Face Token (Environment variable or file)
-if [ -z "$HF_TOKEN" ]; then
-    if [ -f "hf_token.txt" ]; then
-        export HF_TOKEN=$(cat hf_token.txt | tr -d '\n')
-        echo "Loaded HF_TOKEN from hf_token.txt"
-    else
-        echo "WARNING: HF_TOKEN not set. Downloads may be rate limited."
-    fi
-fi
 
 # Determine optimal cache/tmp location (Prefer /scratch as it has 5TB capacity)
 if [ -n "$SCRATCH" ]; then
@@ -107,6 +99,9 @@ export HF_HOME="$HF_CACHE_DIR"
 export TMPDIR="$TMP_DIR"
 export APPTAINER_TMPDIR="$APPTAINER_TMP_DIR"
 export APPTAINER_CACHEDIR="$APPTAINER_CACHE_DIR"
+export HF_TOKEN=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
+export HF_HUB_ENABLE_EMERGENCY_RETRY=True
+export HF_HUB_EMERGENCY_RETRY_WAIT_TIME=10
 
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
@@ -114,6 +109,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_HOME="$HF_CACHE_DIR" \
   --env HF_TOKEN="$HF_TOKEN" \
   --env TMPDIR="$TMP_DIR" \
+  --env HF_HUB_OFFLINE=1\
   "$CONTAINER_PATH" python3 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
@@ -125,6 +121,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --epochs 2 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
-  --save_dir checkpoints_rware
+  --save_dir checkpoints_rware \
+  --num_workers 1
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
