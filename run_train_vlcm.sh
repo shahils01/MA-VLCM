@@ -113,6 +113,20 @@ else
 fi
 echo "Detected Num Robots: $NUM_ROBOTS"
 
+# --- Diagnostics ---
+echo "Running Diagnostics..."
+echo "ulimit -a:"
+ulimit -a
+echo "free -h:"
+free -h
+echo "GPU Check:"
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi
+else
+    echo "WARNING: nvidia-smi not found. Ensure you are on a GPU node."
+fi
+echo "---------------------"
+
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
