@@ -9,7 +9,7 @@ echo "Date: $(date)"
 # 2. Data Setup
 echo "Checking data..."
 
-DATA_DIR="/home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_scratch"
+DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch"
 
 # User stated data is already extracted in data_scratch
 if [ ! -d "$DATA_DIR" ]; then
@@ -62,7 +62,7 @@ SHARD_PATTERN="$BLOCK_DIR/*.tar"
 echo "Using Shard Pattern: $SHARD_PATTERN"
 
 # Define container path
-CONTAINER_PATH="/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/ma_vlcm.sif"
+CONTAINER_PATH="/home/aparame/Research/MA-VLCM/ma_vlcm.sif"
 
 # Run with Singularity
 # We intentionally mount the current directory ($PWD) to ensure train.py and data are accessible inside.
