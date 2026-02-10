@@ -103,6 +103,16 @@ export HF_TOKEN=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
 export HF_HUB_ENABLE_EMERGENCY_RETRY=True
 export HF_HUB_EMERGENCY_RETRY_WAIT_TIME=10
 
+
+# Extract number of robots from config name (e.g. rware-tiny-2ag-hard -> 2)
+if [[ "$CONFIG_NAME" =~ ([0-9]+)ag ]]; then
+    NUM_ROBOTS="${BASH_REMATCH[1]}"
+else
+    NUM_ROBOTS=2
+    echo "WARNING: Could not parse num_robots from $CONFIG_NAME. Defaulting to 2."
+fi
+echo "Detected Num Robots: $NUM_ROBOTS"
+
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
@@ -116,8 +126,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --rware_config "$CONFIG_NAME" \
   --batch_size 4 \
   --clip_len 8 \
-  --num_robots 2 \
-  --robot_obs_dim 8 \
+  --num_robots "$NUM_ROBOTS" \
+  --robot_obs_dim 6 \
   --epochs 2 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \

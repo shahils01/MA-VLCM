@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
+import numpy as np
 
 try:
     from accelerate.utils import DistributedDataParallelKwargs
@@ -372,6 +373,15 @@ def _parse_rware_state(state_json, num_robots=None, robot_obs_dim=8):
         "WEST": (-1.0, 0.0),
     }
 
+    # Action mapping
+    action_map = {
+        "NOOP": 0,
+        "FORWARD": 1,
+        "LEFT": 2,
+        "RIGHT": 3,
+        "TOGGLE_LOAD": 4,
+    }
+
     for i, ag in enumerate(agents):
         if i >= num_robots:
             break
@@ -390,6 +400,10 @@ def _parse_rware_state(state_json, num_robots=None, robot_obs_dim=8):
         # Carrying
         carrying = ag.get("carrying")
         obs[i, 4] = 1.0 if carrying is not None else 0.0
+
+        # Action
+        a_str = ag.get("action", "NOOP")
+        obs[i, 5] = float(action_map.get(a_str, 0))
 
     return obs
 
@@ -623,17 +637,23 @@ class SequenceWebDataset(IterableDataset):
 
             # Robot Obs and Adj
             if self.dataset_type == "rware":
-                # RWARE specific parsing
-                if "state.json" in sample:
-                    # Parse JSON state
-                    # We don't have easy access to num_robots here unless we hardcode or infer
-                    # Let's infer from list length for now, or use safe default if empty
+                # RWARE specific parsing NEW LOGIC
+                state_data = {}
+                state_json_present = "state.json" in sample
+
+                if state_json_present:
+                    state_data = sample["state.json"]
                     robot_obs = _parse_rware_state(
-                        sample["state.json"], robot_obs_dim=self.robot_obs_dim
+                        state_data, num_robots=None, robot_obs_dim=self.robot_obs_dim
                     )
                 else:
-                    # Fallback or error?
-                    robot_obs = torch.zeros((1, 8), dtype=torch.float32)
+                    robot_obs = torch.zeros(
+                        (
+                            self.num_robots if hasattr(self, "num_robots") else 1,
+                            self.robot_obs_dim,
+                        ),
+                        dtype=torch.float32,
+                    )
 
                 if "adj.npy" in sample:
                     adj_np = _as_numpy(sample["adj.npy"])
@@ -641,82 +661,46 @@ class SequenceWebDataset(IterableDataset):
                         adj_np = adj_np.numpy()
                     adj = torch.from_numpy(adj_np).float()
                 else:
-                    # Default fully connected or diagonal?
                     n = robot_obs.shape[0]
                     adj = torch.eye(n, dtype=torch.float32)
 
-                # Reward (scalar json)
-                step_reward = 0.0
+                # Reward
+                base_reward = 0.0
                 if "reward.json" in sample:
-                    step_reward = float(sample["reward.json"])
-                reward = torch.tensor(step_reward, dtype=torch.float32)
+                    try:
+                        base_reward = float(sample["reward.json"])
+                    except Exception:
+                        pass
 
-                # Done (inference)
-                # WebDataset doesn't explicitly mark done for RWARE steps usually until end of file?
-                # or is it in state? state.json doesn't seem to have "done".
-                # We will assume 0 until episode change logic handles it (which is implicit in buffer flush?)
-                # Actually buffer flushes on new episode ID.
-                # So we can set done=0 always here?
+                dist_penalty = 0.0
+                if "dist.npy" in sample:
+                    d = _as_numpy(sample["dist.npy"])
+                    if hasattr(d, "numpy"):
+                        d = d.numpy()
+                    if d.ndim == 2 and d.shape[0] > 1:
+                        eye = np.eye(d.shape[0], dtype=bool)
+                        if ((d < 3.0) & (~eye)).any():
+                            dist_penalty = -1.0
+
+                total_reward = base_reward + dist_penalty
+                reward = torch.tensor(total_reward, dtype=torch.float32)
                 done = torch.tensor(0.0, dtype=torch.float32)
 
-                # Text Prompt Generation
-                # Text Prompt Generation
+                # Text
+                step_val = state_data.get("step", 0)
+                requests = state_data.get("requests", [])
+
+                prompt_lines = [f"Step: {step_val}.", f"Requested boxes: {requests}."]
+                for ag in state_data.get("agents", []):
+                    aid = ag.get("id", "?")
+                    line = f"Agent {aid}: at {ag.get('pos','?')}, facing {ag.get('dir','?')}, action {ag.get('action','?')}, carrying {'yes' if ag.get('carrying') else 'no'}."
+                    prompt_lines.append(line)
+
                 if self.text_prompt_template is None:
-                     # Auto-generate based on config
-                     base_prompt = (
-                        "You are a highly skilled vision language critic model. "
-                        "Your goal is to criticise trajectories of data on the task at hand provided to you. "
-                        "You are trained to identify the differences between good policies and bad policies, and return a critic value."
-                     )
-                     
-                     # Check if we can extract config from the sample url/path
-                     # sample['__url__'] typically contains the tar path
-                     # e.g. "path/to/rware-tiny-2ag-easy-v2/xxxx.tar"
-                     current_config = self.rware_config # fallback to default/arg
-                     
-                     if "__url__" in sample:
-                         url = sample["__url__"]
-                         # Heuristic: look for a segment that looks like rware config
-                         # or simplistic: assume structure data_scratch/{config}/...
-                         # We can try to split by / and find the one with "rware"
-                         parts = url.split("/")
-                         for p in parts:
-                             if "rware" in p.lower():
-                                 current_config = p
-                                 break
-                     
-                     # Parse config for details
-                     # e.g. "rware:rware-tiny-2ag-hard-v2" or "tiny-2ag-hard"
-                     # Cleanup prefix if needed
-                     clean_config = current_config.replace("rware:", "")
-                     
-                     parts = clean_config.split("-")
-                     size_map = {"tiny": "11x10", "small": "22x20"} # Approximation
-                     size = "standard"
-                     n_agents = "N"
-                     difficulty = "unknown"
-                     
-                     # Parse heuristic: rware-tiny-2ag-hard-v2
-                     # parts: [rware, tiny, 2ag, hard, v2]
-                     
-                     if "tiny" in parts: size = size_map["tiny"]
-                     if "small" in parts: size = size_map["small"]
-                     
-                     for p in parts:
-                         if "ag" in p and p != "ag":
-                             n_agents = p.replace("ag", "")
-                             
-                     if "hard" in parts: difficulty = "hard"
-                     if "easy" in parts: difficulty = "easy"
-                     
-                     specifics = (
-                         f" The environment is the robotic warehouse (RWARE). "
-                         f"Agents must pick up requested boxes, drop them at goal locations, then return boxes to empty spots. "
-                         f"Config: {clean_config}. This means {n_agents} agents in a {size} grid with {difficulty} load."
-                     )
-                     text = base_prompt + specifics
+                    header = "Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). "
+                    text = header + " ".join(prompt_lines)
                 else:
-                    text = self.text_prompt_template
+                    text = self.text_prompt_template + " " + " ".join(prompt_lines)
 
             else:
                 # Default MA-VLCM behavior
@@ -758,6 +742,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     # Support glob patterns if passed as shards string
     if isinstance(shards, str) and "*" in shards:
         import glob
+
         expanded = sorted(glob.glob(shards))
         if expanded:
             shards = expanded
