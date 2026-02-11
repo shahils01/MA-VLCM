@@ -92,7 +92,7 @@ echo "Detected Num Robots: $NUM_ROBOTS"
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_TOKEN="$HF_TOKEN" \
-  "$CONTAINER_PATH" python3 train.py \
+  "$CONTAINER_PATH" accelerate launch --num_processes 2 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
