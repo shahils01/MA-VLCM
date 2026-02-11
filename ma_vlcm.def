@@ -27,7 +27,7 @@ From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     python3 -m pip install --upgrade pip
 
     # Set CUDA paths (if needed, though base image should handle it)
-    export CUDA_HOME=/usr/local/cuda
+    # export CUDA_HOME=/usr/local/cuda
 
     # Install Python dependencies
     
@@ -155,14 +155,14 @@ From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     export LC_ALL=C
     export LANG=C
     # Ensure nvidia-smi and cuda tools are in path if not already
-    export PATH=/usr/local/cuda/bin:$PATH
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+    # export PATH=/usr/local/cuda/bin:$PATH
+    # export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 %environment
     # Prevent host ~/.local packages from contaminating the container at runtime
     export PYTHONNOUSERSITE=1
-    export PATH=/usr/local/cuda/bin:$PATH
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+    # export PATH=/usr/local/cuda/bin:$PATH
+    # export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 %runscript
     # This script runs when the container is executed

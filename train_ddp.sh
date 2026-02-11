@@ -1,4 +1,4 @@
-accelerate launch --num_processes 2 train.py \
+accelerate launch --num_processes 1 train.py \
   --train_shards "/scratch/aparame/Research/VLCM_Data_Collection/data_test" \
   --dataset_type rware \
   --batch_size 1 \

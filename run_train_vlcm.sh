@@ -107,7 +107,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --save_dir checkpoints_rware \
   --num_workers 0 \
   --mixed_precision bf16 \
-  --peft lora \
+  --peft qlora \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \

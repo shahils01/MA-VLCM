@@ -1044,6 +1044,11 @@ def main():
             model, optimizer, train_loader
         )
 
+    # Fix DDP + gradient checkpointing + LoRA: tell DDP the graph is static
+    # to avoid "variable ready twice" errors from reentrant checkpointing.
+    if hasattr(model, "_set_static_graph"):
+        model._set_static_graph()
+
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(
             model,
