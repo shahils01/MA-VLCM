@@ -4,6 +4,7 @@ import torch
 import resource
 from types import SimpleNamespace
 from train import SequenceWebDataset
+import argparse
 
 
 def print_mem():
@@ -42,8 +43,9 @@ class MockProcessor:
         return cls()
 
 
-def test():
-    shards = "/home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_test/*.tar"
+def test(dir_path):
+
+    shards = dir_path + "/*.tar"
     print(f"Testing shards: {shards}", flush=True)
 
     # Use our mock processor
@@ -86,4 +88,7 @@ def test():
 
 
 if __name__ == "__main__":
-    test()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir_path", type=str, required=True)
+    args = parser.parse_args()
+    test(args.dir_path)
