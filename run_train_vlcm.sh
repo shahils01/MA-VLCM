@@ -109,5 +109,10 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --mixed_precision bf16 \
   --fsdp \
   --fsdp_use_orig_params \
+  --peft lora \
+  --lora_r 16 \
+  --lora_alpha 32 \
+  --lora_dropout 0.05 \
+  --vl_max_text_len 1024 \
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
