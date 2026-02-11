@@ -1001,7 +1001,11 @@ def main():
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
         kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
     )
-    model = build_model(args, device=accelerator.device)
+
+    # Serialize model loading to avoid System RAM OOM (SIGKILL)
+    # Each process loads the model sequentially instead of simultaneously.
+    with accelerator.main_process_first():
+        model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
     if args.fsdp:
         if args.mixed_precision == "bf16":
