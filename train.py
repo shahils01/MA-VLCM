@@ -43,7 +43,7 @@ def parse_args():
     p.add_argument(
         "--train_shards",
         type=str,
-        default="osdf:///ospool/ap40/data/aditya.parameshwaran/data_scratch",
+        default="/scratch/aparame/Research/VLCM_Data_Collection/data_test",
         help="WebDataset shard pattern for training",
     )
     p.add_argument(
@@ -53,7 +53,7 @@ def parse_args():
         help="Optional WebDataset shard pattern for validation",
     )
     p.add_argument("--batch_size", type=int, default=2)
-    p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--samples_per_epoch", type=int, default=1000)
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
@@ -63,7 +63,7 @@ def parse_args():
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
 
     # Sequence building
-    p.add_argument("--clip_len", type=int, default=20)
+    p.add_argument("--clip_len", type=int, default=2)
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument(
@@ -173,7 +173,7 @@ def parse_args():
 
     # Robots / graph
     p.add_argument("--num_robots", type=int, default=2)
-    p.add_argument("--robot_obs_dim", type=int, default=8)
+    p.add_argument("--robot_obs_dim", type=int, default=6)
 
     # Text
     p.add_argument("--text_dim", type=int, default=512)
