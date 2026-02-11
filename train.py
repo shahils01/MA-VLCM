@@ -512,101 +512,89 @@ class SequenceWebDataset(IterableDataset):
 
         current_ep = None
         buffer = []
+        episode_frame_count = 0
 
-        def flush_buffer():
-            min_len = self.clip_len + (1 if self.include_next else 0)
-            if len(buffer) < min_len:
-                return
-            max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
-            for i in range(0, max_i + 1, self.clip_stride):
-                clip = buffer[i : i + self.clip_len]
+        def _process_clip_data(clip, next_clip=None):
+            raw_video = [f["image"] for f in clip]
+            raw_next_video = None
+            if next_clip is not None:
+                raw_next_video = [f["image"] for f in next_clip]
 
-                raw_video = [f["image"] for f in clip]
-                raw_next_video = None
-                if self.include_next:
-                    next_clip = buffer[i + 1 : i + 1 + self.clip_len]
-                    raw_next_video = [f["image"] for f in next_clip]
-                if self.vlm_processor is not None:
+            if self.vlm_processor is not None:
 
-                    def _proc(frames, text):
-                        if not isinstance(text, str):
-                            text = self.text_prompt_template
-                        tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                        if tokenizer is not None:
-                            vocab = tokenizer.get_vocab()
-                            if (
-                                "<video>" in vocab
-                                and "<video>" not in text
-                                and "<image>" not in text
-                            ):
-                                text = f"<video>\n{text}"
-                            if "<obs>" in vocab and "<obs>" not in text:
-                                if "<video>" in text:
-                                    text = text.replace(
-                                        "<video>\n", "<video><obs>\n", 1
-                                    )
-                                else:
-                                    text = f"<obs>\n{text}"
-                        try:
-                            max_len = (
-                                self.vlm_max_text_len if self.vlm_truncation else None
-                            )
-                            inputs = self.vlm_processor(
-                                text=text,
-                                videos=frames,
-                                return_tensors="pt",
-                                padding=self.vlm_padding,
-                                truncation=self.vlm_truncation,
-                                max_length=max_len,
-                            )
-                        except TypeError:
-                            print("using image processor instead of video processor")
-                            inputs = self.vlm_processor(
-                                images=frames,
-                                return_tensors="pt",
-                            )
-                        packed = {}
-                        for k, v in dict(inputs).items():
-                            if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
-                                v = v.squeeze(0)
-                            packed[k] = v
-                        return packed
+                def _proc(frames, text):
+                    if not isinstance(text, str):
+                        text = self.text_prompt_template
+                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                    if tokenizer is not None:
+                        vocab = tokenizer.get_vocab()
+                        if (
+                            "<video>" in vocab
+                            and "<video>" not in text
+                            and "<image>" not in text
+                        ):
+                            text = f"<video>\n{text}"
+                        if "<obs>" in vocab and "<obs>" not in text:
+                            if "<video>" in text:
+                                text = text.replace("<video>\n", "<video><obs>\n", 1)
+                            else:
+                                text = f"<obs>\n{text}"
+                    try:
+                        max_len = self.vlm_max_text_len if self.vlm_truncation else None
+                        inputs = self.vlm_processor(
+                            text=text,
+                            videos=frames,
+                            return_tensors="pt",
+                            padding=self.vlm_padding,
+                            truncation=self.vlm_truncation,
+                            max_length=max_len,
+                        )
+                    except TypeError:
+                        print("using image processor instead of video processor")
+                        inputs = self.vlm_processor(
+                            images=frames,
+                            return_tensors="pt",
+                        )
+                    packed = {}
+                    for k, v in dict(inputs).items():
+                        if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
+                            v = v.squeeze(0)
+                        packed[k] = v
+                    return packed
 
-                    text = clip[0]["text"]
-                    inputs = _proc(raw_video, text)
-                    next_inputs = None
-                    if self.include_next:
-                        next_inputs = _proc(raw_next_video, text)
-                else:
-                    raise RuntimeError("Dataloader proprocessor not set.")
+                text = clip[0]["text"]
+                inputs = _proc(raw_video, text)
+                next_inputs = None
+                if next_clip is not None:
+                    next_inputs = _proc(raw_next_video, text)
+            else:
+                raise RuntimeError("Dataloader proprocessor not set.")
 
-                robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
-                adj = torch.stack([f["adj"] for f in clip], dim=0)
-                if self.include_next:
-                    next_robot_obs = torch.stack(
-                        [f["robot_obs"] for f in next_clip], dim=0
-                    )
-                    next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
+            robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
+            adj = torch.stack([f["adj"] for f in clip], dim=0)
+            if next_clip is not None:
+                next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
+                next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
 
-                reward = clip[-1]["reward"]
-                done = clip[-1]["done"]
+            reward = clip[-1]["reward"]
+            done = clip[-1]["done"]
 
-                returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
+            returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
 
-                out = {
-                    "robot_obs": robot_obs,
-                    "adj": adj,
-                    "reward": reward.view(1),
-                    "returns": returns.view(1),
-                    "done": done.view(1),
-                }
-                out["inputs"] = inputs
-                if self.include_next:
-                    out["next_inputs"] = next_inputs
-                    out["next_robot_obs"] = next_robot_obs
-                    out["next_adj"] = next_adj
+            out = {
+                "robot_obs": robot_obs,
+                "adj": adj,
+                "reward": reward.view(1),
+                "returns": returns.view(1),
+                "done": done.view(1),
+            }
+            out["inputs"] = inputs
+            if next_clip is not None:
+                out["next_inputs"] = next_inputs
+                out["next_robot_obs"] = next_robot_obs
+                out["next_adj"] = next_adj
 
-                yield out
+            return out
 
         for sample in dataset:
             key = sample.get("__key__", "")
@@ -621,10 +609,11 @@ class SequenceWebDataset(IterableDataset):
             if current_ep is None:
                 current_ep = ep_id
 
+            # Reset buffer on new episode
             if ep_id != current_ep:
-                yield from flush_buffer()
                 buffer = []
                 current_ep = ep_id
+                episode_frame_count = 0
 
             # Image loading
             if "image.png" in sample:
@@ -734,8 +723,27 @@ class SequenceWebDataset(IterableDataset):
                     "done": done,
                 }
             )
+            episode_frame_count += 1
 
-        yield from flush_buffer()
+            # Sliding window yield logic
+            min_len = self.clip_len + (1 if self.include_next else 0)
+
+            # While we have enough data to yield at least one clip
+            while len(buffer) >= min_len:
+                # Check if the clip starting at buffer[0] is valid according to stride
+                # The start index of the clip at buffer[0] is (episode_frame_count - len(buffer))
+                current_start_index = episode_frame_count - len(buffer)
+
+                if current_start_index % self.clip_stride == 0:
+                    clip = buffer[: self.clip_len]
+                    next_clip = None
+                    if self.include_next:
+                        next_clip = buffer[1 : 1 + self.clip_len]
+
+                    yield _process_clip_data(clip, next_clip)
+
+                # Pop the oldest frame to slide the window
+                buffer.pop(0)
 
 
 def webdataset_loader(args, shards, batch_size, num_workers):
