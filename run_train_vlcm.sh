@@ -9,7 +9,7 @@ echo "Date: $(date)"
 # 2. Data Setup
 echo "Checking data..."
 
-DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch"
+DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_test"
 
 # User stated data is already extracted in data_scratch
 if [ ! -d "$DATA_DIR" ]; then
@@ -20,16 +20,10 @@ if [ ! -d "$DATA_DIR" ]; then
 fi
 echo "Using existing data in $DATA_DIR"
 
-# 3. Code Setup
-# train.py, model.py, gat.py, requirements.txt are in PWD
 
 # 4. Run Training
 echo "Running Training..."
 
-# Logic to find the RWARE config folder.
-# Structure: data_scratch/{config_name}/{date_optional}/*.tar
-# We look for the first directory inside data_scratch that contains "rware"
-# or just the first sub directory.
 
 # Find the first subdirectory in data_scratch
 CONFIG_DIR=$(find $DATA_DIR -mindepth 1 -maxdepth 1 -type d | head -n 1)
@@ -64,9 +58,7 @@ echo "Using Shard Pattern: $SHARD_PATTERN"
 # Define container path
 CONTAINER_PATH="$PWD/ma_vlcm.sif"
 
-# Run with Singularity
-# We intentionally mount the current directory ($PWD) to ensure train.py and data are accessible inside.
-# Handle Hugging Face Token (Environment variable or file)
+
 
 # Determine optimal cache/tmp location (Prefer /scratch as it has 5TB capacity)
 if [ -n "$SCRATCH" ]; then
@@ -79,29 +71,11 @@ else
     echo "WARNING: using $PWD for scratch space. This may fail if quota is low."
 fi
 
-# Define specific directories in scratch
-HF_CACHE_DIR="$BASE_SCRATCH/hf_cache"
-TMP_DIR="$BASE_SCRATCH/tmp"
-APPTAINER_TMP_DIR="$BASE_SCRATCH/apptainer_tmp"
-APPTAINER_CACHE_DIR="$BASE_SCRATCH/apptainer_cache"
-
-# Create directories
-mkdir -p "$HF_CACHE_DIR" "$TMP_DIR" "$APPTAINER_TMP_DIR" "$APPTAINER_CACHE_DIR"
-
-echo "Redirecting storage to scratch at $BASE_SCRATCH"
-echo "  HF_HOME: $HF_CACHE_DIR"
-echo "  TMPDIR: $TMP_DIR"
-echo "  APPTAINER_TMPDIR: $APPTAINER_TMP_DIR"
-echo "  APPTAINER_CACHEDIR: $APPTAINER_CACHE_DIR"
 
 # Export variables for the host environment (Apptainer uses these)
-export HF_HOME="$HF_CACHE_DIR"
-export TMPDIR="$TMP_DIR"
-export APPTAINER_TMPDIR="$APPTAINER_TMP_DIR"
-export APPTAINER_CACHEDIR="$APPTAINER_CACHE_DIR"
+
 export HF_TOKEN=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
-export HF_HUB_ENABLE_EMERGENCY_RETRY=True
-export HF_HUB_EMERGENCY_RETRY_WAIT_TIME=10
+
 
 
 # Extract number of robots from config name (e.g. rware-tiny-2ag-hard -> 2)
@@ -113,28 +87,11 @@ else
 fi
 echo "Detected Num Robots: $NUM_ROBOTS"
 
-# --- Diagnostics ---
-echo "Running Diagnostics..."
-echo "ulimit -a:"
-ulimit -a
-echo "free -h:"
-free -h
-echo "GPU Check:"
-if command -v nvidia-smi &> /dev/null; then
-    nvidia-smi
-else
-    echo "WARNING: nvidia-smi not found. Ensure you are on a GPU node."
-fi
-echo "---------------------"
 
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
-  --env HF_HOME="$HF_CACHE_DIR" \
   --env HF_TOKEN="$HF_TOKEN" \
-  --env TMPDIR="$TMP_DIR" \
-  --env HF_HUB_OFFLINE=0 \
-  --env PYTHONNOUSERSITE=1 \
   "$CONTAINER_PATH" python3 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
@@ -147,6 +104,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir checkpoints_rware \
-  --num_workers 1
+  --num_workers 0 \
+  --mixed_precision fp16 \
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
