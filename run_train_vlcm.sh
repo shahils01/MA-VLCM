@@ -96,7 +96,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 4 \
+  --batch_size 1 \
+  --grad_accum_steps 4 \
   --clip_len 8 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
@@ -105,6 +106,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir checkpoints_rware \
   --num_workers 0 \
-  --mixed_precision fp16 \
+  --mixed_precision bf16 \
+  --fsdp \
+  --fsdp_use_orig_params \
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
