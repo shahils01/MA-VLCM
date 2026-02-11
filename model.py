@@ -53,8 +53,6 @@ class ModelConfig:
     debug_save_video: bool = False
 
 
-
-
 class LLaVAVideoBackbone(nn.Module):
     """Backbone wrapper for LLaVA-style video models using HF interfaces."""
 
@@ -71,32 +69,51 @@ class LLaVAVideoBackbone(nn.Module):
             dtype = torch.bfloat16
 
         try:
-            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, LlavaNextVideoProcessor
-            from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
+            from transformers import (
+                AutoProcessor,
+                AutoTokenizer,
+                AutoModelForCausalLM,
+                LlavaNextVideoProcessor,
+            )
+            from transformers.models.llava_next_video import (
+                LlavaNextVideoForConditionalGeneration,
+            )
+
             try:
-                from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
+                from transformers.models.auto.modeling_auto import (
+                    AutoModelForVision2Seq,
+                )
             except Exception:
                 AutoModelForVision2Seq = None
         except Exception as e:
-            raise ImportError("LLaVA-Video backend requires transformers installed.") from e
+            raise ImportError(
+                "LLaVA-Video backend requires transformers installed."
+            ) from e
 
         self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
-        self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
-            cfg.vl_model_name
-        )
+        self.tokenizer = getattr(
+            self.processor, "tokenizer", None
+        ) or AutoTokenizer.from_pretrained(cfg.vl_model_name)
         if "<obs>" not in self.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
         model_kwargs = {"torch_dtype": dtype}
         if cfg.quantization_config is not None:
             model_kwargs["quantization_config"] = cfg.quantization_config
+
+        # Load directly to target device to bypass CPU RAM buffering
+        # This is safe because each process has its own GPU (accelerator.device)
+        model_kwargs["device_map"] = {"": device}
+
         self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, **model_kwargs, low_cpu_mem_usage=True
+            cfg.vl_model_name, **model_kwargs
         )
-        if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
+        if "<obs>" in self.tokenizer.get_vocab() and hasattr(
+            self.model, "resize_token_embeddings"
+        ):
             self.model.resize_token_embeddings(len(self.tokenizer))
 
-        self.model.to(device)
+        # self.model.to(device) # Handled by device_map
         if cfg.freeze_vl:
             for p in self.model.parameters():
                 p.requires_grad = False
@@ -106,9 +123,13 @@ class LLaVAVideoBackbone(nn.Module):
     def get_input_embeddings(self):
         if hasattr(self.model, "get_input_embeddings"):
             return self.model.get_input_embeddings()
-        if hasattr(self.model, "language_model") and hasattr(self.model.language_model, "get_input_embeddings"):
+        if hasattr(self.model, "language_model") and hasattr(
+            self.model.language_model, "get_input_embeddings"
+        ):
             return self.model.language_model.get_input_embeddings()
-        if hasattr(self.model, "model") and hasattr(self.model.model, "get_input_embeddings"):
+        if hasattr(self.model, "model") and hasattr(
+            self.model.model, "get_input_embeddings"
+        ):
             return self.model.model.get_input_embeddings()
         raise AttributeError("Could not access input embeddings on LLaVA backbone.")
 
@@ -116,7 +137,13 @@ class LLaVAVideoBackbone(nn.Module):
         moved = {}
         for k, v in inputs.items():
             if torch.is_tensor(v):
-                if k in ("pixel_values", "pixel_values_videos", "video_values", "video", "videos"):
+                if k in (
+                    "pixel_values",
+                    "pixel_values_videos",
+                    "video_values",
+                    "video",
+                    "videos",
+                ):
                     moved[k] = v.to(self.device, dtype=self._dtype)
                 else:
                     moved[k] = v.to(self.device)
@@ -124,7 +151,9 @@ class LLaVAVideoBackbone(nn.Module):
                 moved[k] = v
         return moved
 
-    def prepare_inputs(self, text, videos, padding=False, truncation=False, max_length=None):
+    def prepare_inputs(
+        self, text, videos, padding=False, truncation=False, max_length=None
+    ):
         # For LLaVA video prompts, truncation can break special token alignment.
         # Only pass max_length when truncation is explicitly enabled.
         if truncation and max_length is None:
@@ -176,7 +205,9 @@ class DenseGraphEncoder(nn.Module):
 
     def __init__(self, d_model: int, layers: int):
         super().__init__()
-        self.layers = nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(layers)])
+        self.layers = nn.ModuleList(
+            [nn.Linear(d_model, d_model) for _ in range(layers)]
+        )
 
     def forward(self, node_feats, adj):
         # node_feats: [B, T, N, D]
@@ -216,7 +247,9 @@ class MoEFeedForward(nn.Module):
         for i in range(self.top_k):
             idx = topk.indices[:, i]
             w = weights[:, i].unsqueeze(-1)
-            expert_out = torch.stack([self.experts[j](x[b]) for b, j in enumerate(idx)], dim=0)
+            expert_out = torch.stack(
+                [self.experts[j](x[b]) for b, j in enumerate(idx)], dim=0
+            )
             out = out + w * expert_out
         return out
 
@@ -260,7 +293,7 @@ class MultimodalValueModel(nn.Module):
         )
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
+        self.value_head = nn.Linear(lm_hidden + cfg.d_model, 1)
 
     def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
         # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
@@ -298,7 +331,7 @@ class MultimodalValueModel(nn.Module):
         video_list = None
         if isinstance(video, dict):
             inputs = video
-        
+
         bsz = robot_obs.shape[0]
         # # print('robot_obs shape = ', robot_obs.shape)
         # robot_obs = robot_obs[:, -1, :, :8].reshape(-1, 40)
@@ -313,7 +346,9 @@ class MultimodalValueModel(nn.Module):
             )
 
         # Use only the last-step robot obs and encode team structure with GNN.
-        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
+        robot_last = robot_obs[
+            :, -1, :, : self.robot_node_dim
+        ].contiguous()  # [B, N, robot_node_dim]
         adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
         edge_index = self._adj_to_batched_edge_index(adj_last)
         robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
@@ -343,7 +378,9 @@ class MultimodalValueModel(nn.Module):
                     obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
                 elif input_ids.shape[1] == bsz:
                     # input_ids: [S, B]
-                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                    obs_token_exp = obs_token.transpose(0, 1).expand(
+                        inputs_embeds.size(0), -1, -1
+                    )
                 else:
                     raise RuntimeError(
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
@@ -352,7 +389,9 @@ class MultimodalValueModel(nn.Module):
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
-        output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
+        output = self.backbone.model(
+            **inputs, output_hidden_states=True, return_dict=True
+        )
 
         final_hidden = output.hidden_states[-1]
         attn = inputs.get("attention_mask")
@@ -362,7 +401,9 @@ class MultimodalValueModel(nn.Module):
         else:
             pooled = final_hidden[:, -1, :]
 
-        pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
+        pooled = pooled.to(
+            dtype=self.value_head.weight.dtype, device=self.value_head.weight.device
+        )
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
