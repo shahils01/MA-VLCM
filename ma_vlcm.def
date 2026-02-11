@@ -98,7 +98,7 @@ From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
         noise==1.2.2 \
         numba==0.63.1 \
         numpy==2.2.6 \
-        opencv-python==4.13.0.90 \
+        opencv-python \
         packaging==26.0 \
         peft==0.18.1 \
         pillow==12.0.0 \
@@ -127,7 +127,7 @@ From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
         tensorboardx==2.6.4 \
         tokenizers==0.22.2 \
         tqdm==4.67.1 \
-        transformers==5.1.0 \
+        transformers \
         triton==3.1.0 \
         typer-slim==0.21.1 \
         typing-extensions==4.15.0 \
@@ -141,12 +141,12 @@ From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
         einops \
         moviepy \
         lightning \
-        jsonlines
+        jsonlines \
+        --extra-index-url https://download.pytorch.org/whl/cu124
     
     # Note: If you have a local requirements.txt, you can copy it in %files and install from there.
     # But embedding key packages here makes the definition more standalone.
 
-%environment
     export LC_ALL=C
     export LANG=C
     # Ensure nvidia-smi and cuda tools are in path if not already
