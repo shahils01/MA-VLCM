@@ -32,6 +32,8 @@ From: nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     # Install Python dependencies
     
     # 1. Install PyTorch with CUDA 12.4 support
+    # Remove any pre-installed versions that might conflict
+    python3 -m pip uninstall -y torch torchvision torchaudio
     # We explicitly install compatible torch first to match the system CUDA version as closely as possible
     python3 -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 

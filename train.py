@@ -43,7 +43,7 @@ def parse_args():
     p.add_argument(
         "--train_shards",
         type=str,
-        default="osdf:///ospool/ap40/data/aditya.parameshwaran",
+        default="osdf:///ospool/ap40/data/aditya.parameshwaran/data_scratch",
         help="WebDataset shard pattern for training",
     )
     p.add_argument(
@@ -147,7 +147,7 @@ def parse_args():
         default="bfloat16",
         choices=["float16", "bfloat16", "float32"],
     )
-    p.add_argument("--vl_max_text_len", type=int, default=256)
+    p.add_argument("--vl_max_text_len", type=int, default=8192)
     p.add_argument("--freeze_vl", action="store_true")
 
     # PEFT / LoRA

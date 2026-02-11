@@ -62,7 +62,7 @@ SHARD_PATTERN="$BLOCK_DIR/*.tar"
 echo "Using Shard Pattern: $SHARD_PATTERN"
 
 # Define container path
-CONTAINER_PATH="/home/aparame/Research/MA-VLCM/ma_vlcm.sif"
+CONTAINER_PATH="$PWD/ma_vlcm.sif"
 
 # Run with Singularity
 # We intentionally mount the current directory ($PWD) to ensure train.py and data are accessible inside.
@@ -133,7 +133,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_HOME="$HF_CACHE_DIR" \
   --env HF_TOKEN="$HF_TOKEN" \
   --env TMPDIR="$TMP_DIR" \
-  --env HF_HUB_OFFLINE=0\
+  --env HF_HUB_OFFLINE=0 \
+  --env PYTHONNOUSERSITE=1 \
   "$CONTAINER_PATH" python3 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
