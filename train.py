@@ -253,7 +253,11 @@ def _apply_peft(model, args):
         p.requires_grad = False
 
     if args.peft == "qlora":
-        model.backbone.model = prepare_model_for_kbit_training(model.backbone.model)
+        model.backbone.model = prepare_model_for_kbit_training(
+            model.backbone.model,
+            use_gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+        )
 
     lora_cfg = LoraConfig(
         r=args.lora_r,
@@ -1043,11 +1047,6 @@ def main():
         model, optimizer, train_loader = accelerator.prepare(
             model, optimizer, train_loader
         )
-
-    # Fix DDP + gradient checkpointing + LoRA: tell DDP the graph is static
-    # to avoid "variable ready twice" errors from reentrant checkpointing.
-    if hasattr(model, "_set_static_graph"):
-        model._set_static_graph()
 
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(

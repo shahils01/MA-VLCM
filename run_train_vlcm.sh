@@ -9,7 +9,7 @@ echo "Date: $(date)"
 # 2. Data Setup
 echo "Checking data..."
 
-DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_test"
+DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch"
 
 # User stated data is already extracted in data_scratch
 if [ ! -d "$DATA_DIR" ]; then
