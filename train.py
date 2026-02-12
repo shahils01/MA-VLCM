@@ -1028,9 +1028,11 @@ def main():
         try:
             import wandb
 
-            # Derive run name from the data directory
-            data_path = pathlib.Path(args.train_shards)
-            run_name = data_path.name or data_path.parent.name
+            # Run name with timestamp
+            from datetime import datetime
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_name = f"rware_sparse_loss_{timestamp}"
             wandb.init(
                 entity="i2rLAB",
                 project="VLCM_RWARE_Training",
