@@ -1,6 +1,7 @@
 import argparse
 import os
 import io
+import pathlib
 import glob
 import functools
 import inspect
@@ -917,6 +918,22 @@ def run_epoch(
                     optimizer.zero_grad(set_to_none=True)
 
         total_loss += loss.item()
+
+        # Log step-level metrics to wandb (main process only)
+        if train and accelerator.is_main_process:
+            try:
+                import wandb
+
+                if wandb.run is not None:
+                    wandb.log(
+                        {
+                            "train/step_loss": loss.item(),
+                            "train/step": step,
+                        }
+                    )
+            except ImportError:
+                pass
+
         if log_every > 0 and step % log_every == 0:
             avg = total_loss / step
             phase = "train" if train else "val"
@@ -1006,6 +1023,24 @@ def main():
         kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
     )
 
+    # --- WandB init (main process only) ---
+    if accelerator.is_main_process:
+        try:
+            import wandb
+
+            # Derive run name from the data directory
+            data_path = pathlib.Path(args.train_shards)
+            run_name = data_path.name or data_path.parent.name
+            wandb.init(
+                entity="i2rLAB",
+                project="VLCM_RWARE_Training",
+                name=run_name,
+                config=vars(args),
+            )
+        except ImportError:
+            accelerator.print("wandb not installed, skipping logging.")
+    accelerator.wait_for_everyone()
+
     # Serialize model loading to avoid System RAM OOM (SIGKILL)
     # Each process loads the model sequentially instead of simultaneously.
     with accelerator.main_process_first():
@@ -1073,8 +1108,25 @@ def main():
             )
 
         accelerator.print(
-            f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss if val_loss is not None else 'n/a'}"
+            f"epoch={epoch} train_loss={train_loss:.4f}"
+            f" val_loss={val_loss if val_loss is not None else 'n/a'}"
         )
+
+        # Log epoch-level metrics to wandb
+        if accelerator.is_main_process:
+            try:
+                import wandb
+
+                if wandb.run is not None:
+                    log_dict = {
+                        "epoch": epoch,
+                        "train/epoch_loss": train_loss,
+                    }
+                    if val_loss is not None:
+                        log_dict["val/epoch_loss"] = val_loss
+                    wandb.log(log_dict)
+            except ImportError:
+                pass
 
         if accelerator.is_main_process:
             ckpt = {
@@ -1085,6 +1137,16 @@ def main():
             }
             torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
         accelerator.wait_for_everyone()
+
+    # Finish wandb run
+    if accelerator.is_main_process:
+        try:
+            import wandb
+
+            if wandb.run is not None:
+                wandb.finish()
+        except ImportError:
+            pass
 
 
 if __name__ == "__main__":

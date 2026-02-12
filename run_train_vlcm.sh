@@ -96,9 +96,9 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 1 \
-  --grad_accum_steps 2 \
-  --clip_len 2 \
+  --batch_size 2 \
+  --grad_accum_steps 4 \
+  --clip_len 8 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
   --epochs 2 \
