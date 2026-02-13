@@ -15,6 +15,43 @@ from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
 import numpy as np
 
+# Extracted Shelf Map (Partial - to be updated with full map)
+SHELF_MAP = {
+    1: (1, 1),
+    2: (2, 1),
+    3: (7, 1),
+    4: (8, 1),
+    5: (1, 2),
+    6: (2, 2),
+    7: (7, 2),
+    8: (8, 2),
+    9: (1, 3),
+    10: (2, 3),
+    11: (7, 3),
+    12: (8, 3),
+    13: (1, 4),
+    14: (2, 4),
+    15: (7, 4),
+    16: (8, 4),
+    17: (1, 5),
+    18: (2, 5),
+    19: (7, 5),
+    20: (8, 5),
+    21: (1, 6),
+    22: (2, 6),
+    23: (7, 6),
+    24: (8, 6),
+    25: (1, 7),
+    26: (2, 7),
+    27: (7, 7),
+    28: (8, 7),
+    29: (1, 8),
+    30: (2, 8),
+    31: (7, 8),
+    32: (8, 8),
+}
+
+
 try:
     from accelerate.utils import DistributedDataParallelKwargs
 except Exception:
@@ -479,6 +516,7 @@ class SequenceWebDataset(IterableDataset):
         self.vlm_max_text_len = vlm_max_text_len
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
+        self.times_cache = {}
 
     def __iter__(self):
         if wds is None:
@@ -607,7 +645,9 @@ class SequenceWebDataset(IterableDataset):
                 key = key.decode("utf-8", errors="ignore")
 
             if "_" in key:
-                ep_id = key.split("_")[0]
+                # Extract trajectory ID by removing the last part (e.g., _step0000)
+                parts = key.split("_")
+                ep_id = "_".join(parts[:-1]) if "step" in parts[-1] else parts[0]
             else:
                 ep_id = key
 
@@ -659,12 +699,35 @@ class SequenceWebDataset(IterableDataset):
                     adj = torch.eye(n, dtype=torch.float32)
 
                 # Reward
+                # --- NEW REWARD LOGIC: Time-based ---
                 base_reward = 0.0
-                if "reward.json" in sample:
-                    try:
-                        base_reward = float(sample["reward.json"])
-                    except Exception:
-                        pass
+                try:
+                    traj_id = ep_id
+                    step_val = state_data.get("step", 0)
+                    # npy index is 0-based, step is 1-based
+                    step_idx = int(step_val) - 1
+
+                    if traj_id not in self.times_cache:
+                        # Base directory for times files as provided by user
+                        times_dir = "/home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_test"
+                        times_path = os.path.join(times_dir, f"{traj_id}_times.npy")
+                        if os.path.exists(times_path):
+                            self.times_cache[traj_id] = np.load(times_path)
+                        else:
+                            self.times_cache[traj_id] = None
+
+                    times_data = self.times_cache[traj_id]
+                    if times_data is not None and 0 <= step_idx < times_data.shape[1]:
+                        step_times = times_data[:, step_idx]
+                        # Reward rules: >0 -> +1, <0 -> -5, else 0
+                        rs = [
+                            1.0 if t > 0 else -5.0 if t < 0 else 0.0 for t in step_times
+                        ]
+                        base_reward = sum(rs) / max(len(rs), 1)
+                    else:
+                        base_reward = float(state_data.get("reward", 0.0))
+                except Exception:
+                    base_reward = float(state_data.get("reward", 0.0))
 
                 dist_penalty = 0.0
                 if "dist.npy" in sample:
@@ -677,6 +740,75 @@ class SequenceWebDataset(IterableDataset):
                             dist_penalty = -1.0
 
                 total_reward = base_reward + dist_penalty
+
+                # --- NEW REWARD LOGIC ---
+                # r_dist: Negative average minimum distance to requested boxes
+                # If an agent is carrying a REQUESTED box, its distance cost is 0.
+
+                try:
+                    requests = state_data.get("requests", [])
+                    # Filter valid requests present in our map
+                    valid_request_positions = [
+                        SHELF_MAP[r] for r in requests if r in SHELF_MAP
+                    ]
+
+                    if not valid_request_positions:
+                        # Fallback if no known requested shelves:
+                        # Maybe 0 reward or keep existing structure?
+                        # If requests exist but not in map, we can't calculate distance.
+                        # Proceed with 0 r_dist contribution if empty.
+                        r_dist = 0.0
+                    else:
+                        num_agents = len(state_data.get("agents", []))
+                        dist_sum = 0.0
+
+                        agent_positions = []
+                        for ag in state_data.get("agents", []):
+                            # Agent Pos
+                            pos = ag.get("pos", [0, 0])
+                            # RWARE pos is [y, x] or [x, y]?
+                            # Looking at extraction script: pos tuple(ag['pos']) matched (x,y) or (row, col)
+                            # In map extraction, we just took raw pos values.
+                            # So we should use raw pos values here too.
+
+                            carrying_id = ag.get("carrying")
+
+                            # Check if carrying a requested box
+                            is_carrying_request = (carrying_id is not None) and (
+                                carrying_id in requests
+                            )
+
+                            if is_carrying_request:
+                                # Distance cost is 0
+                                dist = 0.0
+                            else:
+                                # Calculate min distance to any valid request
+                                # Use Euclidean distance
+                                # pos and shelf_pos are lists/tuples
+                                min_d = 1000.0
+                                ax, ay = pos[0], pos[1]
+                                for sx, sy in valid_request_positions:
+                                    d = np.sqrt((ax - sx) ** 2 + (ay - sy) ** 2)
+                                    if d < min_d:
+                                        min_d = d
+
+                                # Cap or just take min? Logic says "avg_min_dist"
+                                # If min_d is still 1000.0 (no requests), handled by outer check
+                                dist = min_d
+
+                            dist_sum += dist
+
+                        avg_min_dist = dist_sum / max(num_agents, 1)
+                        # r_dist = -avg_min_dist
+                        r_dist = -avg_min_dist
+
+                    total_reward += r_dist
+
+                except Exception as e:
+                    # Fallback to avoid crashing training if data is weird
+                    # print(f"Reward Calc Error: {e}")
+                    pass
+
                 reward = torch.tensor(total_reward, dtype=torch.float32)
                 done = torch.tensor(0.0, dtype=torch.float32)
 
