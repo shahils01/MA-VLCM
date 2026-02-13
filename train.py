@@ -1164,10 +1164,10 @@ def main():
             from datetime import datetime
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            run_name = f"rware_sparse_loss_{timestamp}"
+            run_name = f"rware_dense_loss_{timestamp}"
             wandb.init(
                 entity="i2rLAB",
-                project="VLCM_RWARE_Training",
+                project="VLCM_Training_RWARE",
                 name=run_name,
                 config=vars(args),
             )

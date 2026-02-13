@@ -1,0 +1,47 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████████████████████████████████████████████████████████████████████████████| 687/687 [02:03<00:00,  5.55it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]
+Expanded shard pattern specific to 100 files.
+Found 100 shards.
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train step=50 loss=0.4530
+train step=100 loss=0.4059
+train step=150 loss=0.3784
+train step=200 loss=0.3341
+train step=250 loss=0.2910
+train step=300 loss=0.2867
+train step=350 loss=0.2855
+train step=400 loss=0.3020
+train step=450 loss=0.2824
+train step=500 loss=0.2818
+train step=550 loss=0.2826
+train step=600 loss=0.2742
+train step=650 loss=0.2776
+train step=700 loss=0.2729
+train step=750 loss=0.2741
+train step=800 loss=0.2722
+train step=850 loss=0.2690
+train step=900 loss=0.2667
+train step=950 loss=0.2645
+train step=1000 loss=0.2658
+epoch=1 train_loss=0.2675 val_loss=n/a
+train step=50 loss=0.4592
+train step=100 loss=0.3594
+train step=150 loss=0.3448
+train step=200 loss=0.3065
+train step=250 loss=0.2702
+train step=300 loss=0.2727
+train step=350 loss=0.2711
+train step=400 loss=0.2877
+train step=450 loss=0.2681
+train step=500 loss=0.2700
+train step=550 loss=0.2735
+train step=600 loss=0.2653
+train step=650 loss=0.2691
+train step=700 loss=0.2632
+train step=750 loss=0.2663
+train step=800 loss=0.2616
+train step=850 loss=0.2576
+train step=900 loss=0.2563
+train step=950 loss=0.2544
+train step=1000 loss=0.2556
+epoch=2 train_loss=0.2573 val_loss=n/a

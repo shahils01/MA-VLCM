@@ -1,0 +1,300 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            geiq0kdt19gpvy8jh83abnb6nl2808wq:
+                args:
+                    - --train_shards
+                    - /scratch/aparame/Research/VLCM_Data_Collection/data_scratch/rware:rware-tiny-2ag-easy-v2/2026-02-01/*.tar
+                    - --dataset_type
+                    - rware
+                    - --rware_config
+                    - rware:rware-tiny-2ag-easy-v2
+                    - --batch_size
+                    - "2"
+                    - --grad_accum_steps
+                    - "4"
+                    - --clip_len
+                    - "8"
+                    - --num_robots
+                    - "2"
+                    - --robot_obs_dim
+                    - "6"
+                    - --epochs
+                    - "2"
+                    - --vl_backend
+                    - llava_video
+                    - --vl_model_name
+                    - llava-hf/LLaVA-NeXT-Video-7B-32K-hf
+                    - --save_dir
+                    - checkpoints_rware
+                    - --num_workers
+                    - "0"
+                    - --mixed_precision
+                    - bf16
+                    - --peft
+                    - qlora
+                    - --lora_r
+                    - "16"
+                    - --lora_alpha
+                    - "32"
+                    - --lora_dropout
+                    - "0.05"
+                    - --vl_max_text_len
+                    - "2048"
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 104
+                cpu_count_logical: 104
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "67108864"
+                        used: "16384"
+                email: aparame@g.clemson.edu
+                executable: /usr/bin/python3
+                git:
+                    commit: f946be5d731bdc364065803dbc6cca335c07c8b3
+                    remote: git@github.com:shahils01/MA-VLCM.git
+                gpu: NVIDIA H100 80GB HBM3
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H100 80GB HBM3
+                      uuid: GPU-0add6a0f-de16-a2be-5cfd-121605a4eb02
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H100 80GB HBM3
+                      uuid: GPU-04aa5470-1372-695f-faf7-ead32e5ead95
+                host: nodeai05.palmetto.clemson.edu
+                memory:
+                    total: "1081133400064"
+                os: Linux-4.18.0-553.50.1.el8_10.x86_64-x86_64-with-glibc2.35
+                program: /home/aparame/Research/MA-VLCM/train.py
+                python: CPython 3.10.12
+                root: /home/aparame/Research/MA-VLCM
+                slurm:
+                    cluster_name: palmetto2
+                    conf: /var/spool/slurm/d/conf-cache/slurm.conf
+                    cpus_on_node: "1"
+                    gpus: h100:2
+                    gpus_on_node: "2"
+                    gtids: "0"
+                    job_account: cuuser_yue6_vae_verification
+                    job_cpus_per_node: "1"
+                    job_end_time: "1771039931"
+                    job_gid: "10000"
+                    job_gpus: 5,7
+                    job_id: "9558121"
+                    job_name: interactive
+                    job_nodelist: nodeai05
+                    job_num_nodes: "1"
+                    job_partition: interact
+                    job_qos: normal
+                    job_start_time: "1770996731"
+                    job_uid: "432600"
+                    job_user: aparame
+                    jobid: "9558121"
+                    launch_node_ipaddr: 10.125.60.107
+                    localid: "0"
+                    mem_per_node: "131072"
+                    mpi_type: pmix
+                    nnodes: "1"
+                    nodeid: "0"
+                    nodelist: nodeai05
+                    oom_kill_step: "0"
+                    pmix_mapping_serv: (vector,(0,1,1))
+                    pmixp_abort_agent_port: "61604"
+                    prio_process: "0"
+                    procid: "0"
+                    pty_port: "62222"
+                    pty_win_col: "211"
+                    pty_win_row: "57"
+                    script_context: prolog_task
+                    srun_comm_host: 10.125.60.107
+                    srun_comm_port: "60039"
+                    step_id: "4294967290"
+                    step_launcher_port: "60039"
+                    step_nodelist: nodeai05
+                    step_num_nodes: "1"
+                    step_num_tasks: "1"
+                    step_tasks_per_node: "1"
+                    stepid: "4294967290"
+                    stepmgr: nodeai05
+                    submit_dir: /home/aparame
+                    submit_host: vm-slurm-p-login02.palmetto.clemson.edu
+                    task_pid: "629504"
+                    tasks_per_node: "1"
+                    topology_addr: ndrspine.aindrspine.aindrleaf2.nodeai05
+                    topology_addr_pattern: switch.switch.switch.node
+                startedAt: "2026-02-13T15:36:37.685773Z"
+                writerId: geiq0kdt19gpvy8jh83abnb6nl2808wq
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 11
+                - 49
+                - 71
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+                - 77
+                - 98
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.10.12
+            "5": 0.24.2
+            "6": 5.1.0
+            "8":
+                - 2
+            "12": 0.24.2
+            "13": linux-x86_64
+batch_size:
+    value: 2
+clip_len:
+    value: 8
+clip_stride:
+    value: 1
+contrastive_margin:
+    value: 0
+d_model:
+    value: 256
+dataset_type:
+    value: rware
+ddp_find_unused_parameters:
+    value: false
+debug_out_dir:
+    value: debug_samples
+debug_save_video:
+    value: false
+done_reduce:
+    value: any
+epochs:
+    value: 2
+freeze_vl:
+    value: false
+fsdp:
+    value: false
+fsdp_cpu_offload:
+    value: false
+fsdp_min_num_params:
+    value: 1000000
+fsdp_use_orig_params:
+    value: false
+fusion_hidden:
+    value: 512
+gamma:
+    value: 0.99
+gnn_layers:
+    value: 2
+grad_accum_steps:
+    value: 4
+log_every:
+    value: 50
+lora_alpha:
+    value: 32
+lora_bias:
+    value: none
+lora_dropout:
+    value: 0.05
+lora_r:
+    value: 16
+lora_target_modules:
+    value: ""
+loss_type:
+    value: contrastive
+lr:
+    value: 0.0003
+mixed_precision:
+    value: bf16
+moe_experts:
+    value: 4
+moe_top_k:
+    value: 2
+n_step:
+    value: 50
+num_robots:
+    value: 2
+num_workers:
+    value: 0
+peft:
+    value: qlora
+preprocess_in_loader:
+    value: true
+quantization_config:
+    value:
+        quant_method: BITS_AND_BYTES
+return_mode:
+    value: td
+reward_reduce:
+    value: mean
+robot_obs_dim:
+    value: 6
+robot_source:
+    value: obs
+rware_config:
+    value: rware:rware-tiny-2ag-easy-v2
+samples_per_epoch:
+    value: 1000
+save_dir:
+    value: checkpoints_rware
+temporal_dropout:
+    value: 0.1
+temporal_heads:
+    value: 4
+temporal_layers:
+    value: 2
+text_dim:
+    value: 512
+text_mode:
+    value: raw
+text_prompt_template:
+    value: null
+train_shards:
+    value: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch/rware:rware-tiny-2ag-easy-v2/2026-02-01/*.tar
+use_moe:
+    value: false
+val_shards:
+    value: ""
+video_channels:
+    value: 3
+video_frames:
+    value: 8
+video_height:
+    value: 224
+video_mean:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+video_preprocessed:
+    value: true
+video_std:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+video_width:
+    value: 224
+vl_backend:
+    value: llava_video
+vl_dtype:
+    value: bfloat16
+vl_max_text_len:
+    value: 2048
+vl_model_name:
+    value: llava-hf/LLaVA-NeXT-Video-7B-32K-hf
+weight_decay:
+    value: 0.01

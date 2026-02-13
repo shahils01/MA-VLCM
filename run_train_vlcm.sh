@@ -92,25 +92,25 @@ echo "Detected Num Robots: $NUM_ROBOTS"
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_TOKEN="$HF_TOKEN" \
-  "$CONTAINER_PATH" accelerate launch --num_processes 2 train.py \
+  "$CONTAINER_PATH" accelerate launch --num_processes 4 train.py \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 2 \
+  --batch_size 8 \
   --grad_accum_steps 4 \
-  --clip_len 8 \
+  --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
-  --epochs 2 \
+  --epochs 50 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir checkpoints_rware \
-  --num_workers 0 \
+  --num_workers 8 \
   --mixed_precision bf16 \
   --peft qlora \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
-  --vl_max_text_len 2048 \
+  --vl_max_text_len 16384 \
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)

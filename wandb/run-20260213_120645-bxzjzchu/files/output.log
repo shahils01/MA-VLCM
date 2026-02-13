@@ -1,0 +1,14 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|█| 687/687 [00:05<00:00, 133.11it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.wei
+Expanded shard pattern specific to 100 files.
+Found 100 shards.
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train step=50 loss=0.4036
+train step=100 loss=0.4123
+epoch=1 train_loss=0.4147 val_loss=n/a
+train step=50 loss=0.3850
+train step=100 loss=0.4002
+epoch=2 train_loss=0.4065 val_loss=n/a
+train step=50 loss=0.3755
+train step=100 loss=0.3863
+epoch=3 train_loss=0.3869 val_loss=n/a
