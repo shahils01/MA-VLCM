@@ -1,6 +1,7 @@
 import argparse
 import os
 import io
+import json
 import pathlib
 import glob
 import functools
@@ -711,6 +712,8 @@ class SequenceWebDataset(IterableDataset):
 
                 if state_json_present:
                     state_data = sample["state.json"]
+                    if isinstance(state_data, bytes):
+                        state_data = json.loads(state_data)
                     robot_obs = _parse_rware_state(
                         state_data, num_robots=self.max_num_robots, robot_obs_dim=self.robot_obs_dim
                     )
