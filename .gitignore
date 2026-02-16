@@ -11,6 +11,15 @@ outputs/
 logs/
 .wandb/
 .DS_Store
+models/
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.json
+tokenizer.*
 Temp.ipynb
 train_sample/
 test_data/
+ma_vlcm_container.sif
+ma_vlcm.def

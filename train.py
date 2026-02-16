@@ -258,12 +258,14 @@ def _reward_from_frame(sample, reduce_mode):
     return _reduce_value(t, reduce_mode)
 
 
+
 def _done_from_frame(sample, reduce_mode):
     arr = _as_numpy(sample["dones.npy"])
     if hasattr(arr, "numpy"):
         arr = arr.numpy()
     t = torch.tensor(arr, dtype=torch.float32)
     return _reduce_done(t, reduce_mode)
+
 
 
 class SequenceWebDataset(IterableDataset):

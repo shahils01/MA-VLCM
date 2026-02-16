@@ -1,5 +1,5 @@
-python train.py \
-  --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
+python3 train.py \
+  --train_shards "/home/anshul/Research/Postdoc/RL/MA-VLCM/test_data/shard-{000000..000080}.tar" \
   --batch_size 2 \
   --clip_len 10 \
   --clip_stride 10 \
