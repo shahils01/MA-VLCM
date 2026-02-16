@@ -202,8 +202,6 @@ def parse_args():
 
     # Video
     p.add_argument("--video_channels", type=int, default=3)
-    p.add_argument("--video_height", type=int, default=224)
-    p.add_argument("--video_width", type=int, default=224)
     p.add_argument("--video_frames", type=int, default=8)
     p.add_argument("--video_preprocessed", action="store_true")
     p.add_argument("--video_mean", type=float, nargs=3, default=(0.5, 0.5, 0.5))
@@ -233,6 +231,11 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints_rware")
+    
+    # Optimization
+    p.add_argument("--compile", action="store_true", help="Use torch.compile")
+    p.add_argument("--resize_width", type=int, default=672)
+    p.add_argument("--resize_height", type=int, default=336)
 
     return p.parse_args()
 
@@ -246,8 +249,6 @@ def build_model(args, device):
         freeze_vl=args.freeze_vl,
         quantization_config=getattr(args, "quantization_config", None),
         video_channels=args.video_channels,
-        video_height=args.video_height,
-        video_width=args.video_width,
         video_frames=args.video_frames,
         video_preprocessed=args.video_preprocessed,
         video_mean=tuple(args.video_mean),
@@ -474,6 +475,8 @@ class SequenceWebDataset(IterableDataset):
         vlm_padding="longest",
         dataset_type="default",
         rware_config="tiny-2ag-hard",
+        resize_width=672,
+        resize_height=336,
     ):
         if isinstance(shards, str):
             if os.path.isdir(shards):
@@ -516,7 +519,30 @@ class SequenceWebDataset(IterableDataset):
         self.vlm_max_text_len = vlm_max_text_len
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
+        self.resize_width = resize_width
+        self.resize_height = resize_height
         self.times_cache = {}
+
+    def _custom_decoder(self, key, data):
+        # We only care about images here.
+        extension = key.split(".")[-1].lower()
+        if extension in ["png", "jpg", "jpeg"]:
+            # Check for specific keywords to identify "main" camera (overhead/image)
+            # This skips "front" camera or other images not used in training.
+            if "overhead" in key or "image" in key:
+                 # Decode and resize
+                 with io.BytesIO(data) as stream:
+                     img = Image.open(stream)
+                     img.load()
+                     img = img.convert("RGB")
+                     if self.resize_width > 0 and self.resize_height > 0:
+                        img = img.resize((self.resize_width, self.resize_height))
+                     return img
+            # For other images (e.g. front camera), return raw bytes.
+            return data 
+        
+        # Fallback for non-image data (npy, json, etc.)
+        return data
 
     def __iter__(self):
         if wds is None:
@@ -545,9 +571,11 @@ class SequenceWebDataset(IterableDataset):
                 shardshuffle=False,
                 nodesplitter=getattr(wds, "split_by_node", None),
                 workersplitter=getattr(wds, "split_by_worker", None),
-            ).decode("pil")
+            ).decode(self._custom_decoder)
         except TypeError:
-            dataset = wds.WebDataset(self.shards, shardshuffle=False).decode("pil")
+            dataset = wds.WebDataset(self.shards, shardshuffle=False).decode(
+                self._custom_decoder
+            )
             if hasattr(dataset, "split_by_node"):
                 dataset = dataset.split_by_node()
             if hasattr(dataset, "split_by_worker"):
@@ -921,11 +949,15 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=True,
         vlm_padding="max_length",
+        resize_width=args.resize_width,
+        resize_height=args.resize_height,
     )
 
     def _collate(batch):
         def _stack_inputs(items):
             out = {}
+            if not items:
+                return out
             keys = items[0].keys()
             for k in keys:
                 vals = [d[k] for d in items]
@@ -953,7 +985,11 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         return out
 
     return DataLoader(
-        dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate
+        dataset, 
+        batch_size=batch_size, 
+        num_workers=num_workers, 
+        collate_fn=_collate,
+        pin_memory=True
     )
 
 
@@ -1195,6 +1231,10 @@ def main():
         for b in model.buffers():
             if torch.is_floating_point(b) and b.dtype != target_dtype:
                 b.data = b.data.to(dtype=target_dtype)
+
+    if args.compile:
+        model = torch.compile(model)
+
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )

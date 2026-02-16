@@ -1,0 +1,1 @@
+{"step": 6, "requests": [19, 13, 8, 10], "agents": [{"id": 1, "action": "TOGGLE_LOAD", "pos": [1, 4], "dir": "SOUTH", "carrying": null}, {"id": 2, "action": "FORWARD", "pos": [1, 7], "dir": "NORTH", "carrying": null}], "reward": 0.0}

@@ -20,8 +20,6 @@ class ModelConfig:
 
     # Video
     video_channels: int = 3
-    video_height: int = 224
-    video_width: int = 224
     video_frames: int = 8
     video_preprocessed: bool = False
     video_mean: tuple = (0.5, 0.5, 0.5)

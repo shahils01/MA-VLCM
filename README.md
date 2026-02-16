@@ -1,79 +1,64 @@
-# MA-VLCM (Multimodal Value Model)
+# MA-VLCM: RWARE Training with LLaVA-NeXT-Video
 
-Backbone used here:
-- **Vision/Text**: DeepSeek VLM (DeepSeek-VL by default; DeepSeek-VL2 optional)
-- **Temporal**: Transformer encoder over frame embeddings
-- **Graph**: dense adjacency message passing over robot nodes per timestep
-- **Fusion**: MLP by default; optional MoE MLP
+This branch is configured for training a Multimodal Value Model on the Robot Warehouse (RWARE) environment using **LLaVA-NeXT-Video** as the vision-language backbone.
 
-This is a minimal, clean starting point for video + text + robot state + dynamic graph, with all key sizes configurable.
-
-## Install
+## Quick Start
+To run the training, use the provided shell script:
+```bash
+./run_train_vlcm.sh
 ```
+This script handles:
+1. Data directory checks (expects data in `VLCM_Data_Collection/RWARE/data_scratch` or defined via environment variables).
+2. Automatic detection of RWARE configuration and number of robots from directory names.
+3. Setting up cache directories on scratch space.
+4. Launching the training inside an Apptainer/Singularity container.
+
+## Experiment Configuration
+
+### 1. Model Architecture
+- **VLM Backbone**: `llava-hf/LLaVA-NeXT-Video-7B-32K-hf` (via `llava_video` backend)
+- **Robot Encoder**: 2-layer GNN (Graph Neural Network) processing robot states.
+- **Fusion**: Multimodal fusion of video embeddings, text instruction embeddings, and robot graph embeddings.
+- **Value Head**: Estimates state value $V(s)$ trained with TD(0) loss.
+
+### 2. Observation Structure
+The model processes a sequence of observations (video clip + state history).
+- **Video**: 8 frames per clip (`--clip_len 8`).
+- **Robot State**: A 6-dimensional vector for each robot, derived from `state.json`:
+  - `[0, 1]`: Position (x, y)
+  - `[2, 3]`: Direction vector (dx, dy) - e.g., (0, 1) for North
+  - `[4]`: Carrying status (1.0 if carrying a shelf, 0.0 otherwise)
+  - `[5]`: Last Action (mapped to integer: NOOP=0, FORWARD=1, LEFT=2, RIGHT=3, TOGGLE_LOAD=4)
+- **Graph**: Fully connected graph between agents (unless `adj.npy` is provided), allowing the GNN to model agent interactions.
+
+### 3. Reward Structure
+The reward function is a combination of the environment reward and a custom safety penalty:
+- **Base Reward**: Taken from `reward.json` (sparse reward for successful delivery).
+- **Collision Penalty**: A penalty of **-1.0** is added if any two agents are within **3.0 meters** of each other (`dist < 3.0`).
+- **Distance Reward**: A dense shaping reward equal to the **negative average minimum distance** from each agent to any requested box.
+  - If an agent is already carrying a requested box, its distance cost is 0.
+  - Otherwise, it is the Euclidean distance to the nearest requested box.
+- **Formula**: $R_{total} = R_{env} + (-1.0 \text{ if collision}) - \frac{1}{N} \sum_{i=1}^{N} \min_{j} \text{dist}(\text{agent}_i, \text{box}_j)$
+
+### 4. Language Prompt
+A dynamic text prompt is generated for every step to ground the VLM:
+**Template:**
+> "Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). Step: {step}. Requested boxes: {requests}. Agent {id}: at {pos}, facing {dir}, action {action}, carrying {yes/no}. ..."
+
+**Example:**
+> Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). Step: 105. Requested boxes: ['b1', 'b2']. Agent 1: at [10, 5], facing NORTH, action FORWARD, carrying no. Agent 2: at [12, 5], facing SOUTH, action LEFT, carrying yes.
+
+## Training Script Arguments
+The `run_train_vlcm.sh` script passes the following key arguments to `train.py`:
+- `--dataset_type rware`: Enables the specific RWARE state parsing logic.
+- `--rware_config`: The specific map configuration (e.g., `tiny-2ag-hard`).
+- `--vl_backend llava_video`: Selects the LLaVA-NeXT-Video backend.
+- `--num_robots`: Automatically detected from the config name.
+- `--robot_obs_dim 6`: Matches the 6 constructed features.
+- `--batch_size 4`, `--epochs 2`, `--num_workers 1`.
+
+## Installation
+```bash
 pip install -r requirements.txt
 ```
-
-For DeepSeek-VL2 (MoE backbone), follow the official DeepSeek-VL2 repo install steps and then use `--vl_backend deepseek_vl2`.
-
-## WebDataset expected keys
-Each **frame** sample should contain these keys:
-- `image.png`
-- `obs.npy` and/or `state.npy`
-- `edge_index.npy`
-- `caption.txt`
-- `rewards.npy`
-- `dones.npy`
-
-The loader groups consecutive frames by episode id (parsed from `__key__` like `000000_000123`) and builds clips of length `--clip_len`.
-
-## Value loss (TD)
-We use TD(0) with reward from `rewards.npy`:
-```
-V_loss = MSE(V(s_t), r_t + gamma * (1 - done_t) * V(s_{t+1}))
-```
-
-## Run
-```
-python train.py \
-  --train_shards "/path/to/train/{00000..00099}.tar" \
-  --batch_size 4 \
-  --clip_len 8 \
-  --clip_stride 1 \
-  --robot_source obs \
-  --reward_reduce mean \
-  --done_reduce any \
-  --gamma 0.99 \
-  --text_mode raw \
-  --preprocess_in_loader \
-  --epochs 2
-```
-
-## Multi-GPU (FSDP)
-To shard the model across GPUs (instead of full model replica per GPU), launch with Accelerate and enable FSDP:
-```
-accelerate launch --num_processes 4 train.py \
-  --train_shards "/path/to/train/{00000..00099}.tar" \
-  --batch_size 4 \
-  --clip_len 8 \
-  --clip_stride 1 \
-  --robot_source obs \
-  --reward_reduce mean \
-  --done_reduce any \
-  --gamma 0.99 \
-  --text_mode raw \
-  --preprocess_in_loader \
-  --epochs 2 \
-  --fsdp \
-  --fsdp_min_num_params 1000000
-```
-Notes:
-- Use `--fsdp_cpu_offload` if GPU memory is tight (slower).
-- `--fsdp_min_num_params` controls how aggressively submodules are wrapped/sharded.
-
-## DeepSeek VLM choices
-- Default: `--vl_backend deepseek_vl --vl_model_name deepseek-community/deepseek-vl-1.3b-base`
-- For MoE backbone: use `--vl_backend deepseek_vl2` and a DeepSeek-VL2 model name (requires DeepSeek-VL2 repo)
-
-## Notes
-- Images are preprocessed using the DeepSeek VLM processor (resizes/crops to the expected size).
-- If your `image.png` is already preprocessed for the model, set `--video_preprocessed` and feed tensors instead of PIL.
+*Note: The training script assumes a specific environment setup with Apptainer/Singularity for HPC usage.*

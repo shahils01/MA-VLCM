@@ -43,7 +43,7 @@ apptainer exec --nv ma_vlcm.sif python3 train.py
 
 ### SLURM Batch Script Example
 
-Create a file named `run_train.slurm`:
+Create a file named `submit_train.sh`:
 
 ```bash
 #!/bin/bash
@@ -52,31 +52,24 @@ Create a file named `run_train.slurm`:
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:1
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=250G
 #SBATCH --time=24:00:00
-#SBATCH --partition=gpu  # Change to your cluster's GPU partition
+#SBATCH --gpus=h100:2
 
-# Load Apptainer module if required
-# module load apptainer
+# Ensure logs directory exists
+mkdir -p logs
 
-# Set up environment
-export MA_VLCM_ROOT=$(pwd)
+# Set OMP_NUM_THREADS to match cpus-per-task
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-# Run the training
-# Note: Bind mount data directories if they are not in your home/cwd
-# Example: --bind /scratch/user/data:/data
-srun apptainer exec --nv ma_vlcm.sif python3 train.py \
-    --train_shards "/path/to/your/data_scratch/" \
-    --batch_size 8 \
-    --epochs 10 \
-    --save_dir checkpoints_hpc
+# Run the training script
+bash run_train_vlcm.sh
 ```
 
 Submit the job:
 ```bash
-sbatch run_train.slurm
+sbatch submit_train.sh
 ```
 
 ## 4. Troubleshooting

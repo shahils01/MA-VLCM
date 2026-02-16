@@ -33,7 +33,7 @@ class MockProcessor:
     ):
         # Return dummy tensors
         return {
-            "pixel_values_videos": torch.randn(1, 3, 8, 224, 224),
+            "pixel_values_videos": torch.randn(1, 3, 8, 360, 640),
             "input_ids": torch.randint(0, 100, (1, 10)),
             "attention_mask": torch.ones(1, 10),
         }

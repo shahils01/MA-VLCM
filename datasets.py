@@ -10,8 +10,6 @@ class RandomMultimodalDataset(Dataset):
         num_samples: int,
         video_frames: int,
         video_channels: int,
-        video_height: int,
-        video_width: int,
         num_robots: int,
         robot_obs_dim: int,
         text_dim: int,
@@ -19,8 +17,6 @@ class RandomMultimodalDataset(Dataset):
         self.num_samples = num_samples
         self.video_frames = video_frames
         self.video_channels = video_channels
-        self.video_height = video_height
-        self.video_width = video_width
         self.num_robots = num_robots
         self.robot_obs_dim = robot_obs_dim
         self.text_dim = text_dim
@@ -32,8 +28,8 @@ class RandomMultimodalDataset(Dataset):
         video = torch.randn(
             self.video_frames,
             self.video_channels,
-            self.video_height,
-            self.video_width,
+            360,
+            640,
         )
         robot_obs = torch.randn(self.video_frames, self.num_robots, self.robot_obs_dim)
         adj = torch.randint(0, 2, (self.video_frames, self.num_robots, self.num_robots)).float()

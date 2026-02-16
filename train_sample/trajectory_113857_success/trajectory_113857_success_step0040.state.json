@@ -1,0 +1,1 @@
+{"step": 41, "requests": [19, 22, 8, 18], "agents": [{"id": 1, "action": "RIGHT", "pos": [1, 4], "dir": "EAST", "carrying": null}, {"id": 2, "action": "NOOP", "pos": [2, 9], "dir": "NORTH", "carrying": 10}], "reward": 0.0}

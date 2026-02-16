@@ -13,3 +13,4 @@ logs/
 .DS_Store
 *.sif
 llava-hf/
+*/train_sample/*
