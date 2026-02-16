@@ -464,6 +464,9 @@ class SequenceWebDataset(IterableDataset):
         vlm_processor=None,
         vl_model_name=None,
         robot_obs_dim=8,
+        num_robots=1,
+        max_num_robots=None,
+        shuffle_shards=False,
         text_prompt_template=None,
         return_mode="td",
         n_step=50,
@@ -521,6 +524,9 @@ class SequenceWebDataset(IterableDataset):
         self.vlm_padding = vlm_padding
         self.resize_width = resize_width
         self.resize_height = resize_height
+        self.num_robots = num_robots
+        self.max_num_robots = max_num_robots
+        self.shuffle_shards = shuffle_shards
         self.times_cache = {}
 
     def _custom_decoder(self, key, data):
@@ -943,6 +949,9 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
         vlm_processor=None,
         vl_model_name=args.vl_model_name if args.preprocess_in_loader else None,
         robot_obs_dim=args.robot_obs_dim,
+        num_robots=args.num_robots,
+        max_num_robots=args.num_robots,
+        shuffle_shards=shuffle,
         text_prompt_template=args.text_prompt_template,
         dataset_type=args.dataset_type,
         rware_config=args.rware_config,
