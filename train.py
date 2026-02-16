@@ -81,7 +81,7 @@ def parse_args():
     p.add_argument(
         "--train_shards",
         type=str,
-        default="/scratch/aparame/Research/VLCM_Data_Collection/data_test",
+        default="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch",
         help="WebDataset shard pattern for training",
     )
     p.add_argument(
@@ -568,7 +568,7 @@ class SequenceWebDataset(IterableDataset):
         try:
             dataset = wds.WebDataset(
                 self.shards,
-                shardshuffle=False,
+                shardshuffle=(1000 if self.shuffle_shards else False),
                 nodesplitter=getattr(wds, "split_by_node", None),
                 workersplitter=getattr(wds, "split_by_worker", None),
             ).decode(self._custom_decoder)
@@ -706,12 +706,12 @@ class SequenceWebDataset(IterableDataset):
                 if state_json_present:
                     state_data = sample["state.json"]
                     robot_obs = _parse_rware_state(
-                        state_data, num_robots=None, robot_obs_dim=self.robot_obs_dim
+                        state_data, num_robots=self.max_num_robots, robot_obs_dim=self.robot_obs_dim
                     )
                 else:
                     robot_obs = torch.zeros(
                         (
-                            self.num_robots if hasattr(self, "num_robots") else 1,
+                            self.max_num_robots if self.max_num_robots is not None else (self.num_robots if hasattr(self, "num_robots") else 1),
                             self.robot_obs_dim,
                         ),
                         dtype=torch.float32,
@@ -722,8 +722,13 @@ class SequenceWebDataset(IterableDataset):
                     if hasattr(adj_np, "numpy"):
                         adj_np = adj_np.numpy()
                     adj = torch.from_numpy(adj_np).float()
+                    if self.max_num_robots is not None and adj.shape[0] < self.max_num_robots:
+                        new_adj = torch.zeros((self.max_num_robots, self.max_num_robots), dtype=torch.float32)
+                        k = adj.shape[0]
+                        new_adj[:k, :k] = adj
+                        adj = new_adj
                 else:
-                    n = robot_obs.shape[0]
+                    n = self.max_num_robots if self.max_num_robots is not None else robot_obs.shape[0]
                     adj = torch.eye(n, dtype=torch.float32)
 
                 # Reward
@@ -911,7 +916,7 @@ class SequenceWebDataset(IterableDataset):
                 buffer.pop(0)
 
 
-def webdataset_loader(args, shards, batch_size, num_workers):
+def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
     # Support glob patterns if passed as shards string
     if isinstance(shards, str) and "*" in shards:
         import glob
@@ -1240,12 +1245,12 @@ def main():
     )
 
     train_loader = webdataset_loader(
-        args, args.train_shards, args.batch_size, args.num_workers
+        args, args.train_shards, args.batch_size, args.num_workers, shuffle=True
     )
     val_loader = None
     if args.val_shards:
         val_loader = webdataset_loader(
-            args, args.val_shards, args.batch_size, args.num_workers
+            args, args.val_shards, args.batch_size, args.num_workers, shuffle=False
         )
 
     if val_loader is not None:

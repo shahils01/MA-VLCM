@@ -1,0 +1,93 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:21<00:00, 31.77it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                         
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 557 shards.
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1298, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1232, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1059, in run_epoch
+    accelerator.backward(loss)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 2852, in backward
+    loss.backward(**kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_tensor.py", line 581, in backward
+    torch.autograd.backward(
+  File "/usr/local/lib/python3.10/dist-packages/torch/autograd/__init__.py", line 347, in backward
+    _engine_run_backward(
+  File "/usr/local/lib/python3.10/dist-packages/torch/autograd/graph.py", line 825, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/checkpoint.py", line 1125, in unpack_hook
+    frame.recompute_fn(*args)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/checkpoint.py", line 1519, in recompute_fn
+    fn(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 245, in forward
+    hidden_states = self.mlp(hidden_states)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 48, in forward
+    down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/tuners/lora/bnb.py", line 569, in forward
+    output = lora_B(lora_A(dropout(x))) * scaling
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.75 GiB. GPU 0 has a total capacity of 79.10 GiB of which 491.75 MiB is free. Including non-PyTorch memory, this process has 78.61 GiB memory in use. Of the allocated memory 72.34 GiB is allocated by PyTorch, and 3.32 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1298, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1232, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1059, in run_epoch
+[rank0]:     accelerator.backward(loss)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 2852, in backward
+[rank0]:     loss.backward(**kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_tensor.py", line 581, in backward
+[rank0]:     torch.autograd.backward(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/autograd/__init__.py", line 347, in backward
+[rank0]:     _engine_run_backward(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/autograd/graph.py", line 825, in _engine_run_backward
+[rank0]:     return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/checkpoint.py", line 1125, in unpack_hook
+[rank0]:     frame.recompute_fn(*args)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/checkpoint.py", line 1519, in recompute_fn
+[rank0]:     fn(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 245, in forward
+[rank0]:     hidden_states = self.mlp(hidden_states)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 48, in forward
+[rank0]:     down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/tuners/lora/bnb.py", line 569, in forward
+[rank0]:     output = lora_B(lora_A(dropout(x))) * scaling
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/linear.py", line 125, in forward
+[rank0]:     return F.linear(input, self.weight, self.bias)
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.75 GiB. GPU 0 has a total capacity of 79.10 GiB of which 491.75 MiB is free. Including non-PyTorch memory, this process has 78.61 GiB memory in use. Of the allocated memory 72.34 GiB is allocated by PyTorch, and 3.32 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

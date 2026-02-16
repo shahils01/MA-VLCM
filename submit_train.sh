@@ -5,9 +5,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=250G
-#SBATCH --time=24:00:00
-#SBATCH --gpus=h100:2
+#SBATCH --mem=128G
+#SBATCH --time=72:00:00
+#SBATCH --gpus=h100:4
 
 # Ensure logs directory exists
 mkdir -p logs
