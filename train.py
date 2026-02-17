@@ -937,10 +937,11 @@ class SequenceWebDataset(IterableDataset):
                 current_start_index = episode_frame_count - len(buffer)
 
                 if current_start_index % self.clip_stride == 0:
-                    clip = buffer[: self.clip_len]
+                    buf_list = list(buffer)
+                    clip = buf_list[: self.clip_len]
                     next_clip = None
                     if self.include_next:
-                        next_clip = buffer[1 : 1 + self.clip_len]
+                        next_clip = buf_list[1 : 1 + self.clip_len]
 
                     yield _process_clip_data(clip, next_clip)
 
