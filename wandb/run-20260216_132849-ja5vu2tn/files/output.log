@@ -1,0 +1,48 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:29<00:00, 23.67it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                         
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 557 shards.
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1341, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1275, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1038, in run_epoch
+    for batch in loader:
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 866, in __iter__
+    next_batch, next_batch_info = self._fetch_batches(main_iterator)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 820, in _fetch_batches
+    batches.append(next(iterator))
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 757, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+  File "/home/aparame/Research/MA-VLCM/train.py", line 714, in __iter__
+    robot_obs = _parse_rware_state(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 400, in _parse_rware_state
+    agents = state_json.get("agents", [])
+AttributeError: 'bytes' object has no attribute 'get'
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1341, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1275, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1038, in run_epoch
+[rank0]:     for batch in loader:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 866, in __iter__
+[rank0]:     next_batch, next_batch_info = self._fetch_batches(main_iterator)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 820, in _fetch_batches
+[rank0]:     batches.append(next(iterator))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+[rank0]:     data = self._next_data()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 757, in _next_data
+[rank0]:     data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+[rank0]:     data.append(next(self.dataset_iter))
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 714, in __iter__
+[rank0]:     robot_obs = _parse_rware_state(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 400, in _parse_rware_state
+[rank0]:     agents = state_json.get("agents", [])
+[rank0]: AttributeError: 'bytes' object has no attribute 'get'
