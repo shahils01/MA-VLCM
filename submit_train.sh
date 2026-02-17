@@ -4,16 +4,19 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=256G
 #SBATCH --time=72:00:00
 #SBATCH --gpus=h100:4
 
 # Ensure logs directory exists
 mkdir -p logs
 
-# Set OMP_NUM_THREADS to match cpus-per-task
+# CPU threading: one OMP thread per physical core avoids oversubscription
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+# Unbuffered output so tqdm progress bars appear in real-time
+export PYTHONUNBUFFERED=1
 
 # Run the training script
 bash run_train_vlcm.sh
