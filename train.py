@@ -1189,13 +1189,6 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-    # torch.compile + DDP compatibility: disable DDP optimizer (incompatible
-    # with higher-order ops in bitsandbytes/PEFT) and capture scalar outputs
-    # to avoid graph breaks from .item() calls in gat.py.
-    _dynamo_mod = __import__("torch._dynamo", fromlist=["config"])
-    _dynamo_mod.config.optimize_ddp = False
-    _dynamo_mod.config.capture_scalar_outputs = True
-
     if args.preprocess_in_loader:
         args.video_preprocessed = True
 
