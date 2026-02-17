@@ -6,6 +6,7 @@ import pathlib
 import glob
 import functools
 import inspect
+from collections import deque
 
 from PIL import Image
 
@@ -232,7 +233,7 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints_rware")
-    
+
     # Optimization
     p.add_argument("--compile", action="store_true", help="Use torch.compile")
     p.add_argument("--resize_width", type=int, default=672)
@@ -537,17 +538,17 @@ class SequenceWebDataset(IterableDataset):
             # Check for specific keywords to identify "main" camera (overhead/image)
             # This skips "front" camera or other images not used in training.
             if "overhead" in key or "image" in key:
-                 # Decode and resize
-                 with io.BytesIO(data) as stream:
-                     img = Image.open(stream)
-                     img.load()
-                     img = img.convert("RGB")
-                     if self.resize_width > 0 and self.resize_height > 0:
+                # Decode and resize
+                with io.BytesIO(data) as stream:
+                    img = Image.open(stream)
+                    img.load()
+                    img = img.convert("RGB")
+                    if self.resize_width > 0 and self.resize_height > 0:
                         img = img.resize((self.resize_width, self.resize_height))
-                     return img
+                    return img
             # For other images (e.g. front camera), return raw bytes.
-            return data 
-        
+            return data
+
         # Fallback for non-image data (npy, json, etc.)
         return data
 
@@ -589,7 +590,7 @@ class SequenceWebDataset(IterableDataset):
                 dataset = dataset.split_by_worker()
 
         current_ep = None
-        buffer = []
+        buffer = deque()
         episode_frame_count = 0
 
         def _process_clip_data(clip, next_clip=None):
@@ -691,7 +692,7 @@ class SequenceWebDataset(IterableDataset):
 
             # Reset buffer on new episode
             if ep_id != current_ep:
-                buffer = []
+                buffer = deque()
                 current_ep = ep_id
                 episode_frame_count = 0
 
@@ -715,12 +716,22 @@ class SequenceWebDataset(IterableDataset):
                     if isinstance(state_data, bytes):
                         state_data = json.loads(state_data)
                     robot_obs = _parse_rware_state(
-                        state_data, num_robots=self.max_num_robots, robot_obs_dim=self.robot_obs_dim
+                        state_data,
+                        num_robots=self.max_num_robots,
+                        robot_obs_dim=self.robot_obs_dim,
                     )
                 else:
                     robot_obs = torch.zeros(
                         (
-                            self.max_num_robots if self.max_num_robots is not None else (self.num_robots if hasattr(self, "num_robots") else 1),
+                            (
+                                self.max_num_robots
+                                if self.max_num_robots is not None
+                                else (
+                                    self.num_robots
+                                    if hasattr(self, "num_robots")
+                                    else 1
+                                )
+                            ),
                             self.robot_obs_dim,
                         ),
                         dtype=torch.float32,
@@ -731,13 +742,23 @@ class SequenceWebDataset(IterableDataset):
                     if hasattr(adj_np, "numpy"):
                         adj_np = adj_np.numpy()
                     adj = torch.from_numpy(adj_np).float()
-                    if self.max_num_robots is not None and adj.shape[0] < self.max_num_robots:
-                        new_adj = torch.zeros((self.max_num_robots, self.max_num_robots), dtype=torch.float32)
+                    if (
+                        self.max_num_robots is not None
+                        and adj.shape[0] < self.max_num_robots
+                    ):
+                        new_adj = torch.zeros(
+                            (self.max_num_robots, self.max_num_robots),
+                            dtype=torch.float32,
+                        )
                         k = adj.shape[0]
                         new_adj[:k, :k] = adj
                         adj = new_adj
                 else:
-                    n = self.max_num_robots if self.max_num_robots is not None else robot_obs.shape[0]
+                    n = (
+                        self.max_num_robots
+                        if self.max_num_robots is not None
+                        else robot_obs.shape[0]
+                    )
                     adj = torch.eye(n, dtype=torch.float32)
 
                 # Reward
@@ -922,7 +943,7 @@ class SequenceWebDataset(IterableDataset):
                     yield _process_clip_data(clip, next_clip)
 
                 # Pop the oldest frame to slide the window
-                buffer.pop(0)
+                buffer.popleft()
 
 
 def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
@@ -1001,13 +1022,16 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
             out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
         return out
 
-    return DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        num_workers=num_workers, 
+    loader_kwargs = dict(
+        batch_size=batch_size,
+        num_workers=num_workers,
         collate_fn=_collate,
-        pin_memory=True
+        pin_memory=True,
     )
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    return DataLoader(dataset, **loader_kwargs)
 
 
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
@@ -1027,7 +1051,15 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
 
 
 def run_epoch(
-    model, loader, optimizer, accelerator, log_every, gamma, args, train=True
+    model,
+    loader,
+    optimizer,
+    accelerator,
+    log_every,
+    gamma,
+    args,
+    train=True,
+    scheduler=None,
 ):
     if train:
         model.train()
@@ -1100,6 +1132,8 @@ def run_epoch(
                 if train:
                     accelerator.backward(loss)
                     optimizer.step()
+                    if scheduler is not None:
+                        scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
         total_loss += loss.item()
@@ -1130,6 +1164,11 @@ def run_epoch(
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
+
+    # ── Performance: enable TF32 for H100 / Ampere+ GPUs ──
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     if args.preprocess_in_loader:
         args.video_preprocessed = True
@@ -1256,6 +1295,30 @@ def main():
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
 
+    # ── Cosine LR scheduler with linear warmup ──
+    # Estimate total steps: (samples_per_epoch / batch_size / grad_accum) * epochs
+    warmup_fraction = 0.05
+    estimated_steps_per_epoch = max(
+        args.samples_per_epoch
+        // max(args.batch_size * max(1, args.grad_accum_steps), 1),
+        100,
+    )
+    total_steps = estimated_steps_per_epoch * args.epochs
+    warmup_steps = int(total_steps * warmup_fraction)
+    from torch.optim.lr_scheduler import LambdaLR
+
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+        progress = float(step - warmup_steps) / float(
+            max(1, total_steps - warmup_steps)
+        )
+        return max(
+            0.0, 0.5 * (1.0 + __import__("math").cos(__import__("math").pi * progress))
+        )
+
+    scheduler = LambdaLR(optimizer, lr_lambda)
+
     train_loader = webdataset_loader(
         args, args.train_shards, args.batch_size, args.num_workers, shuffle=True
     )
@@ -1266,12 +1329,12 @@ def main():
         )
 
     if val_loader is not None:
-        model, optimizer, train_loader, val_loader = accelerator.prepare(
-            model, optimizer, train_loader, val_loader
+        model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
+            model, optimizer, train_loader, val_loader, scheduler
         )
     else:
-        model, optimizer, train_loader = accelerator.prepare(
-            model, optimizer, train_loader
+        model, optimizer, train_loader, scheduler = accelerator.prepare(
+            model, optimizer, train_loader, scheduler
         )
 
     for epoch in range(1, args.epochs + 1):
@@ -1284,6 +1347,7 @@ def main():
             args.gamma,
             args,
             train=True,
+            scheduler=scheduler,
         )
         val_loss = None
         if val_loader is not None:

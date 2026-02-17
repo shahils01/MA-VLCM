@@ -53,6 +53,11 @@ fi
 
 export HF_TOKEN=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
 
+# Performance tuning for multi-GPU H100
+export NCCL_ALGO=Ring
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export TOKENIZERS_PARALLELISM=false
+
 
 
 # Set NUM_ROBOTS to the maximum expected across all configs (e.g. 4).
@@ -69,7 +74,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 2 \
+  --batch_size 4 \
   --grad_accum_steps 4 \
   --clip_len 8 \
   --num_robots "$NUM_ROBOTS" \
@@ -78,12 +83,13 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir checkpoints_rware \
-  --num_workers 0 \
+  --num_workers 4 \
   --mixed_precision bf16 \
   --peft qlora \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
-  --vl_max_text_len 16384 \
+  --vl_max_text_len 2048 \
+  --compile \
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
