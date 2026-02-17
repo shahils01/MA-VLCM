@@ -8,6 +8,8 @@ import functools
 import inspect
 from collections import deque
 
+from tqdm import tqdm
+
 from PIL import Image
 
 import torch
@@ -1070,7 +1072,16 @@ def run_epoch(
     total_loss = 0.0
     step = 0
 
-    for batch in loader:
+    phase = "train" if train else "val"
+    show_pbar = accelerator.is_main_process
+    pbar = tqdm(
+        loader,
+        desc=f"{phase}",
+        disable=not show_pbar,
+        dynamic_ncols=True,
+    )
+
+    for batch in pbar:
         step += 1
 
         def _move_inputs(inputs):
@@ -1137,6 +1148,17 @@ def run_epoch(
                     optimizer.zero_grad(set_to_none=True)
 
         total_loss += loss.item()
+        avg_loss = total_loss / step
+
+        # Update progress bar
+        postfix = {"loss": f"{avg_loss:.4f}"}
+        if train and scheduler is not None:
+            try:
+                lr_val = scheduler.get_last_lr()[0]
+                postfix["lr"] = f"{lr_val:.2e}"
+            except Exception:
+                pass
+        pbar.set_postfix(postfix)
 
         # Log step-level metrics to wandb (main process only)
         if train and accelerator.is_main_process:
@@ -1153,11 +1175,7 @@ def run_epoch(
             except ImportError:
                 pass
 
-        if log_every > 0 and step % log_every == 0:
-            avg = total_loss / step
-            phase = "train" if train else "val"
-            accelerator.print(f"{phase} step={step} loss={avg:.4f}")
-
+    pbar.close()
     return total_loss / max(step, 1)
 
 
