@@ -1003,7 +1003,16 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
             for k in keys:
                 vals = [d[k] for d in items]
                 if torch.is_tensor(vals[0]):
-                    out[k] = torch.stack(vals, dim=0)
+                    if k in ["input_ids", "attention_mask"]:
+                        out[k] = torch.nn.utils.rnn.pad_sequence(
+                            vals, batch_first=True, padding_value=0
+                        )
+                    elif k == "labels":
+                        out[k] = torch.nn.utils.rnn.pad_sequence(
+                            vals, batch_first=True, padding_value=-100
+                        )
+                    else:
+                        out[k] = torch.stack(vals, dim=0)
                 else:
                     out[k] = vals
             return out
