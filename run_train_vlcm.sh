@@ -76,10 +76,10 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --rware_config "$CONFIG_NAME" \
   --batch_size 4 \
   --grad_accum_steps 4 \
-  --clip_len 8 \
+  --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
-  --epochs 20 \
+  --epochs 50 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir checkpoints_rware \

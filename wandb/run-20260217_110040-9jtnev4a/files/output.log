@@ -1,0 +1,309 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 242.37it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 557 shards.
+train: 0it [00:00, ?it/s][rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0] Graph break from `Tensor.item()`, consider setting:
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]     torch._dynamo.config.capture_scalar_outputs = True
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0] or:
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]     env TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0] to include these operations in the captured graph.
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0] Graph break: from user code at:
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]   File "/home/aparame/Research/MA-VLCM/model.py", line 352, in torch_dynamo_resume_in_forward_at_351
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]     robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]   File "/home/aparame/Research/MA-VLCM/gat.py", line 181, in forward
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]     z_k_max = self.aero_propagate(
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]   File "/home/aparame/Research/MA-VLCM/gat.py", line 139, in aero_propagate
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]     a_ij = self.edge_att_pred(z_scale_i, z_scale_j, edge_index_batch, hop_k=k)
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]   File "/home/aparame/Research/MA-VLCM/gat.py", line 204, in edge_att_pred
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]     num_flat_nodes = int(edge_index_batch.max().item()) + 1
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]
+[rank0]:W0217 11:01:05.661000 807339 torch/_dynamo/variables/tensor.py:776] [3/0]
+train: 0it [00:15, ?it/s]
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1446, in _call_user_compiler
+    compiled_fn = compiler_fn(gm, self.example_inputs())
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/backends/distributed.py", line 424, in compile_fn
+    raise NotImplementedError(
+NotImplementedError: DDPOptimizer backend: Found a higher order op in the graph. This is not supported. Please turn off DDP optimizer using torch._dynamo.config.optimize_ddp=False. Note that this can cause performance degradation because there will be one bucket for the entire Dynamo graph. Please refer to this issue - https://github.com/pytorch/pytorch/issues/104674.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1427, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1360, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1122, in run_epoch
+    pred = model(inputs, robot_obs, adj)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+    else self._run_ddp_forward(*inputs, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+    return self.module(*inputs, **kwargs)  # type: ignore[index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+    return model_forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+  File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/eval_frame.py", line 465, in _fn
+    return fn(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 351, in forward
+    edge_index = self._adj_to_batched_edge_index(adj_last)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 352, in torch_dynamo_resume_in_forward_at_351
+    robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+  File "/home/aparame/Research/MA-VLCM/model.py", line 361, in torch_dynamo_resume_in_forward_at_352
+    inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_361
+    obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+  File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_367
+    obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+  File "/home/aparame/Research/MA-VLCM/model.py", line 390, in torch_dynamo_resume_in_forward_at_371
+    output = self.backbone.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1921, in forward
+    with self._enable_peft_forward_hooks(**kwargs):
+  File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1923, in torch_dynamo_resume_in_forward_at_1921
+    return self.base_model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/tuners/tuners_utils.py", line 311, in forward
+    return self.model.forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 819, in forward
+    outputs = self.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 566, in forward
+    video_features = self.get_video_features(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 630, in get_video_features
+    video_outputs = self.vision_tower(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 650, in torch_dynamo_resume_in_get_video_features_at_630
+    video_features = self.multi_modal_projector(video_features)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 157, in forward
+    hidden_states = self.linear_1(image_features)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/bitsandbytes/nn/modules.py", line 555, in forward
+    weight = self.weight if getattr(quant_state, "packing_format_for_cpu", False) else self.weight.t()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1263, in __call__
+    return hijacked_callback(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1064, in __call__
+    result = self._inner_convert(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 526, in __call__
+    return _compile(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 924, in _compile
+    guarded_code = compile_inner(code, one_graph, hooks, transform)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 666, in compile_inner
+    return _compile_inner(code, one_graph, hooks, transform)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_utils_internal.py", line 87, in wrapper_function
+    return function(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 699, in _compile_inner
+    out_code = transform_code_object(code, transform)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/bytecode_transformation.py", line 1322, in transform_code_object
+    transformations(instructions, code_options)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 219, in _fn
+    return fn(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 634, in transform
+    tracer.run()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2796, in run
+    super().run()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 983, in run
+    while self.step():
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 895, in step
+    self.dispatch_table[inst.opcode](self, inst)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2987, in RETURN_VALUE
+    self._return(inst)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2972, in _return
+    self.output.compile_subgraph(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1117, in compile_subgraph
+    self.compile_and_call_fx_graph(tx, list(reversed(stack_values)), root)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1369, in compile_and_call_fx_graph
+    compiled_fn = self.call_user_compiler(gm)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1416, in call_user_compiler
+    return self._call_user_compiler(gm)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1465, in _call_user_compiler
+    raise BackendCompilerFailed(self.compiler_fn, e) from e
+torch._dynamo.exc.BackendCompilerFailed: backend='compile_fn' raised:
+NotImplementedError: DDPOptimizer backend: Found a higher order op in the graph. This is not supported. Please turn off DDP optimizer using torch._dynamo.config.optimize_ddp=False. Note that this can cause performance degradation because there will be one bucket for the entire Dynamo graph. Please refer to this issue - https://github.com/pytorch/pytorch/issues/104674.
+
+Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+
+
+You can suppress this exception and fall back to eager by setting:
+    import torch._dynamo
+    torch._dynamo.config.suppress_errors = True
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1446, in _call_user_compiler
+[rank0]:     compiled_fn = compiler_fn(gm, self.example_inputs())
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/backends/distributed.py", line 424, in compile_fn
+[rank0]:     raise NotImplementedError(
+[rank0]: NotImplementedError: DDPOptimizer backend: Found a higher order op in the graph. This is not supported. Please turn off DDP optimizer using torch._dynamo.config.optimize_ddp=False. Note that this can cause performance degradation because there will be one bucket for the entire Dynamo graph. Please refer to this issue - https://github.com/pytorch/pytorch/issues/104674.
+
+[rank0]: The above exception was the direct cause of the following exception:
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1427, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1360, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1122, in run_epoch
+[rank0]:     pred = model(inputs, robot_obs, adj)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+[rank0]:     return model_forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+[rank0]:     return convert_to_fp32(self.model_forward(*args, **kwargs))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+[rank0]:     return func(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/eval_frame.py", line 465, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 351, in forward
+[rank0]:     edge_index = self._adj_to_batched_edge_index(adj_last)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 352, in torch_dynamo_resume_in_forward_at_351
+[rank0]:     robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 361, in torch_dynamo_resume_in_forward_at_352
+[rank0]:     inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_361
+[rank0]:     obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_367
+[rank0]:     obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 390, in torch_dynamo_resume_in_forward_at_371
+[rank0]:     output = self.backbone.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1921, in forward
+[rank0]:     with self._enable_peft_forward_hooks(**kwargs):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1923, in torch_dynamo_resume_in_forward_at_1921
+[rank0]:     return self.base_model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/tuners/tuners_utils.py", line 311, in forward
+[rank0]:     return self.model.forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 819, in forward
+[rank0]:     outputs = self.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 566, in forward
+[rank0]:     video_features = self.get_video_features(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 630, in get_video_features
+[rank0]:     video_outputs = self.vision_tower(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 650, in torch_dynamo_resume_in_get_video_features_at_630
+[rank0]:     video_features = self.multi_modal_projector(video_features)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 157, in forward
+[rank0]:     hidden_states = self.linear_1(image_features)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/bitsandbytes/nn/modules.py", line 555, in forward
+[rank0]:     weight = self.weight if getattr(quant_state, "packing_format_for_cpu", False) else self.weight.t()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1263, in __call__
+[rank0]:     return hijacked_callback(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1064, in __call__
+[rank0]:     result = self._inner_convert(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 526, in __call__
+[rank0]:     return _compile(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 924, in _compile
+[rank0]:     guarded_code = compile_inner(code, one_graph, hooks, transform)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 666, in compile_inner
+[rank0]:     return _compile_inner(code, one_graph, hooks, transform)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_utils_internal.py", line 87, in wrapper_function
+[rank0]:     return function(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 699, in _compile_inner
+[rank0]:     out_code = transform_code_object(code, transform)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/bytecode_transformation.py", line 1322, in transform_code_object
+[rank0]:     transformations(instructions, code_options)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 219, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 634, in transform
+[rank0]:     tracer.run()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2796, in run
+[rank0]:     super().run()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 983, in run
+[rank0]:     while self.step():
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 895, in step
+[rank0]:     self.dispatch_table[inst.opcode](self, inst)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2987, in RETURN_VALUE
+[rank0]:     self._return(inst)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2972, in _return
+[rank0]:     self.output.compile_subgraph(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1117, in compile_subgraph
+[rank0]:     self.compile_and_call_fx_graph(tx, list(reversed(stack_values)), root)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1369, in compile_and_call_fx_graph
+[rank0]:     compiled_fn = self.call_user_compiler(gm)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1416, in call_user_compiler
+[rank0]:     return self._call_user_compiler(gm)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/output_graph.py", line 1465, in _call_user_compiler
+[rank0]:     raise BackendCompilerFailed(self.compiler_fn, e) from e
+[rank0]: torch._dynamo.exc.BackendCompilerFailed: backend='compile_fn' raised:
+[rank0]: NotImplementedError: DDPOptimizer backend: Found a higher order op in the graph. This is not supported. Please turn off DDP optimizer using torch._dynamo.config.optimize_ddp=False. Note that this can cause performance degradation because there will be one bucket for the entire Dynamo graph. Please refer to this issue - https://github.com/pytorch/pytorch/issues/104674.
+
+[rank0]: Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+
+
+[rank0]: You can suppress this exception and fall back to eager by setting:
+[rank0]:     import torch._dynamo
+[rank0]:     torch._dynamo.config.suppress_errors = True

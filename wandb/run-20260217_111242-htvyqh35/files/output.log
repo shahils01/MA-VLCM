@@ -1,0 +1,324 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 243.21it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 557 shards.
+train: 0it [00:00, ?it/s][rank0]:W0217 11:13:07.247000 814949 torch/fx/experimental/symbolic_shapes.py:5124] [3/0] failed during evaluate_expr(Eq(u0 + 1, 0), hint=None, size_oblivious=True, forcing_spec=False
+[rank0]:E0217 11:13:07.247000 814949 torch/fx/experimental/recording.py:298] [3/0] failed while running evaluate_expr(*(Eq(u0 + 1, 0), None), **{'fx_node': False, 'size_oblivious': True})
+[rank0]:W0217 11:13:07.325000 814949 torch/fx/experimental/symbolic_shapes.py:5124] [4/0] failed during evaluate_expr(Eq(u0 + 1, 0), hint=None, size_oblivious=True, forcing_spec=False
+[rank0]:E0217 11:13:07.325000 814949 torch/fx/experimental/recording.py:298] [4/0] failed while running evaluate_expr(*(Eq(u0 + 1, 0), None), **{'fx_node': False, 'size_oblivious': True})
+[rank0]:W0217 11:13:08.956000 814949 torch/fx/experimental/symbolic_shapes.py:5124] [5/0] failed during evaluate_expr(Eq(u0 + 1, 0), hint=None, size_oblivious=True, forcing_spec=False
+[rank0]:E0217 11:13:08.957000 814949 torch/fx/experimental/recording.py:298] [5/0] failed while running evaluate_expr(*(Eq(u0 + 1, 0), None), **{'fx_node': False, 'size_oblivious': True})
+[rank0]:W0217 11:13:09.025000 814949 torch/fx/experimental/symbolic_shapes.py:5124] [6/0] failed during evaluate_expr(Eq(u0 + 1, 0), hint=None, size_oblivious=True, forcing_spec=False
+[rank0]:E0217 11:13:09.026000 814949 torch/fx/experimental/recording.py:298] [6/0] failed while running evaluate_expr(*(Eq(u0 + 1, 0), None), **{'fx_node': False, 'size_oblivious': True})
+[rank0]:W0217 11:13:11.911000 814949 torch/fx/experimental/symbolic_shapes.py:5124] [6/1] failed during evaluate_expr(Eq(u0 + 1, 0), hint=None, size_oblivious=True, forcing_spec=False
+[rank0]:E0217 11:13:11.912000 814949 torch/fx/experimental/recording.py:298] [6/1] failed while running evaluate_expr(*(Eq(u0 + 1, 0), None), **{'fx_node': False, 'size_oblivious': True})
+train: 0it [00:16, ?it/s]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1434, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1367, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1122, in run_epoch
+    pred = model(inputs, robot_obs, adj)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+    else self._run_ddp_forward(*inputs, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+    return self.module(*inputs, **kwargs)  # type: ignore[index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+    return model_forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+  File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/eval_frame.py", line 465, in _fn
+    return fn(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 351, in forward
+    edge_index = self._adj_to_batched_edge_index(adj_last)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 352, in torch_dynamo_resume_in_forward_at_351
+    robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+  File "/home/aparame/Research/MA-VLCM/model.py", line 361, in torch_dynamo_resume_in_forward_at_352
+    inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_361
+    obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+  File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_367
+    obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+  File "/home/aparame/Research/MA-VLCM/model.py", line 390, in torch_dynamo_resume_in_forward_at_371
+    output = self.backbone.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1921, in forward
+    with self._enable_peft_forward_hooks(**kwargs):
+  File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1923, in torch_dynamo_resume_in_forward_at_1921
+    return self.base_model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/tuners/tuners_utils.py", line 311, in forward
+    return self.model.forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 819, in forward
+    outputs = self.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 566, in forward
+    video_features = self.get_video_features(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1269, in __call__
+    return self._torchdynamo_orig_callable(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1064, in __call__
+    result = self._inner_convert(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 526, in __call__
+    return _compile(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 924, in _compile
+    guarded_code = compile_inner(code, one_graph, hooks, transform)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 666, in compile_inner
+    return _compile_inner(code, one_graph, hooks, transform)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_utils_internal.py", line 87, in wrapper_function
+    return function(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 699, in _compile_inner
+    out_code = transform_code_object(code, transform)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/bytecode_transformation.py", line 1322, in transform_code_object
+    transformations(instructions, code_options)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 219, in _fn
+    return fn(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 634, in transform
+    tracer.run()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2796, in run
+    super().run()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 983, in run
+    while self.step():
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 895, in step
+    self.dispatch_table[inst.opcode](self, inst)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 582, in wrapper
+    return inner_fn(self, inst)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 1602, in CALL_FUNCTION
+    self.call_function(fn, args, {})
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 830, in call_function
+    self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/functions.py", line 111, in call_function
+    return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 836, in inline_user_function_return
+    return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 3011, in inline_call
+    return cls.inline_call_(parent, func, args, kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 3139, in inline_call_
+    tracer.run()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 983, in run
+    while self.step():
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 895, in step
+    self.dispatch_table[inst.opcode](self, inst)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 582, in wrapper
+    return inner_fn(self, inst)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 1602, in CALL_FUNCTION
+    self.call_function(fn, args, {})
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 830, in call_function
+    self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/misc.py", line 1024, in call_function
+    return self.obj.call_method(tx, self.name, args, kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/tensor.py", line 535, in call_method
+    return wrap_fx_proxy(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/builder.py", line 2037, in wrap_fx_proxy
+    return wrap_fx_proxy_cls(target_cls=TensorVariable, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/builder.py", line 2124, in wrap_fx_proxy_cls
+    example_value = get_fake_value(proxy.node, tx, allow_non_graph_fake=True)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2082, in get_fake_value
+    raise TorchRuntimeError(str(e)).with_traceback(e.__traceback__) from None
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2017, in get_fake_value
+    ret_val = wrap_fake_exception(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 1574, in wrap_fake_exception
+    return fn()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2018, in <lambda>
+    lambda: run_node(tx.output, node, args, kwargs, nnmodule)
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2150, in run_node
+    raise RuntimeError(make_error_message(e)).with_traceback(
+  File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2134, in run_node
+    return getattr(args[0], node.target)(*args[1:], **kwargs)
+torch._dynamo.exc.TorchRuntimeError: Failed running call_method flatten(*(FakeTensor(..., device='cuda:0', size=(1024,), grad_fn=<SelectBackward0>), 0, 1), **{}):
+Dimension out of range (expected to be in range of [-1, 0], but got 1)
+
+from user code:
+   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 572, in torch_dynamo_resume_in_forward_at_566
+    video_features = [feature.flatten(0, 1) for feature in video_features]
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 572, in <listcomp>
+    video_features = [feature.flatten(0, 1) for feature in video_features]
+
+Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+
+
+You can suppress this exception and fall back to eager by setting:
+    import torch._dynamo
+    torch._dynamo.config.suppress_errors = True
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1434, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1367, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1122, in run_epoch
+[rank0]:     pred = model(inputs, robot_obs, adj)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+[rank0]:     return model_forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+[rank0]:     return convert_to_fp32(self.model_forward(*args, **kwargs))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+[rank0]:     return func(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/eval_frame.py", line 465, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 351, in forward
+[rank0]:     edge_index = self._adj_to_batched_edge_index(adj_last)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 352, in torch_dynamo_resume_in_forward_at_351
+[rank0]:     robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 361, in torch_dynamo_resume_in_forward_at_352
+[rank0]:     inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_361
+[rank0]:     obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 367, in torch_dynamo_resume_in_forward_at_367
+[rank0]:     obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 390, in torch_dynamo_resume_in_forward_at_371
+[rank0]:     output = self.backbone.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1921, in forward
+[rank0]:     with self._enable_peft_forward_hooks(**kwargs):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1923, in torch_dynamo_resume_in_forward_at_1921
+[rank0]:     return self.base_model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/tuners/tuners_utils.py", line 311, in forward
+[rank0]:     return self.model.forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 819, in forward
+[rank0]:     outputs = self.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 566, in forward
+[rank0]:     video_features = self.get_video_features(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1269, in __call__
+[rank0]:     return self._torchdynamo_orig_callable(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 1064, in __call__
+[rank0]:     result = self._inner_convert(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 526, in __call__
+[rank0]:     return _compile(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 924, in _compile
+[rank0]:     guarded_code = compile_inner(code, one_graph, hooks, transform)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 666, in compile_inner
+[rank0]:     return _compile_inner(code, one_graph, hooks, transform)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_utils_internal.py", line 87, in wrapper_function
+[rank0]:     return function(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 699, in _compile_inner
+[rank0]:     out_code = transform_code_object(code, transform)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/bytecode_transformation.py", line 1322, in transform_code_object
+[rank0]:     transformations(instructions, code_options)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 219, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/convert_frame.py", line 634, in transform
+[rank0]:     tracer.run()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 2796, in run
+[rank0]:     super().run()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 983, in run
+[rank0]:     while self.step():
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 895, in step
+[rank0]:     self.dispatch_table[inst.opcode](self, inst)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 582, in wrapper
+[rank0]:     return inner_fn(self, inst)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 1602, in CALL_FUNCTION
+[rank0]:     self.call_function(fn, args, {})
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 830, in call_function
+[rank0]:     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/functions.py", line 111, in call_function
+[rank0]:     return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 836, in inline_user_function_return
+[rank0]:     return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 3011, in inline_call
+[rank0]:     return cls.inline_call_(parent, func, args, kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 3139, in inline_call_
+[rank0]:     tracer.run()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 983, in run
+[rank0]:     while self.step():
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 895, in step
+[rank0]:     self.dispatch_table[inst.opcode](self, inst)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 582, in wrapper
+[rank0]:     return inner_fn(self, inst)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 1602, in CALL_FUNCTION
+[rank0]:     self.call_function(fn, args, {})
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/symbolic_convert.py", line 830, in call_function
+[rank0]:     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/misc.py", line 1024, in call_function
+[rank0]:     return self.obj.call_method(tx, self.name, args, kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/tensor.py", line 535, in call_method
+[rank0]:     return wrap_fx_proxy(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/builder.py", line 2037, in wrap_fx_proxy
+[rank0]:     return wrap_fx_proxy_cls(target_cls=TensorVariable, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/variables/builder.py", line 2124, in wrap_fx_proxy_cls
+[rank0]:     example_value = get_fake_value(proxy.node, tx, allow_non_graph_fake=True)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2082, in get_fake_value
+[rank0]:     raise TorchRuntimeError(str(e)).with_traceback(e.__traceback__) from None
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2017, in get_fake_value
+[rank0]:     ret_val = wrap_fake_exception(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 1574, in wrap_fake_exception
+[rank0]:     return fn()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2018, in <lambda>
+[rank0]:     lambda: run_node(tx.output, node, args, kwargs, nnmodule)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2150, in run_node
+[rank0]:     raise RuntimeError(make_error_message(e)).with_traceback(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_dynamo/utils.py", line 2134, in run_node
+[rank0]:     return getattr(args[0], node.target)(*args[1:], **kwargs)
+[rank0]: torch._dynamo.exc.TorchRuntimeError: Failed running call_method flatten(*(FakeTensor(..., device='cuda:0', size=(1024,), grad_fn=<SelectBackward0>), 0, 1), **{}):
+[rank0]: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+
+[rank0]: from user code:
+[rank0]:    File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 572, in torch_dynamo_resume_in_forward_at_566
+[rank0]:     video_features = [feature.flatten(0, 1) for feature in video_features]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 572, in <listcomp>
+[rank0]:     video_features = [feature.flatten(0, 1) for feature in video_features]
+
+[rank0]: Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+
+
+[rank0]: You can suppress this exception and fall back to eager by setting:
+[rank0]:     import torch._dynamo
+[rank0]:     torch._dynamo.config.suppress_errors = True
