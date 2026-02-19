@@ -65,6 +65,10 @@ export TOKENIZERS_PARALLELISM=false
 NUM_ROBOTS=4
 echo "Using Max Num Robots: $NUM_ROBOTS"
 
+SAVE_DIR="/scratch/aparame/Research/VLCM_checkpoints"
+mkdir -p "$SAVE_DIR"
+echo "Saving checkpoints to: $SAVE_DIR"
+
 
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
@@ -82,7 +86,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --epochs 50 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
-  --save_dir checkpoints_rware \
+  --save_dir "$SAVE_DIR" \
   --num_workers 4 \
   --mixed_precision bf16 \
   --peft qlora \
