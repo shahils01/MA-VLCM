@@ -541,13 +541,17 @@ class SequenceWebDataset(IterableDataset):
             # This skips "front" camera or other images not used in training.
             if "overhead" in key or "image" in key:
                 # Decode and resize
-                with io.BytesIO(data) as stream:
-                    img = Image.open(stream)
-                    img.load()
-                    img = img.convert("RGB")
-                    if self.resize_width > 0 and self.resize_height > 0:
-                        img = img.resize((self.resize_width, self.resize_height))
-                    return img
+                try:
+                    with io.BytesIO(data) as stream:
+                        img = Image.open(stream)
+                        img.load()
+                        img = img.convert("RGB")
+                        if self.resize_width > 0 and self.resize_height > 0:
+                            img = img.resize((self.resize_width, self.resize_height))
+                        return img
+                except Exception as e:
+                    print(f"Warning: Broken image at {key}, skipping: {e}")
+                    return None
             # For other images (e.g. front camera), return raw bytes.
             return data
 
@@ -574,14 +578,21 @@ class SequenceWebDataset(IterableDataset):
             except Exception as e:
                 print(f"Warning: Failed to load VLM processor: {e}")
 
+        # Error handler: skip broken samples instead of crashing
+        _handler = getattr(wds, "warn_and_continue", None)
+
         # Prefer explicit node/worker splitters for multi-GPU setups
         try:
-            dataset = wds.WebDataset(
-                self.shards,
+            wds_kwargs = dict(
                 shardshuffle=(1000 if self.shuffle_shards else False),
                 nodesplitter=getattr(wds, "split_by_node", None),
                 workersplitter=getattr(wds, "split_by_worker", None),
-            ).decode(self._custom_decoder)
+            )
+            if _handler is not None:
+                wds_kwargs["handler"] = _handler
+            dataset = wds.WebDataset(self.shards, **wds_kwargs).decode(
+                self._custom_decoder, handler=_handler
+            )
         except TypeError:
             dataset = wds.WebDataset(self.shards, shardshuffle=False).decode(
                 self._custom_decoder
@@ -705,6 +716,10 @@ class SequenceWebDataset(IterableDataset):
                 image = sample["overhead.png"]
             else:
                 # print(f"Warning: No image found for key {key}. Skipping.")
+                continue
+
+            # Skip broken images (decoded as None)
+            if image is None:
                 continue
 
             # Robot Obs and Adj
