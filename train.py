@@ -608,9 +608,15 @@ class SequenceWebDataset(IterableDataset):
 
         def _process_clip_data(clip, next_clip=None):
             raw_video = [f["image"] for f in clip]
+            # Safety check for empty or invalid video
+            if not raw_video:
+                return None
+
             raw_next_video = None
             if next_clip is not None:
                 raw_next_video = [f["image"] for f in next_clip]
+                if not raw_next_video:  # Should not happen if logic holds, but safe
+                    return None
 
             if self.vlm_processor is not None:
 
@@ -958,7 +964,9 @@ class SequenceWebDataset(IterableDataset):
                     if self.include_next:
                         next_clip = buf_list[1 : 1 + self.clip_len]
 
-                    yield _process_clip_data(clip, next_clip)
+                    out_sample = _process_clip_data(clip, next_clip)
+                    if out_sample is not None:
+                        yield out_sample
 
                 # Pop the oldest frame to slide the window
                 buffer.popleft()
