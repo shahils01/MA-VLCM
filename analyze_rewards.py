@@ -337,7 +337,8 @@ def process_config(config_name, shards, args):
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
     # Plot 1: Step Rewards
-    axes[0].hist(flat_rewards, bins=50, color="skyblue", edgecolor="black", alpha=0.7)
+    flat_totals = [r["total"] for r in flat_rewards]
+    axes[0].hist(flat_totals, bins=50, color="skyblue", edgecolor="black", alpha=0.7)
     axes[0].set_title(f"Step Reward Distribution\n{config_name}")
     axes[0].set_xlabel("Reward")
     axes[0].set_ylabel("Frequency")
@@ -374,7 +375,14 @@ def main():
     parser = argparse.ArgumentParser(description="Analyze rewards in VLCM data")
     parser.add_argument(
         "input_path",
-        help="Path to a folder (raw trajectory) or directory containing tar shards",
+        nargs="?",
+        help="Path to a folder (raw trajectory) or directory containing tar shards. Defaults to 'data_scratch'.",
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Explicitly set the data directory (overrides input_path positionally)",
     )
     parser.add_argument(
         "--clip_lens",
@@ -389,14 +397,34 @@ def main():
 
     args = parser.parse_args()
 
-    input_path = Path(args.input_path)
+    # Determine base input path
+    raw_input = args.data_dir if args.data_dir else args.input_path
+    if not raw_input:
+        raw_input = "data_scratch"
+
+    input_path = Path(raw_input)
+
+    # Search for data_scratch if input_path doesn't exist locally
+    if not input_path.exists():
+        potential_paths = [
+            Path("data_scratch"),
+            Path("../VLCM_Data_Collection/RWARE/data_scratch"),
+            Path("VLCM_Data_Collection/RWARE/data_scratch"),
+        ]
+        for p in potential_paths:
+            if p.exists():
+                print(f"Path '{input_path}' not found, using discovered path: {p}")
+                input_path = p
+                break
 
     if not input_path.exists():
-        print(f"Path not found: {input_path}")
+        print(f"Error: Path not found: {raw_input}")
+        print("Please provide a valid path to a trajectory folder or data directory.")
         return
 
+    print(f"Analyzing data in: {input_path}")
+
     # Determine if input_path is a config itself or a container of configs
-    # Heuristic: Check for .tar files directly.
     tars_direct = sorted(list(input_path.glob("*.tar")))
 
     if tars_direct:
@@ -404,10 +432,12 @@ def main():
         config_name = input_path.name
         process_config(config_name, tars_direct, args)
     else:
-        # Check subdirectories
-        subdirs = [d for d in input_path.iterdir() if d.is_dir()]
+        # Check subdirectories for configurations
+        # A configuration is a directory that contains .tar files (directly or nested)
+        subdirs = sorted([d for d in input_path.iterdir() if d.is_dir()])
         configs_found = []
         for d in subdirs:
+            # Look for tars in this subdir (could be in date subfolders)
             tars = sorted(list(d.rglob("*.tar")))
             if tars:
                 configs_found.append((d.name, tars))
