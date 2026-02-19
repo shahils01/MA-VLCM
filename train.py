@@ -988,7 +988,7 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
         keep_raw_video=False,
         include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
         vlm_max_text_len=args.vl_max_text_len,
-        vlm_truncation=True,
+        vlm_truncation=False,
         vlm_padding="max_length",
         resize_width=args.resize_width,
         resize_height=args.resize_height,

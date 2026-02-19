@@ -69,8 +69,32 @@ bash run_train_vlcm.sh
 
 Submit the job:
 ```bash
-sbatch submit_train.sh
+sbatch --mail-type BEGIN,END,FAIL submit_train.sh
 ```
+
+### Training Script Arguments (`run_train_vlcm.sh`)
+
+The `run_train_vlcm.sh` script launches the training with several key arguments. Here is what they mean:
+
+| Argument | Meaning |
+| :--- | :--- |
+| `--train_shards` | Path to the directory or glob pattern containing WebDataset `.tar` shards. |
+| `--dataset_type` | Set to `rware` to use specific multi-agent robot dataset logic. |
+| `--rware_config` | Label used for the run (e.g., `mixed-rware`). |
+| `--batch_size` | Number of samples per GPU per step. |
+| `--grad_accum_steps` | Number of steps to accumulate gradients before updating weights (increases effective batch size). |
+| `--clip_len` | Number of video frames in each training sample. |
+| `--num_robots` | Maximum number of robots expected in any sample (used for observation padding). |
+| `--robot_obs_dim` | The dimension of the low-level observation vector for each robot (default `6`). |
+| `--epochs` | Total number of training passes over the dataset. |
+| `--vl_backend` | The VLM architecture to use (e.g., `llava_video`). |
+| `--vl_model_name` | The specific Hugging Face model ID for the VLM backbone. |
+| `--save_dir` | Directory where checkpoints and logs will be saved. |
+| `--num_workers` | Number of CPU workers for the data loader. |
+| `--mixed_precision` | Use `bf16` or `fp16` to speed up training and reduce memory usage on modern GPUs. |
+| `--peft` | Parameter-Efficient Fine-Tuning method. `qlora` is used to fit large models on standard GPU memory. |
+| `--lora_r` / `--lora_alpha` | Rank and scaling factors for LoRA adapters. |
+| `--vl_max_text_len` | Maximum token length for the text prompt/instructions. |
 
 ## 4. Troubleshooting
 
