@@ -89,6 +89,6 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
-  --vl_max_text_len 2048
+  --vl_max_text_len 4096
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)

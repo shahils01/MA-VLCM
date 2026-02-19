@@ -621,7 +621,7 @@ class SequenceWebDataset(IterableDataset):
                             else:
                                 text = f"<obs>\n{text}"
                     try:
-                        max_len = self.vlm_max_text_len if self.vlm_truncation else None
+                        max_len = self.vlm_max_text_len
                         inputs = self.vlm_processor(
                             text=text,
                             videos=frames,
