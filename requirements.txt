@@ -3,3 +3,4 @@ transformers
 webdataset
 accelerate
 wandb
+datasets

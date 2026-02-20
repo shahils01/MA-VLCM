@@ -30,6 +30,10 @@ except Exception:
     size_based_auto_wrap_policy = None
 
 import webdataset as wds
+try:
+    from datasets import load_dataset
+except Exception:
+    load_dataset = None
 from model import ModelConfig, MultimodalValueModel
 
 
@@ -37,8 +41,14 @@ def parse_args():
     p = argparse.ArgumentParser()
 
     # Data / webdataset
-    p.add_argument("--train_shards", type=str, required=True, help="WebDataset shard pattern for training")
+    p.add_argument("--data_backend", type=str, default="webdataset", choices=["webdataset", "huggingface"])
+    p.add_argument("--train_shards", type=str, default="", help="WebDataset shard pattern for training")
     p.add_argument("--val_shards", type=str, default="", help="Optional WebDataset shard pattern for validation")
+    p.add_argument("--hf_dataset", type=str, default="", help="Hugging Face dataset name or local dataset path")
+    p.add_argument("--hf_config", type=str, default="", help="Optional Hugging Face dataset config")
+    p.add_argument("--hf_train_split", type=str, default="train", help="Hugging Face dataset split for training")
+    p.add_argument("--hf_val_split", type=str, default="", help="Optional Hugging Face dataset split for validation")
+    p.add_argument("--hf_streaming", action="store_true", help="Use streaming mode for Hugging Face datasets")
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--samples_per_epoch", type=int, default=10000)
@@ -513,6 +523,83 @@ class SequenceWebDataset(IterableDataset):
         yield from flush_buffer()
 
 
+def _collate_sequence_batch(batch):
+    def _stack_inputs(items):
+        out = {}
+        keys = items[0].keys()
+        for k in keys:
+            vals = [d[k] for d in items]
+            if torch.is_tensor(vals[0]):
+                out[k] = torch.stack(vals, dim=0)
+            else:
+                out[k] = vals
+        return out
+
+    out = {
+        "inputs": _stack_inputs([b["inputs"] for b in batch]),
+        "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
+        "adj": torch.stack([b["adj"] for b in batch], dim=0),
+        "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
+        "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
+    }
+    if "next_inputs" in batch[0]:
+        out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
+        out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)
+        out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
+    if "returns" in batch[0]:
+        out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
+    return out
+
+
+def _get_first_present(sample, keys, default=None):
+    for k in keys:
+        if k in sample:
+            return sample[k]
+    return default
+
+
+def _normalize_hf_sample(sample):
+    out = dict(sample)
+    aliases = {
+        "image": "image.png",
+        "obs": "obs.npy",
+        "state": "state.npy",
+        "edge_index": "edge_index.npy",
+        "text_emb": "text_emb.npy",
+        "caption": "caption.txt",
+        "rewards": "rewards.npy",
+        "dones": "dones.npy",
+    }
+    for src, dst in aliases.items():
+        if src in out and dst not in out:
+            out[dst] = out[src]
+    return out
+
+
+def _ensure_pil_image(image):
+    if isinstance(image, Image.Image):
+        return image
+    if isinstance(image, dict):
+        b = image.get("bytes", None)
+        if b is not None:
+            return Image.open(io.BytesIO(b)).convert("RGB")
+        p = image.get("path", None)
+        if p:
+            return Image.open(p).convert("RGB")
+    if isinstance(image, bytes):
+        return Image.open(io.BytesIO(image)).convert("RGB")
+    try:
+        import numpy as np
+        arr = image.detach().cpu().numpy() if torch.is_tensor(image) else np.asarray(image)
+        if arr.ndim == 3 and arr.shape[0] in (1, 3) and arr.shape[-1] not in (1, 3):
+            arr = arr.transpose(1, 2, 0)
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return Image.fromarray(arr)
+    except Exception as e:
+        raise ValueError(f"Unable to convert image sample to PIL format. type={type(image)}") from e
+
+
 def webdataset_loader(args, shards, batch_size, num_workers):
     vlm_processor = None
     if args.preprocess_in_loader:
@@ -542,34 +629,216 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
     )
 
-    def _collate(batch):
-        def _stack_inputs(items):
-            out = {}
-            keys = items[0].keys()
-            for k in keys:
-                vals = [d[k] for d in items]
-                if torch.is_tensor(vals[0]):
-                    out[k] = torch.stack(vals, dim=0)
+    return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate_sequence_batch)
+
+
+class SequenceHFDataset(SequenceWebDataset):
+    def __init__(self, hf_dataset, hf_config, hf_split, hf_streaming, **kwargs):
+        super().__init__(**kwargs)
+        self.hf_dataset = hf_dataset
+        self.hf_config = hf_config
+        self.hf_split = hf_split
+        self.hf_streaming = hf_streaming
+
+    def __iter__(self):
+        if load_dataset is None:
+            raise RuntimeError("Hugging Face dataset loading requested but 'datasets' is not installed.")
+
+        ds_kwargs = {}
+        if self.hf_config:
+            ds_kwargs["name"] = self.hf_config
+        dataset = load_dataset(self.hf_dataset, split=self.hf_split, streaming=self.hf_streaming, **ds_kwargs)
+        if not self.hf_streaming and hasattr(dataset, "to_iterable_dataset"):
+            dataset = dataset.to_iterable_dataset()
+
+        current_ep = None
+        buffer = []
+
+        def flush_buffer():
+            min_len = self.clip_len + (1 if self.include_next else 0)
+            if len(buffer) < min_len:
+                return
+            max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
+            start_idxs = list(range(0, max_i + 1, self.clip_stride))
+            if len(start_idxs) > 1:
+                perm = torch.randperm(len(start_idxs)).tolist()
+                start_idxs = [start_idxs[p] for p in perm]
+
+            for i in start_idxs:
+                clip = self._apply_done_termination(buffer[i : i + self.clip_len])
+                raw_video = [f["image"] for f in clip]
+                raw_next_video = None
+                if self.include_next:
+                    next_clip = self._apply_done_termination(buffer[i + 1 : i + 1 + self.clip_len])
+                    raw_next_video = [f["image"] for f in next_clip]
+                if self.vlm_processor is not None:
+                    def _proc(frames, text):
+                        if not isinstance(text, str):
+                            text = self.text_prompt_template
+                        tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                        if tokenizer is not None:
+                            vocab = tokenizer.get_vocab()
+                            if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
+                                text = f"<video>\n{text}"
+                            if "<obs>" in vocab and "<obs>" not in text:
+                                if "<video>" in text:
+                                    text = text.replace("<video>\n", "<video><obs>\n", 1)
+                                else:
+                                    text = f"<obs>\n{text}"
+                        try:
+                            max_len = self.vlm_max_text_len if self.vlm_truncation else None
+                            inputs = self.vlm_processor(
+                                text=text,
+                                videos=frames,
+                                return_tensors="pt",
+                                padding=self.vlm_padding,
+                                truncation=self.vlm_truncation,
+                                max_length=max_len,
+                            )
+                        except TypeError:
+                            inputs = self.vlm_processor(images=frames, return_tensors="pt")
+                        packed = {}
+                        for k, v in dict(inputs).items():
+                            if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
+                                v = v.squeeze(0)
+                            packed[k] = v
+                        return packed
+
+                    text = clip[0]["text"]
+                    inputs = _proc(raw_video, text)
+                    next_inputs = _proc(raw_next_video, text) if self.include_next else None
                 else:
-                    out[k] = vals
-            return out
+                    raise RuntimeError("Dataloader proprocessor not set.")
 
-        out = {
-            "inputs": _stack_inputs([b["inputs"] for b in batch]),
-            "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
-            "adj": torch.stack([b["adj"] for b in batch], dim=0),
-            "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
-            "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
-        }
-        if "next_inputs" in batch[0]:
-            out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
-            out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)
-            out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
-        if "returns" in batch[0]:
-            out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
-        return out
+                robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
+                adj = torch.stack([f["adj"] for f in clip], dim=0)
+                if self.include_next:
+                    next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
+                    next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
 
-    return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
+                reward = clip[-1]["reward"]
+                done = clip[-1]["done"]
+                returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
+                out = {
+                    "inputs": inputs,
+                    "robot_obs": robot_obs,
+                    "adj": adj,
+                    "reward": reward.view(1),
+                    "returns": returns.view(1),
+                    "done": done.view(1),
+                }
+                if self.include_next:
+                    out["next_inputs"] = next_inputs
+                    out["next_robot_obs"] = next_robot_obs
+                    out["next_adj"] = next_adj
+                yield out
+
+        for sample in dataset:
+            sample = _normalize_hf_sample(sample)
+            key = _get_first_present(sample, ["__key__", "key", "id"], default="")
+            if isinstance(key, bytes):
+                key = key.decode("utf-8", errors="ignore")
+            if not key:
+                ep = _get_first_present(sample, ["episode_id", "episode", "traj_id"], default="")
+                frm = _get_first_present(sample, ["frame_id", "timestep", "step"], default="")
+                if ep != "":
+                    key = f"{ep}_{frm}" if frm != "" else str(ep)
+            if "_" in str(key):
+                ep_id = str(key).split("_")[0]
+            else:
+                ep_id = str(key)
+
+            if current_ep is None:
+                current_ep = ep_id
+            if ep_id != current_ep:
+                yield from flush_buffer()
+                buffer = []
+                current_ep = ep_id
+
+            image = _get_first_present(sample, ["image.png", "image"])
+            if image is None:
+                raise KeyError("Hugging Face sample is missing image field. Expected one of: image, image.png")
+            image = _ensure_pil_image(image)
+
+            robot_raw = _get_first_present(sample, [f"{self.robot_source}.npy", self.robot_source])
+            if robot_raw is None:
+                raise KeyError(f"Hugging Face sample missing robot field for --robot_source={self.robot_source}")
+            robot_src = _as_numpy(robot_raw)
+            if hasattr(robot_src, "numpy"):
+                robot_src = robot_src.numpy()
+            robot_obs = torch.tensor(robot_src, dtype=torch.float32)
+
+            num_nodes = robot_obs.shape[0]
+            edge_raw = _get_first_present(sample, ["edge_index.npy", "edge_index"])
+            if edge_raw is None:
+                raise KeyError("Hugging Face sample missing edge_index field")
+            adj = _edge_index_to_adj(_as_numpy(edge_raw), num_nodes)
+
+            if self.text_mode == "raw":
+                text = self.text_prompt_template
+            else:
+                text_raw = _get_first_present(sample, ["text_emb.npy", "text_emb"])
+                if text_raw is None:
+                    raise KeyError("text_mode=emb requires `text_emb` in Hugging Face dataset samples.")
+                text = _as_numpy(text_raw)
+                if hasattr(text, "numpy"):
+                    text = text.numpy()
+                text = torch.tensor(text, dtype=torch.float32)
+
+            rewards_raw = _get_first_present(sample, ["rewards.npy", "rewards"])
+            dones_raw = _get_first_present(sample, ["dones.npy", "dones"])
+            if rewards_raw is None or dones_raw is None:
+                raise KeyError("Hugging Face sample missing rewards/dones fields")
+            reward = _reduce_value(torch.tensor(_as_numpy(rewards_raw), dtype=torch.float32), self.reward_reduce)
+            done = _reduce_done(torch.tensor(_as_numpy(dones_raw), dtype=torch.float32), self.done_reduce)
+
+            buffer.append(
+                {
+                    "image": image,
+                    "robot_obs": robot_obs,
+                    "adj": adj,
+                    "text": text,
+                    "reward": reward,
+                    "done": done,
+                }
+            )
+
+        yield from flush_buffer()
+
+
+def huggingface_loader(args, batch_size, num_workers, split):
+    vlm_processor = None
+    if args.preprocess_in_loader:
+        from transformers import LlavaNextVideoProcessor
+        vlm_processor = LlavaNextVideoProcessor.from_pretrained(args.vl_model_name)
+        tokenizer = getattr(vlm_processor, "tokenizer", None)
+        if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
+
+    dataset = SequenceHFDataset(
+        hf_dataset=args.hf_dataset,
+        hf_config=args.hf_config,
+        hf_split=split,
+        hf_streaming=args.hf_streaming,
+        clip_len=args.clip_len,
+        clip_stride=args.clip_stride,
+        text_mode=args.text_mode,
+        robot_source=args.robot_source,
+        reward_reduce=args.reward_reduce,
+        done_reduce=args.done_reduce,
+        vlm_processor=vlm_processor,
+        text_prompt_template=args.text_prompt_template,
+        return_mode=args.return_mode,
+        n_step=args.n_step,
+        gamma=args.gamma,
+        keep_raw_video=False,
+        include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
+        vlm_max_text_len=args.vl_max_text_len,
+        vlm_truncation=(args.vl_backend != "llava_video"),
+        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
+    )
+    worker_count = num_workers if args.hf_streaming else 0
+    return DataLoader(dataset, batch_size=batch_size, num_workers=worker_count, collate_fn=_collate_sequence_batch)
 
 
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
@@ -685,6 +954,10 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
 def main():
     args = parse_args()
+    if args.data_backend == "webdataset" and not args.train_shards:
+        raise ValueError("data_backend=webdataset requires --train_shards.")
+    if args.data_backend == "huggingface" and not args.hf_dataset:
+        raise ValueError("data_backend=huggingface requires --hf_dataset.")
     os.makedirs(args.save_dir, exist_ok=True)
 
     if args.preprocess_in_loader:
@@ -789,10 +1062,16 @@ def main():
                 b.data = b.data.to(dtype=target_dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
-    val_loader = None
-    if args.val_shards:
-        val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers)
+    if args.data_backend == "webdataset":
+        train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
+        val_loader = None
+        if args.val_shards:
+            val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers)
+    else:
+        train_loader = huggingface_loader(args, args.batch_size, args.num_workers, args.hf_train_split)
+        val_loader = None
+        if args.hf_val_split:
+            val_loader = huggingface_loader(args, args.batch_size, args.num_workers, args.hf_val_split)
 
     if val_loader is not None:
         model, optimizer, train_loader, val_loader = accelerator.prepare(
