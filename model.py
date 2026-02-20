@@ -1,5 +1,7 @@
 import math
 from dataclasses import dataclass
+from typing import Any, Optional
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -9,11 +11,12 @@ import torch.nn.functional as F
 @dataclass
 class ModelConfig:
     # Backbone
-    vl_backend: str = "deepseek_vl"  # deepseek_vl | deepseek_vl2
-    vl_model_name: str = "deepseek-community/deepseek-vl-1.3b-base"
+    vl_backend: str = "llava_video"
+    vl_model_name: str = "llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
+    quantization_config: Optional[Any] = None
 
     # Video
     video_channels: int = 3
@@ -38,7 +41,7 @@ class ModelConfig:
     temporal_dropout: float = 0.1
 
     # GNN
-    gnn_layers: int = 2
+    gnn_layers: int = 4
 
     # Fusion
     fusion_hidden: int = 512
@@ -46,9 +49,14 @@ class ModelConfig:
     moe_experts: int = 4
     moe_top_k: int = 2
 
+    # Debug
+    debug_save_video: bool = False
 
-class DeepSeekVLMBackbone(nn.Module):
-    """Backbone wrapper for DeepSeek VLMs (DeepSeek-VL or DeepSeek-VL2)."""
+
+
+
+class LLaVAVideoBackbone(nn.Module):
+    """Backbone wrapper for LLaVA-style video models using HF interfaces."""
 
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
@@ -62,102 +70,74 @@ class DeepSeekVLMBackbone(nn.Module):
         else:
             dtype = torch.bfloat16
 
-        if cfg.vl_backend == "deepseek_vl2":
+        try:
+            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, LlavaNextVideoProcessor
+            from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
             try:
-                from deepseek_vl.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor
-            except Exception as e:
-                raise ImportError(
-                    "DeepSeek-VL2 backend requires the DeepSeek-VL2 repo installed. "
-                    "Install it from https://github.com/deepseek-ai/DeepSeek-VL2"
-                ) from e
+                from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
+            except Exception:
+                AutoModelForVision2Seq = None
+        except Exception as e:
+            raise ImportError("LLaVA-Video backend requires transformers installed.") from e
 
-            self.processor = DeepseekVLV2Processor.from_pretrained(cfg.vl_model_name)
-            self.tokenizer = self.processor.tokenizer
-            self.model = DeepseekVLV2ForCausalLM.from_pretrained(
-                cfg.vl_model_name, torch_dtype=dtype
-            )
-        else:
-            from transformers import AutoProcessor, DeepseekVLModel, AutoTokenizer
+        self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
+        self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
+            cfg.vl_model_name
+        )
+        if "<obs>" not in self.tokenizer.get_vocab():
+            self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
-            self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
-            self.tokenizer = AutoTokenizer.from_pretrained(cfg.vl_model_name)
-            self.model = DeepseekVLModel.from_pretrained(
-                cfg.vl_model_name, torch_dtype=dtype
-            )
+        model_kwargs = {"torch_dtype": dtype}
+        if cfg.quantization_config is not None:
+            model_kwargs["quantization_config"] = cfg.quantization_config
+        self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+            cfg.vl_model_name, **model_kwargs
+        )
+        if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
+            self.model.resize_token_embeddings(len(self.tokenizer))
 
         self.model.to(device)
         if cfg.freeze_vl:
             for p in self.model.parameters():
                 p.requires_grad = False
 
-        self._language_model = self._get_language_model()
-        self.text_hidden_size = self._language_model.config.hidden_size
         self._dtype = dtype
 
-    def _get_language_model(self):
-        if hasattr(self.model, "language_model"):
-            return self.model.language_model
-        if hasattr(self.model, "model") and hasattr(self.model.model, "language_model"):
-            return self.model.model.language_model
-        raise AttributeError("Could not find language_model on DeepSeek VLM.")
+    def get_input_embeddings(self):
+        if hasattr(self.model, "get_input_embeddings"):
+            return self.model.get_input_embeddings()
+        if hasattr(self.model, "language_model") and hasattr(self.model.language_model, "get_input_embeddings"):
+            return self.model.language_model.get_input_embeddings()
+        if hasattr(self.model, "model") and hasattr(self.model.model, "get_input_embeddings"):
+            return self.model.model.get_input_embeddings()
+        raise AttributeError("Could not access input embeddings on LLaVA backbone.")
 
-    def _normalize_video(self, video):
-        # video: [B*T, C, H, W]
-        if video.dtype != torch.float32 and video.dtype != torch.float16 and video.dtype != torch.bfloat16:
-            video = video.float()
-        mean = torch.tensor(self.cfg.video_mean, device=video.device).view(1, -1, 1, 1)
-        std = torch.tensor(self.cfg.video_std, device=video.device).view(1, -1, 1, 1)
-        return (video - mean) / std
+    def _move_inputs_to_device(self, inputs):
+        moved = {}
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                if k in ("pixel_values", "pixel_values_videos", "video_values", "video", "videos"):
+                    moved[k] = v.to(self.device, dtype=self._dtype)
+                else:
+                    moved[k] = v.to(self.device)
+            else:
+                moved[k] = v
+        return moved
 
-    def _processor_images(self, images):
-        # Prefer dedicated image processor if available to avoid text-required processors
-        if hasattr(self.processor, "image_processor"):
-            proc = self.processor.image_processor(images=images, return_tensors="pt")
-        elif hasattr(self.processor, "vision_processor"):
-            proc = self.processor.vision_processor(images=images, return_tensors="pt")
-        else:
-            # Fallback: DeepSeek-VL processor expects text + images
-            texts = [""] * len(images)
-            proc = self.processor(text=texts, images=images, return_tensors="pt")
-        pixel_values = proc["pixel_values"].to(self.device, dtype=self._dtype)
-        return pixel_values
-
-    def encode_image(self, pixel_values_or_images):
-        if isinstance(pixel_values_or_images, (list, tuple)):
-            pixel_values = self._processor_images(pixel_values_or_images)
-        else:
-            pixel_values = pixel_values_or_images
-            if not self.cfg.video_preprocessed:
-                pixel_values = self._normalize_video(pixel_values)
-            pixel_values = pixel_values.to(self.device, dtype=self._dtype)
-
-        if hasattr(self.model, "get_image_features"):
-            img = self.model.get_image_features(pixel_values)
-        elif hasattr(self.model, "model") and hasattr(self.model.model, "get_image_features"):
-            img = self.model.model.get_image_features(pixel_values)
-        else:
-            raise AttributeError("DeepSeek VLM does not expose get_image_features.")
-
-        # img: [B, num_image_tokens, D]
-        return img.mean(dim=1)
-
-    def encode_text(self, texts):
-        tokens = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.cfg.vl_max_text_len,
+    def prepare_inputs(self, text, videos, padding=False, truncation=False, max_length=None):
+        # For LLaVA video prompts, truncation can break special token alignment.
+        # Only pass max_length when truncation is explicitly enabled.
+        if truncation and max_length is None:
+            max_length = self.cfg.vl_max_text_len
+        inputs = self.processor(
+            text=text,
+            videos=videos,
             return_tensors="pt",
-        ).to(self.device)
-        return self.encode_text_tokens(tokens["input_ids"], tokens["attention_mask"])
-
-    def encode_text_tokens(self, input_ids, attention_mask):
-        tokens = {"input_ids": input_ids.to(self.device), "attention_mask": attention_mask.to(self.device)}
-        outputs = self._language_model(**tokens)
-        hidden = outputs.last_hidden_state
-        mask = tokens["attention_mask"].unsqueeze(-1)
-        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-        return pooled
+            padding=padding,
+            truncation=truncation,
+            max_length=max_length,
+        )
+        return self._move_inputs_to_device(inputs)
 
 
 class TemporalTransformer(nn.Module):
@@ -245,83 +225,146 @@ class MultimodalValueModel(nn.Module):
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
         self.cfg = cfg
-        self.backbone = DeepSeekVLMBackbone(cfg, device=device)
-        if self.backbone.text_hidden_size != cfg.d_model:
-            self.vision_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
-            self.text_raw_proj = nn.Linear(self.backbone.text_hidden_size, cfg.d_model)
-        else:
-            self.vision_proj = nn.Identity()
-            self.text_raw_proj = nn.Identity()
+        self.debug_save_video = cfg.debug_save_video
+        self.backbone = LLaVAVideoBackbone(cfg, device=device)
+        lm_hidden = self.backbone.get_input_embeddings().embedding_dim
+        self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
-        self.video_temporal = TemporalTransformer(
-            cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
+        try:
+            from gat import GNN_Model
+        except Exception as e:
+            raise ImportError(
+                "Failed to import GNN_Model from aero_gnn.py. "
+                "Make sure torch-geometric and torch-scatter are installed."
+            ) from e
+
+        # Keep the same node feature slice used before flattening (first 8 dims per robot).
+        self.robot_node_dim = min(8, cfg.robot_obs_dim)
+        gnn_heads = max(1, cfg.temporal_heads)
+        gnn_hidden = max(1, math.ceil(cfg.d_model / gnn_heads))
+        gnn_args = SimpleNamespace(
+            num_heads=gnn_heads,
+            iterations=max(1, cfg.gnn_layers),
+            dropout=cfg.temporal_dropout,
+            num_layers=3,
+            add_dropout=False,
+            algorithm_name="mappo_dgnn",
+            lambd_gnn=1.0,
+        )
+        self.robot_gnn = GNN_Model(
+            args=gnn_args,
+            in_channels=self.robot_node_dim,
+            hid_channels=gnn_hidden,
+            out_channels=cfg.d_model,
+            num_agents=cfg.num_robots,
         )
 
-        self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        # self.graph_enc = DenseGraphEncoder(cfg.d_model, cfg.gnn_layers)
-        self.graph_temporal = TemporalTransformer(
-            cfg.d_model, cfg.temporal_layers, cfg.temporal_heads, cfg.temporal_dropout
-        )
+        # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
+        self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
 
-        self.text_proj = nn.Linear(cfg.text_dim, cfg.d_model)
+    def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
+        # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
+        bsz, num_nodes, _ = adj.shape
+        nz = (adj > 0).nonzero(as_tuple=False)
+        if nz.numel() == 0:
+            # Fallback to self-loops when there are no edges.
+            base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
+            return torch.stack([base, base], dim=0)
 
-        fused_dim = cfg.d_model * 3
-        if cfg.use_moe:
-            self.fusion = MoEFeedForward(fused_dim, cfg.fusion_hidden, cfg.moe_experts, cfg.moe_top_k)
-        else:
-            self.fusion = nn.Sequential(
-                nn.Linear(fused_dim, cfg.fusion_hidden),
-                nn.GELU(),
-                nn.Linear(cfg.fusion_hidden, fused_dim),
-            )
+        batch_idx = nz[:, 0]
+        src = nz[:, 1]
+        dst = nz[:, 2]
+        flat_src = batch_idx * num_nodes + src
+        flat_dst = batch_idx * num_nodes + dst
+        return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
 
-        self.value_head = nn.Linear(fused_dim, 1)
-
-    def forward(self, video, robot_obs, adj, text_emb=None, text_raw=None, text_ids=None, text_mask=None):
-        # video: torch.Tensor [B, T, C, H, W] or list of list of PIL images
+    def forward(
+        self,
+        video,
+        robot_obs,
+        adj,
+        text_emb=None,
+        text_raw=None,
+        text_ids=None,
+        text_mask=None,
+        image_sizes=None,
+    ):
+        # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
         # adj: [B, T, N, N]
         # text_emb: [B, text_dim] or text_raw: list[str]
 
-        if isinstance(video, torch.Tensor):
-            b, t = video.shape[0], video.shape[1]
-            video_flat = video.view(b * t, *video.shape[2:])
-            vid_tokens = self.backbone.encode_image(video_flat)
+        inputs = None
+        video_list = None
+        if isinstance(video, dict):
+            inputs = video
+        
+        bsz = robot_obs.shape[0]
+        # # print('robot_obs shape = ', robot_obs.shape)
+        # robot_obs = robot_obs[:, -1, :, :8].reshape(-1, 40)
+        # # print('robot_obs shape after = ', robot_obs.shape)
+        # robot_feats = self.robot_enc(robot_obs)
+
+        num_nodes = robot_obs.shape[2]
+        if num_nodes != self.cfg.num_robots:
+            raise RuntimeError(
+                f"robot_obs has {num_nodes} nodes, but config expects {self.cfg.num_robots}. "
+                "Set --num_robots to match your dataset."
+            )
+
+        # Use only the last-step robot obs and encode team structure with GNN.
+        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
+        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
+        edge_index = self._adj_to_batched_edge_index(adj_last)
+        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
+
+        # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
+        inputs = self.backbone._move_inputs_to_device(inputs)
+        input_ids = inputs["input_ids"].clone()
+        attn_mask = inputs.get("attention_mask")
+        if attn_mask is not None:
+            inputs["attention_mask"] = attn_mask.clone()
+        inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
+
+        # Pool team graph features to one token and inject at <obs>.
+        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
+        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+
+        obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
+        if obs_token_id is not None and obs_token_id >= 0:
+            obs_mask = input_ids.eq(obs_token_id)
+
+            if obs_mask.any():
+                # Avoid in-place updates that can break autograd version tracking.
+                obs_mask = obs_mask.unsqueeze(-1)
+                if input_ids.shape[0] == bsz:
+                    # input_ids: [B, S]
+                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
+                elif input_ids.shape[1] == bsz:
+                    # input_ids: [S, B]
+                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                else:
+                    raise RuntimeError(
+                        f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
+                    )
+                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
+
+        inputs.pop("input_ids", None)
+        inputs["inputs_embeds"] = inputs_embeds
+        output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
+
+        final_hidden = output.hidden_states[-1]
+        attn = inputs.get("attention_mask")
+        if attn is not None:
+            mask = attn.unsqueeze(-1)
+            pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
         else:
-            b = len(video)
-            t = len(video[0]) if b > 0 else 0
-            flat = [img for seq in video for img in seq]
-            vid_tokens = self.backbone.encode_image(flat)
+            pooled = final_hidden[:, -1, :]
 
-        proj_dtype = self.vision_proj.weight.dtype if hasattr(self.vision_proj, "weight") else vid_tokens.dtype
-        vid_tokens = vid_tokens.to(proj_dtype)
-        vid_tokens = self.vision_proj(vid_tokens).view(b, t, -1)
-        vid_tokens = self.video_temporal(vid_tokens)
-        vid_feat = vid_tokens.mean(dim=1)
+        pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
 
-        robot_feats = self.robot_enc(robot_obs)
-        # print('robot_feats shape = ', robot_feats.shape)
-        # robot_feats = self.graph_enc(robot_feats, adj)
-        # print('robot_feats shape after GNN = ', robot_feats.shape)
-
-        team_tokens = robot_feats.mean(dim=2)  # [B, T, D]
-        team_tokens = self.graph_temporal(team_tokens)
-        team_feat = team_tokens.mean(dim=1)
-
-        if text_emb is not None:
-            text_feat = self.text_proj(text_emb)
-        elif text_ids is not None and text_mask is not None:
-            txt = self.backbone.encode_text_tokens(text_ids, text_mask)
-            txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt
-            text_feat = self.text_raw_proj(txt)
-        elif text_raw is not None:
-            txt = self.backbone.encode_text(text_raw)
-            txt = txt.to(self.text_raw_proj.weight.dtype) if hasattr(self.text_raw_proj, "weight") else txt
-            text_feat = self.text_raw_proj(txt)
-        else:
-            raise ValueError("Provide either text_emb or text_raw.")
-
-        fused = torch.cat([vid_feat, team_feat, text_feat], dim=-1)
-        fused = self.fusion(fused)
-        value = self.value_head(fused).squeeze(-1)
+        value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
+        value = self.value_head(value_head_input).squeeze(-1)
+        # print('value shape = ', value.shape)
         return value
