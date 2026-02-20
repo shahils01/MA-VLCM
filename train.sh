@@ -1,5 +1,5 @@
 python3 train.py \
-  --train_shards "/home/anshul/Research/Postdoc/RL/MA-VLCM/test_data/shard-{000000..000080}.tar" \
+  --train_shards "/home/anshul/Research/Postdoc/RL/MA-VLCM/test_data/shard-{000000..000004}.tar" \
   --batch_size 2 \
   --clip_len 10 \
   --clip_stride 10 \
@@ -11,7 +11,7 @@ python3 train.py \
   --return_mode nstep \
   --n_step 10 \
   --vl_backend llava_video \
-  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-hf \
+  --vl_model_name /workspace/models \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\
   with heading denoted by an arrow) is: <video> and the robot team observations over ten episodes is <obs>.\
   The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal \
