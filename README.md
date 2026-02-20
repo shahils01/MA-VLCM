@@ -45,8 +45,20 @@ python train.py \
   --gamma 0.99 \
   --text_mode raw \
   --preprocess_in_loader \
+  --wandb \
+  --wandb_project ma-vlcm \
+  --wandb_run_name local-debug \
   --epochs 2
 ```
+
+## Weights & Biases tracking
+- Login once on the machine: `wandb login`
+- Enable logging with `--wandb`
+- Useful options:
+  - `--wandb_project ma-vlcm`
+  - `--wandb_entity <team_or_user>`
+  - `--wandb_run_name <name>`
+  - `--wandb_tags ddp,llava,lora`
 
 ## Multi-GPU (FSDP)
 To shard the model across GPUs (instead of full model replica per GPU), launch with Accelerate and enable FSDP:
@@ -64,7 +76,10 @@ accelerate launch --num_processes 4 train.py \
   --preprocess_in_loader \
   --epochs 2 \
   --fsdp \
-  --fsdp_min_num_params 1000000
+  --fsdp_min_num_params 1000000 \
+  --wandb \
+  --wandb_project ma-vlcm \
+  --wandb_run_name fsdp-run
 ```
 Notes:
 - Use `--fsdp_cpu_offload` if GPU memory is tight (slower).

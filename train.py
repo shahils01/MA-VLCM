@@ -121,6 +121,11 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints")
+    p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging via Accelerate trackers")
+    p.add_argument("--wandb_project", type=str, default="ma-vlcm", help="W&B project name")
+    p.add_argument("--wandb_entity", type=str, default="", help="W&B entity/team (optional)")
+    p.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (optional)")
+    p.add_argument("--wandb_tags", type=str, default="", help="Comma-separated W&B tags (optional)")
 
     return p.parse_args()
 
@@ -583,7 +588,7 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     return loss[mask].mean()
 
 
-def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True):
+def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
     if train:
         model.train()
     else:
@@ -658,8 +663,24 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
             avg = total_loss / step
             phase = "train" if train else "val"
             accelerator.print(f"{phase} step={step} loss={avg:.4f}")
+            if args.wandb:
+                metrics = {f"{phase}/loss": avg}
+                if train:
+                    metrics["train/lr"] = optimizer.param_groups[0]["lr"]
+                    accelerator.log(metrics, step=global_step + step)
+                else:
+                    accelerator.log(metrics, step=global_step)
 
-    return total_loss / max(step, 1)
+    avg_loss = total_loss / max(step, 1)
+    if args.wandb:
+        phase = "train" if train else "val"
+        metrics = {f"{phase}/epoch_loss": avg_loss}
+        if train:
+            accelerator.log(metrics, step=global_step + step)
+        else:
+            accelerator.log(metrics, step=global_step)
+
+    return avg_loss, (global_step + step if train else global_step)
 
 
 def main():
@@ -726,12 +747,29 @@ def main():
         find_unused = args.ddp_find_unused_parameters or (args.peft != "none") or args.freeze_vl
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
-    accelerator = Accelerator(
+    accelerator_kwargs = dict(
         mixed_precision=args.mixed_precision,
         fsdp_plugin=fsdp_plugin,
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
         kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
     )
+    if args.wandb:
+        accelerator_kwargs["log_with"] = ["wandb"]
+    accelerator = Accelerator(**accelerator_kwargs)
+    if args.wandb:
+        tags = [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
+        wandb_kwargs = {}
+        if args.wandb_entity:
+            wandb_kwargs["entity"] = args.wandb_entity
+        if args.wandb_run_name:
+            wandb_kwargs["name"] = args.wandb_run_name
+        if tags:
+            wandb_kwargs["tags"] = tags
+        accelerator.init_trackers(
+            project_name=args.wandb_project,
+            config=vars(args),
+            init_kwargs={"wandb": wandb_kwargs},
+        )
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
     if args.fsdp:
@@ -763,13 +801,23 @@ def main():
     else:
         model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
+    global_step = 0
     for epoch in range(1, args.epochs + 1):
-        train_loss = run_epoch(model, train_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=True)
+        train_loss, global_step = run_epoch(
+            model, train_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=True, global_step=global_step
+        )
         val_loss = None
         if val_loader is not None:
-            val_loss = run_epoch(model, val_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=False)
+            val_loss, global_step = run_epoch(
+                model, val_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=False, global_step=global_step
+            )
 
         accelerator.print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss if val_loss is not None else 'n/a'}")
+        if args.wandb:
+            epoch_metrics = {"epoch": epoch, "train/epoch_loss": train_loss}
+            if val_loss is not None:
+                epoch_metrics["val/epoch_loss"] = val_loss
+            accelerator.log(epoch_metrics, step=global_step)
 
         if accelerator.is_main_process:
             ckpt = {
@@ -780,6 +828,9 @@ def main():
             }
             torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
         accelerator.wait_for_everyone()
+
+    if args.wandb and hasattr(accelerator, "end_training"):
+        accelerator.end_training()
 
 
 if __name__ == "__main__":

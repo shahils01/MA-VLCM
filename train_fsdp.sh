@@ -16,5 +16,7 @@ accelerate launch --num_processes 8 train.py \
   --fsdp \
   --fsdp_min_num_params 1000000 \
   --fsdp_use_orig_params \
+  --wandb \
+  --wandb_project ma-vlcm \
+  --wandb_run_name ma-vlcm-fsdp
   # --mixed_precision fp32 \
-

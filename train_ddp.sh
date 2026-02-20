@@ -22,3 +22,6 @@ accelerate launch --num_processes 8 train.py \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
+  --wandb \
+  --wandb_project ma-vlcm \
+  --wandb_run_name ma-vlcm-ddp
