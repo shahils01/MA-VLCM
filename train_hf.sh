@@ -1,6 +1,6 @@
 accelerate launch --num_processes 2 train.py \
   --data_backend huggingface \
-  --hf_dataset "shulnak09/OFFROAD_MARL" \
+  --hf_dataset "https://huggingface.co/datasets/shulnak09/OFFROAD_MARL/resolve/main/shard-{000000..000014}.tar" \
   --hf_train_split train \
   --hf_val_split validation \
   --hf_streaming \
