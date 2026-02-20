@@ -634,6 +634,9 @@ def webdataset_loader(args, shards, batch_size, num_workers):
 
 class SequenceHFDataset(SequenceWebDataset):
     def __init__(self, hf_dataset, hf_config, hf_split, hf_streaming, **kwargs):
+        # Base class expects `shards`; HF backend does not use it.
+        kwargs = dict(kwargs)
+        kwargs.setdefault("shards", "")
         super().__init__(**kwargs)
         self.hf_dataset = hf_dataset
         self.hf_config = hf_config
