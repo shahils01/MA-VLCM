@@ -365,7 +365,7 @@ def process_config(config_name, shards, args):
     plt.tight_layout()
     # Sanitize filename
     safe_name = config_name.replace(":", "_").replace("/", "_").replace("\\", "_")
-    out_file = f"analysis_{safe_name}.png"
+    out_file = f"plots/analysis_{safe_name}.png"
     plt.savefig(out_file)
     print(f"Saved plots to {out_file}")
     plt.close()
@@ -524,7 +524,7 @@ def main():
                 axes[2].grid(True, alpha=0.3)
 
                 plt.tight_layout()
-                out_file = f"analysis_single_trajectory.png"
+                out_file = f"plots/analysis_single_trajectory.png"
                 plt.savefig(out_file)
                 print(f"Saved plots to {out_file}")
                 plt.close()
