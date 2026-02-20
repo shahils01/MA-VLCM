@@ -731,6 +731,71 @@ class SequenceHFDataset(SequenceWebDataset):
         buffer = []
         partial_frames = {}
 
+        def _meta_episode_id(meta):
+            if not isinstance(meta, dict):
+                return "episode"
+            ep = _get_first_present(meta, ["episode_id", "traj_id", "trajectory_id", "episode", "id"], default="")
+            return str(ep) if ep != "" else "episode"
+
+        def _extract_indexed_value(v, i, total):
+            if isinstance(v, (list, tuple)):
+                return v[i] if i < len(v) else None
+            if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == total:
+                return v[i]
+            if hasattr(v, "shape") and len(getattr(v, "shape", [])) > 0 and v.shape[0] == total:
+                try:
+                    return v[i]
+                except Exception:
+                    return v
+            return v
+
+        def _expand_episode_row(raw):
+            # Some HF exports store one row per episode: {"trajectory": ..., "metadata": ...}
+            if not isinstance(raw, dict):
+                yield raw
+                return
+            traj = raw.get("trajectory", None)
+            meta = raw.get("metadata", None)
+            if traj is None:
+                yield raw
+                return
+
+            ep = _meta_episode_id(meta)
+            if isinstance(traj, list):
+                for i, step in enumerate(traj):
+                    if not isinstance(step, dict):
+                        continue
+                    frame = dict(step)
+                    if "__key__" not in frame:
+                        frm = _get_first_present(frame, ["frame_id", "step", "timestep"], default=i)
+                        frame["__key__"] = f"{ep}_{frm}"
+                    yield frame
+                return
+
+            if isinstance(traj, dict):
+                lengths = []
+                for v in traj.values():
+                    if isinstance(v, (list, tuple)):
+                        lengths.append(len(v))
+                    elif torch.is_tensor(v) and v.dim() > 0:
+                        lengths.append(v.shape[0])
+                    elif hasattr(v, "shape") and len(getattr(v, "shape", [])) > 0:
+                        lengths.append(v.shape[0])
+                if not lengths:
+                    yield raw
+                    return
+                t = min(lengths)
+                for i in range(t):
+                    frame = {}
+                    for k, v in traj.items():
+                        frame[k] = _extract_indexed_value(v, i, t)
+                    if "__key__" not in frame:
+                        frame["__key__"] = f"{ep}_{i}"
+                    yield frame
+                return
+
+            yield raw
+
         def _is_complete_frame(sample_dict):
             required = {"image.png", f"{self.robot_source}.npy", "edge_index.npy", "rewards.npy", "dones.npy"}
             if self.text_mode == "emb":
@@ -816,88 +881,89 @@ class SequenceHFDataset(SequenceWebDataset):
                     out["next_adj"] = next_adj
                 yield out
 
-        for sample in dataset:
-            sample = _normalize_hf_sample(sample)
-            if _get_first_present(sample, ["image.png", "image"]) is None:
-                p = _get_first_present(sample, ["path", "filepath", "file_path", "filename", "file_name"])
-                b = _get_first_present(sample, ["bytes", "content", "data"])
-                if p is not None and b is not None:
-                    frame_key, canonical_key = _path_to_canonical_key(p)
-                    if frame_key is not None and canonical_key is not None:
-                        assembled = partial_frames.setdefault(frame_key, {"__key__": frame_key})
-                        assembled[canonical_key] = b
-                        if _is_complete_frame(assembled):
-                            sample = assembled
-                            del partial_frames[frame_key]
-                        else:
-                            continue
+        for raw_sample in dataset:
+            for sample in _expand_episode_row(raw_sample):
+                sample = _normalize_hf_sample(sample)
+                if _get_first_present(sample, ["image.png", "image"]) is None:
+                    p = _get_first_present(sample, ["path", "filepath", "file_path", "filename", "file_name"])
+                    b = _get_first_present(sample, ["bytes", "content", "data"])
+                    if p is not None and b is not None:
+                        frame_key, canonical_key = _path_to_canonical_key(p)
+                        if frame_key is not None and canonical_key is not None:
+                            assembled = partial_frames.setdefault(frame_key, {"__key__": frame_key})
+                            assembled[canonical_key] = b
+                            if _is_complete_frame(assembled):
+                                sample = assembled
+                                del partial_frames[frame_key]
+                            else:
+                                continue
 
-            key = _get_first_present(sample, ["__key__", "key", "id"], default="")
-            if isinstance(key, bytes):
-                key = key.decode("utf-8", errors="ignore")
-            if not key:
-                ep = _get_first_present(sample, ["episode_id", "episode", "traj_id"], default="")
-                frm = _get_first_present(sample, ["frame_id", "timestep", "step"], default="")
-                if ep != "":
-                    key = f"{ep}_{frm}" if frm != "" else str(ep)
-            ep_id = _extract_episode_id(key)
+                key = _get_first_present(sample, ["__key__", "key", "id"], default="")
+                if isinstance(key, bytes):
+                    key = key.decode("utf-8", errors="ignore")
+                if not key:
+                    ep = _get_first_present(sample, ["episode_id", "episode", "traj_id"], default="")
+                    frm = _get_first_present(sample, ["frame_id", "timestep", "step"], default="")
+                    if ep != "":
+                        key = f"{ep}_{frm}" if frm != "" else str(ep)
+                ep_id = _extract_episode_id(key)
 
-            if current_ep is None:
-                current_ep = ep_id
-            if ep_id != current_ep:
-                yield from flush_buffer()
-                buffer = []
-                current_ep = ep_id
+                if current_ep is None:
+                    current_ep = ep_id
+                if ep_id != current_ep:
+                    yield from flush_buffer()
+                    buffer = []
+                    current_ep = ep_id
 
-            image = _get_first_present(sample, ["image.png", "image"])
-            if image is None:
-                raise KeyError(
-                    f"Hugging Face sample is missing image field. keys={list(sample.keys())[:20]}"
+                image = _get_first_present(sample, ["image.png", "image"])
+                if image is None:
+                    raise KeyError(
+                        f"Hugging Face sample is missing image field. keys={list(sample.keys())[:20]}"
+                    )
+                image = _ensure_pil_image(image)
+
+                robot_raw = _get_first_present(sample, [f"{self.robot_source}.npy", self.robot_source])
+                if robot_raw is None:
+                    raise KeyError(f"Hugging Face sample missing robot field for --robot_source={self.robot_source}")
+                robot_src = _as_numpy(robot_raw)
+                if hasattr(robot_src, "numpy"):
+                    robot_src = robot_src.numpy()
+                robot_obs = torch.tensor(robot_src, dtype=torch.float32)
+
+                num_nodes = robot_obs.shape[0]
+                edge_raw = _get_first_present(sample, ["edge_index.npy", "edge_index"])
+                if edge_raw is None:
+                    raise KeyError("Hugging Face sample missing edge_index field")
+                adj = _edge_index_to_adj(_as_numpy(edge_raw), num_nodes)
+
+                if self.text_mode == "raw":
+                    text = self.text_prompt_template
+                else:
+                    text_raw = _get_first_present(sample, ["text_emb.npy", "text_emb"])
+                    if text_raw is None:
+                        raise KeyError("text_mode=emb requires `text_emb` in Hugging Face dataset samples.")
+                    text = _as_numpy(text_raw)
+                    if hasattr(text, "numpy"):
+                        text = text.numpy()
+                    text = torch.tensor(text, dtype=torch.float32)
+
+                rewards_raw = _get_first_present(sample, ["rewards.npy", "rewards"])
+                dones_raw = _get_first_present(sample, ["dones.npy", "dones"])
+                if rewards_raw is None or dones_raw is None:
+                    raise KeyError("Hugging Face sample missing rewards/dones fields")
+                reward = _reduce_value(torch.tensor(_as_numpy(rewards_raw), dtype=torch.float32), self.reward_reduce)
+                done = _reduce_done(torch.tensor(_as_numpy(dones_raw), dtype=torch.float32), self.done_reduce)
+
+                buffer.append(
+                    {
+                        "image": image,
+                        "robot_obs": robot_obs,
+                        "adj": adj,
+                        "text": text,
+                        "reward": reward,
+                        "done": done,
+                    }
                 )
-            image = _ensure_pil_image(image)
-
-            robot_raw = _get_first_present(sample, [f"{self.robot_source}.npy", self.robot_source])
-            if robot_raw is None:
-                raise KeyError(f"Hugging Face sample missing robot field for --robot_source={self.robot_source}")
-            robot_src = _as_numpy(robot_raw)
-            if hasattr(robot_src, "numpy"):
-                robot_src = robot_src.numpy()
-            robot_obs = torch.tensor(robot_src, dtype=torch.float32)
-
-            num_nodes = robot_obs.shape[0]
-            edge_raw = _get_first_present(sample, ["edge_index.npy", "edge_index"])
-            if edge_raw is None:
-                raise KeyError("Hugging Face sample missing edge_index field")
-            adj = _edge_index_to_adj(_as_numpy(edge_raw), num_nodes)
-
-            if self.text_mode == "raw":
-                text = self.text_prompt_template
-            else:
-                text_raw = _get_first_present(sample, ["text_emb.npy", "text_emb"])
-                if text_raw is None:
-                    raise KeyError("text_mode=emb requires `text_emb` in Hugging Face dataset samples.")
-                text = _as_numpy(text_raw)
-                if hasattr(text, "numpy"):
-                    text = text.numpy()
-                text = torch.tensor(text, dtype=torch.float32)
-
-            rewards_raw = _get_first_present(sample, ["rewards.npy", "rewards"])
-            dones_raw = _get_first_present(sample, ["dones.npy", "dones"])
-            if rewards_raw is None or dones_raw is None:
-                raise KeyError("Hugging Face sample missing rewards/dones fields")
-            reward = _reduce_value(torch.tensor(_as_numpy(rewards_raw), dtype=torch.float32), self.reward_reduce)
-            done = _reduce_done(torch.tensor(_as_numpy(dones_raw), dtype=torch.float32), self.done_reduce)
-
-            buffer.append(
-                {
-                    "image": image,
-                    "robot_obs": robot_obs,
-                    "adj": adj,
-                    "text": text,
-                    "reward": reward,
-                    "done": done,
-                }
-            )
 
         yield from flush_buffer()
 
