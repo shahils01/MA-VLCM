@@ -261,6 +261,8 @@ def _as_numpy(x):
 
 def _edge_index_to_adj(edge_index, num_nodes):
     edge_index = _as_numpy(edge_index)
+
+    print('edge_index shape = ', edge_index.shape)
     if hasattr(edge_index, "shape") and len(edge_index.shape) == 2 and edge_index.shape[0] == num_nodes and edge_index.shape[1] == num_nodes:
         return torch.from_numpy(edge_index).float()
     if hasattr(edge_index, "shape") and edge_index.shape[0] == 2:
