@@ -1,5 +1,0 @@
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
-Fetching 3 files: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 3/3 [00:00<00:00, 30393.51it/s]
-Download complete: : 0.00B [00:00, ?B/s]                                                                                                                                              | 0/3 [00:00<?, ?it/s]
-Loading weights: 100%|█████████████████████████████████████████████████████████████████████████| 687/687 [00:00<00:00, 1730.51it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]
