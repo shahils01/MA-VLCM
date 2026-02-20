@@ -16,6 +16,7 @@ class ModelConfig:
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
+    freeze_vision_tower: bool = False
     quantization_config: Optional[Any] = None
 
     # Video
@@ -113,8 +114,18 @@ class LLaVAVideoBackbone(nn.Module):
 
         # self.model.to(device) # Handled by device_map
         if cfg.freeze_vl:
+            # Freeze everything first
             for p in self.model.parameters():
                 p.requires_grad = False
+            # Optionally unfreeze the vision tower for fine-tuning
+            if not cfg.freeze_vision_tower:
+                vision_tower = getattr(self.model, "vision_tower", None)
+                if vision_tower is not None:
+                    for p in vision_tower.parameters():
+                        p.requires_grad = True
+                    print(f"[ModelConfig] Vision tower UNFROZEN ({sum(p.numel() for p in vision_tower.parameters()):,} params)")
+                else:
+                    print("[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.")
 
         self._dtype = dtype
 

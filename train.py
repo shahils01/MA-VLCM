@@ -105,7 +105,7 @@ def parse_args():
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
 
     # Sequence building
-    p.add_argument("--clip_len", type=int, default=2)
+    p.add_argument("--clip_len", type=int, default=10)
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument(
@@ -135,9 +135,11 @@ def parse_args():
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
-        "--loss_type", type=str, default="contrastive", choices=["td", "contrastive"]
+        "--loss_type", type=str, default="contrastive_mse", choices=["td", "contrastive", "contrastive_mse"]
     )
     p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--mse_loss_weight", type=float, default=1.0,
+                   help="Weight for MSE loss component in contrastive_mse mode")
 
     # Accelerate
     p.add_argument(
@@ -191,6 +193,10 @@ def parse_args():
     )
     p.add_argument("--vl_max_text_len", type=int, default=8192)
     p.add_argument("--freeze_vl", action="store_true")
+    p.add_argument("--freeze_vision_tower", action="store_true",
+                   help="Also freeze the vision tower when freeze_vl is set")
+    p.add_argument("--vision_lr", type=float, default=1e-5,
+                   help="Separate learning rate for the vision tower parameters")
 
     # PEFT / LoRA
     p.add_argument(
@@ -251,6 +257,7 @@ def build_model(args, device):
         vl_dtype=args.vl_dtype,
         vl_max_text_len=args.vl_max_text_len,
         freeze_vl=args.freeze_vl,
+        freeze_vision_tower=getattr(args, "freeze_vision_tower", True),
         quantization_config=getattr(args, "quantization_config", None),
         video_channels=args.video_channels,
         video_frames=args.video_frames,
@@ -1152,15 +1159,21 @@ def run_epoch(
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
                 pred = model(inputs, robot_obs, adj)
-                if args.loss_type == "contrastive":
+                if args.loss_type in ("contrastive", "contrastive_mse"):
                     # Use returns if available, otherwise use per-clip reward.
                     if args.return_mode == "nstep" and "returns" in batch:
                         returns = batch["returns"].to(accelerator.device)
                     else:
                         returns = reward
-                    loss = _contrastive_pairwise_loss(
+                    contrastive_loss = _contrastive_pairwise_loss(
                         pred.view(-1), returns.view(-1), margin=args.contrastive_margin
                     )
+                    if args.loss_type == "contrastive_mse":
+                        mse_loss = F.mse_loss(pred.view(-1), returns.view(-1))
+                        loss = contrastive_loss + args.mse_loss_weight * mse_loss
+                    else:
+                        mse_loss = None
+                        loss = contrastive_loss
                 else:
                     if args.return_mode == "td":
                         with torch.no_grad():
@@ -1199,12 +1212,15 @@ def run_epoch(
                 import wandb
 
                 if wandb.run is not None:
-                    wandb.log(
-                        {
-                            "train/step_loss": loss.item(),
-                            "train/step": step,
-                        }
-                    )
+                    log_dict = {
+                        "train/step_loss": loss.item(),
+                        "train/step": step,
+                    }
+                    if args.loss_type in ("contrastive", "contrastive_mse"):
+                        log_dict["train/contrastive_loss"] = contrastive_loss.item()
+                        if mse_loss is not None:
+                            log_dict["train/mse_loss"] = mse_loss.item()
+                    wandb.log(log_dict)
             except ImportError:
                 pass
 
@@ -1342,8 +1358,31 @@ def main():
     if args.compile:
         model = torch.compile(model)
 
+    # ── Build param groups: separate LR for vision tower ──
+    vision_tower = getattr(model, "backbone", None)
+    if vision_tower is not None:
+        vision_tower = getattr(vision_tower, "model", None)
+    if vision_tower is not None:
+        vision_tower = getattr(vision_tower, "vision_tower", None)
+
+    if vision_tower is not None:
+        vision_tower_ids = {id(p) for p in vision_tower.parameters() if p.requires_grad}
+        vision_params = [p for p in model.parameters() if p.requires_grad and id(p) in vision_tower_ids]
+        other_params = [p for p in model.parameters() if p.requires_grad and id(p) not in vision_tower_ids]
+        accelerator.print(
+            f"Param groups: vision_tower={len(vision_params)} params (lr={args.vision_lr}), "
+            f"other={len(other_params)} params (lr={args.lr})"
+        )
+        param_groups = [
+            {"params": other_params, "lr": args.lr},
+            {"params": vision_params, "lr": args.vision_lr},
+        ]
+    else:
+        accelerator.print("No vision tower found; using single param group.")
+        param_groups = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": args.lr}]
+
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        param_groups, weight_decay=args.weight_decay
     )
 
     # ── Cosine LR scheduler with linear warmup ──

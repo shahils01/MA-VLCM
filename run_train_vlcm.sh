@@ -80,7 +80,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --rware_config "$CONFIG_NAME" \
   --batch_size 4 \
   --grad_accum_steps 4 \
-  --clip_len 16 \
+  --clip_len 10 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
   --epochs 50 \
@@ -89,10 +89,10 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --save_dir "$SAVE_DIR" \
   --num_workers 4 \
   --mixed_precision bf16 \
-  --peft qlora \
-  --lora_r 16 \
-  --lora_alpha 32 \
-  --lora_dropout 0.05 \
+  --freeze_vl \
+  --vision_lr 1e-5 \
+  --loss_type contrastive_mse \
+  --mse_loss_weight 1.0 \
   --vl_max_text_len 4096
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
