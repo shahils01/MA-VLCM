@@ -67,6 +67,17 @@ def _resolve_hf_load_dataset():
 load_dataset, _load_dataset_import_err = _resolve_hf_load_dataset()
 from model import ModelConfig, MultimodalValueModel
 
+KEY_SUFFIX_ALIASES = {
+    ".image.png": "image.png",
+    ".obs.npy": "obs.npy",
+    ".state.npy": "state.npy",
+    ".edge_index.npy": "edge_index.npy",
+    ".text_emb.npy": "text_emb.npy",
+    ".caption.txt": "caption.txt",
+    ".rewards.npy": "rewards.npy",
+    ".dones.npy": "dones.npy",
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -602,20 +613,10 @@ def _normalize_hf_sample(sample):
             out[dst] = out[src]
 
     # Handle WebDataset-like flattened keys, e.g. "traj_011_step_0085.image.png".
-    suffix_aliases = {
-        ".image.png": "image.png",
-        ".obs.npy": "obs.npy",
-        ".state.npy": "state.npy",
-        ".edge_index.npy": "edge_index.npy",
-        ".text_emb.npy": "text_emb.npy",
-        ".caption.txt": "caption.txt",
-        ".rewards.npy": "rewards.npy",
-        ".dones.npy": "dones.npy",
-    }
     for k in list(out.keys()):
         if not isinstance(k, str):
             continue
-        for suffix, dst in suffix_aliases.items():
+        for suffix, dst in KEY_SUFFIX_ALIASES.items():
             if k.endswith(suffix):
                 if dst not in out:
                     out[dst] = out[k]
@@ -623,6 +624,14 @@ def _normalize_hf_sample(sample):
                     out["__key__"] = k[: -len(suffix)]
                 break
     return out
+
+
+def _path_to_canonical_key(path):
+    base = os.path.basename(str(path))
+    for suffix, canonical in KEY_SUFFIX_ALIASES.items():
+        if base.endswith(suffix):
+            return base[: -len(suffix)], canonical
+    return None, None
 
 
 def _extract_episode_id(key):
@@ -720,6 +729,13 @@ class SequenceHFDataset(SequenceWebDataset):
 
         current_ep = None
         buffer = []
+        partial_frames = {}
+
+        def _is_complete_frame(sample_dict):
+            required = {"image.png", f"{self.robot_source}.npy", "edge_index.npy", "rewards.npy", "dones.npy"}
+            if self.text_mode == "emb":
+                required.add("text_emb.npy")
+            return required.issubset(set(sample_dict.keys()))
 
         def flush_buffer():
             min_len = self.clip_len + (1 if self.include_next else 0)
@@ -802,6 +818,20 @@ class SequenceHFDataset(SequenceWebDataset):
 
         for sample in dataset:
             sample = _normalize_hf_sample(sample)
+            if _get_first_present(sample, ["image.png", "image"]) is None:
+                p = _get_first_present(sample, ["path", "filepath", "file_path", "filename", "file_name"])
+                b = _get_first_present(sample, ["bytes", "content", "data"])
+                if p is not None and b is not None:
+                    frame_key, canonical_key = _path_to_canonical_key(p)
+                    if frame_key is not None and canonical_key is not None:
+                        assembled = partial_frames.setdefault(frame_key, {"__key__": frame_key})
+                        assembled[canonical_key] = b
+                        if _is_complete_frame(assembled):
+                            sample = assembled
+                            del partial_frames[frame_key]
+                        else:
+                            continue
+
             key = _get_first_present(sample, ["__key__", "key", "id"], default="")
             if isinstance(key, bytes):
                 key = key.decode("utf-8", errors="ignore")
@@ -821,7 +851,9 @@ class SequenceHFDataset(SequenceWebDataset):
 
             image = _get_first_present(sample, ["image.png", "image"])
             if image is None:
-                raise KeyError("Hugging Face sample is missing image field. Expected one of: image, image.png")
+                raise KeyError(
+                    f"Hugging Face sample is missing image field. keys={list(sample.keys())[:20]}"
+                )
             image = _ensure_pil_image(image)
 
             robot_raw = _get_first_present(sample, [f"{self.robot_source}.npy", self.robot_source])
