@@ -318,6 +318,36 @@ def _apply_peft(model, args):
         task_type="CAUSAL_LM",
     )
     model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
+
+    # Re-unfreeze vision tower if the user wants it trainable alongside LoRA.
+    freeze_vision_tower = getattr(args, "freeze_vision_tower", True)
+    if not freeze_vision_tower:
+        # After get_peft_model wraps the backbone, the vision tower is nested
+        # under the base_model. Walk through possible paths to find it.
+        base = model.backbone.model
+        # peft wraps as base_model -> model -> vision_tower
+        for attr_path in [
+            ("model", "model", "vision_tower"),
+            ("base_model", "model", "vision_tower"),
+            ("model", "vision_tower"),
+            ("vision_tower",),
+        ]:
+            vt = base
+            for attr in attr_path:
+                vt = getattr(vt, attr, None)
+                if vt is None:
+                    break
+            if vt is not None:
+                for p in vt.parameters():
+                    p.requires_grad = True
+                print(
+                    f"[PEFT] Vision tower UNFROZEN after LoRA wrapping "
+                    f"({sum(p.numel() for p in vt.parameters()):,} params)"
+                )
+                break
+        else:
+            print("[PEFT] WARNING: Could not locate vision_tower after LoRA wrapping; it remains frozen.")
+
     return model
 
 

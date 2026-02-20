@@ -90,6 +90,10 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --num_workers 4 \
   --mixed_precision bf16 \
   --freeze_vl \
+  --peft lora \
+  --lora_r 16 \
+  --lora_alpha 32 \
+  --lora_dropout 0.05 \
   --vision_lr 1e-5 \
   --loss_type contrastive_mse \
   --mse_loss_weight 1.0 \
