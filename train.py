@@ -261,18 +261,22 @@ def _as_numpy(x):
 
 def _edge_index_to_adj(edge_index, num_nodes):
     edge_index = _as_numpy(edge_index)
+    if torch.is_tensor(edge_index):
+        ei = edge_index
+    else:
+        import numpy as np
+        ei = torch.as_tensor(np.asarray(edge_index))
 
-    print('edge_index shape = ', edge_index.shape)
-    if hasattr(edge_index, "shape") and len(edge_index.shape) == 2 and edge_index.shape[0] == num_nodes and edge_index.shape[1] == num_nodes:
-        return torch.from_numpy(edge_index).float()
-    if hasattr(edge_index, "shape") and edge_index.shape[0] == 2:
-        src = edge_index[0]
-        dst = edge_index[1]
-        mask = (src >= 0) & (dst >= 0)
+    if ei.dim() == 2 and ei.shape[0] == num_nodes and ei.shape[1] == num_nodes:
+        return ei.float()
+    if ei.dim() == 2 and ei.shape[0] == 2:
+        src = ei[0].long()
+        dst = ei[1].long()
+        mask = (src >= 0) & (dst >= 0) & (src < num_nodes) & (dst < num_nodes)
         src = src[mask]
         dst = dst[mask]
         adj = torch.zeros((num_nodes, num_nodes), dtype=torch.float32)
-        if len(src) > 0:
+        if src.numel() > 0:
             adj[src, dst] = 1.0
         return adj
     raise ValueError("edge_index has unexpected shape")
