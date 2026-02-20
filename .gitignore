@@ -10,4 +10,5 @@ checkpoints/
 outputs/
 logs/
 .wandb/
+wandb/
 .DS_Store
