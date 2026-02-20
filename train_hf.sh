@@ -1,10 +1,10 @@
-accelerate launch --num_processes 8 train.py \
+accelerate launch --num_processes 2 train.py \
   --data_backend huggingface \
-  --hf_dataset "your-org/your-dataset" \
+  --hf_dataset "https://huggingface.co/datasets/shulnak09/OFFROAD_MARL/tree/main" \
   --hf_train_split train \
   --hf_val_split validation \
   --hf_streaming \
-  --batch_size 3 \
+  --batch_size 2 \
   --epochs 500 \
   --clip_len 5 \
   --clip_stride 5 \
