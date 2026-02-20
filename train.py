@@ -505,11 +505,7 @@ class SequenceWebDataset(IterableDataset):
             key = sample.get("__key__", "")
             if isinstance(key, bytes):
                 key = key.decode("utf-8", errors="ignore")
-
-            if "_" in key:
-                ep_id = key.split("_")[0]
-            else:
-                ep_id = key
+            ep_id = _extract_episode_id(key)
 
             if current_ep is None:
                 current_ep = ep_id
@@ -604,7 +600,40 @@ def _normalize_hf_sample(sample):
     for src, dst in aliases.items():
         if src in out and dst not in out:
             out[dst] = out[src]
+
+    # Handle WebDataset-like flattened keys, e.g. "traj_011_step_0085.image.png".
+    suffix_aliases = {
+        ".image.png": "image.png",
+        ".obs.npy": "obs.npy",
+        ".state.npy": "state.npy",
+        ".edge_index.npy": "edge_index.npy",
+        ".text_emb.npy": "text_emb.npy",
+        ".caption.txt": "caption.txt",
+        ".rewards.npy": "rewards.npy",
+        ".dones.npy": "dones.npy",
+    }
+    for k in list(out.keys()):
+        if not isinstance(k, str):
+            continue
+        for suffix, dst in suffix_aliases.items():
+            if k.endswith(suffix):
+                if dst not in out:
+                    out[dst] = out[k]
+                if "__key__" not in out:
+                    out["__key__"] = k[: -len(suffix)]
+                break
     return out
+
+
+def _extract_episode_id(key):
+    key = str(key)
+    # New dataset style: traj_011_step_0085 -> episode is traj_011
+    if "_step_" in key:
+        return key.split("_step_", 1)[0]
+    # Legacy style: 000011_000044 -> episode is 000011
+    if "_" in key:
+        return key.rsplit("_", 1)[0]
+    return key
 
 
 def _ensure_pil_image(image):
@@ -781,10 +810,7 @@ class SequenceHFDataset(SequenceWebDataset):
                 frm = _get_first_present(sample, ["frame_id", "timestep", "step"], default="")
                 if ep != "":
                     key = f"{ep}_{frm}" if frm != "" else str(ep)
-            if "_" in str(key):
-                ep_id = str(key).split("_")[0]
-            else:
-                ep_id = str(key)
+            ep_id = _extract_episode_id(key)
 
             if current_ep is None:
                 current_ep = ep_id
