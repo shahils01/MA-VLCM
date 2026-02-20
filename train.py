@@ -3,6 +3,8 @@ import os
 import io
 import functools
 import inspect
+import importlib
+import sys
 
 from PIL import Image
 
@@ -30,10 +32,39 @@ except Exception:
     size_based_auto_wrap_policy = None
 
 import webdataset as wds
-try:
-    from datasets import load_dataset
-except Exception:
-    load_dataset = None
+def _resolve_hf_load_dataset():
+    # Prefer Hugging Face `datasets` even if a local `datasets.py` exists in the repo.
+    try:
+        mod = importlib.import_module("datasets")
+        fn = getattr(mod, "load_dataset", None)
+        if fn is not None:
+            return fn, None
+    except Exception as e:
+        first_err = e
+    else:
+        first_err = RuntimeError("Imported module `datasets` has no attribute `load_dataset`.")
+
+    original_path = list(sys.path)
+    try:
+        cwd = os.path.abspath(os.getcwd())
+        cleaned = []
+        for p in original_path:
+            pp = os.path.abspath(p) if p else cwd
+            if pp != cwd and p != "":
+                cleaned.append(p)
+        sys.path = cleaned
+        mod = importlib.import_module("datasets")
+        fn = getattr(mod, "load_dataset", None)
+        if fn is None:
+            raise RuntimeError("Imported module `datasets` has no attribute `load_dataset`.")
+        return fn, None
+    except Exception as e:
+        return None, (first_err, e)
+    finally:
+        sys.path = original_path
+
+
+load_dataset, _load_dataset_import_err = _resolve_hf_load_dataset()
 from model import ModelConfig, MultimodalValueModel
 
 
@@ -645,7 +676,11 @@ class SequenceHFDataset(SequenceWebDataset):
 
     def __iter__(self):
         if load_dataset is None:
-            raise RuntimeError("Hugging Face dataset loading requested but 'datasets' is not installed.")
+            raise RuntimeError(
+                "Hugging Face dataset loading requested but `datasets.load_dataset` could not be imported. "
+                "This is commonly caused by a local `datasets.py` shadowing the package. "
+                f"Import errors: {_load_dataset_import_err}"
+            )
 
         ds_kwargs = {}
         if self.hf_config:
