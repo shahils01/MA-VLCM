@@ -78,9 +78,9 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 4 \
+  --batch_size 2 \
   --grad_accum_steps 4 \
-  --clip_len 10 \
+  --clip_len 5 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
   --epochs 50 \
@@ -91,8 +91,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --mixed_precision bf16 \
   --freeze_vl \
   --peft lora \
-  --lora_r 16 \
-  --lora_alpha 32 \
+  --lora_r 8 \
+  --lora_alpha 16 \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
   --loss_type contrastive_mse \

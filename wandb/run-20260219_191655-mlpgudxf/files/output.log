@@ -1,0 +1,38 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 305.79it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                         
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 951 shards.
+train: 0it [00:00, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train: 796it [1:06:48,  5.04s/it, loss=0.5157, lr=2.90e-04]
+epoch=1 train_loss=0.5157 val_loss=n/a
+train: 796it [1:06:41,  5.03s/it, loss=0.5302, lr=2.45e-04]
+epoch=2 train_loss=0.5302 val_loss=n/a
+train: 796it [1:06:42,  5.03s/it, loss=0.5319, lr=1.73e-04]
+epoch=3 train_loss=0.5319 val_loss=n/a
+train: 796it [1:06:42,  5.03s/it, loss=0.5330, lr=9.58e-05]
+epoch=4 train_loss=0.5330 val_loss=n/a
+train: 796it [1:06:39,  5.02s/it, loss=0.5058, lr=3.29e-05]
+epoch=5 train_loss=0.5058 val_loss=n/a
+train: 796it [1:06:39,  5.02s/it, loss=0.5163, lr=1.64e-06]
+epoch=6 train_loss=0.5163 val_loss=n/a
+train: 796it [1:06:40,  5.03s/it, loss=0.5185, lr=1.06e-05]
+epoch=7 train_loss=0.5185 val_loss=n/a
+train: 796it [1:06:39,  5.03s/it, loss=0.5024, lr=5.73e-05]
+epoch=8 train_loss=0.5024 val_loss=n/a
+train: 796it [1:06:38,  5.02s/it, loss=0.5146, lr=1.29e-04]
+epoch=9 train_loss=0.5146 val_loss=n/a
+train: 796it [1:06:36,  5.02s/it, loss=0.5264, lr=2.07e-04]
+epoch=10 train_loss=0.5264 val_loss=n/a
+train: 796it [1:06:37,  5.02s/it, loss=0.5156, lr=2.69e-04]
+epoch=11 train_loss=0.5156 val_loss=n/a
+train: 796it [1:06:36,  5.02s/it, loss=0.5157, lr=2.99e-04]
+epoch=12 train_loss=0.5157 val_loss=n/a
+train: 796it [1:07:21,  5.08s/it, loss=0.5235, lr=2.88e-04]
+epoch=13 train_loss=0.5235 val_loss=n/a
+train: 796it [1:07:23,  5.08s/it, loss=0.5178, lr=2.41e-04]
+epoch=14 train_loss=0.5178 val_loss=n/a
+train: 796it [1:06:41,  5.03s/it, loss=0.5372, lr=1.68e-04]
+epoch=15 train_loss=0.5372 val_loss=n/a
+train: 796it [1:06:40,  5.03s/it, loss=0.5126, lr=9.10e-05]
+epoch=16 train_loss=0.5126 val_loss=n/a
+train: 493it [41:24,  5.03s/it, loss=0.5609, lr=5.00e-05]
