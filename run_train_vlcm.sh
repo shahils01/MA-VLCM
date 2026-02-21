@@ -57,6 +57,7 @@ export HF_TOKEN=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
 export NCCL_ALGO=Ring
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 
 
@@ -79,7 +80,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
   --batch_size 2 \
-  --grad_accum_steps 4 \
+  --grad_accum_steps 8 \
   --clip_len 5 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
@@ -97,6 +98,6 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --vision_lr 1e-5 \
   --loss_type contrastive_mse \
   --mse_loss_weight 1.0 \
-  --vl_max_text_len 4096
+  --vl_max_text_len 1024
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)

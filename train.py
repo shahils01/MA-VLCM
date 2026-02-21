@@ -135,11 +135,18 @@ def parse_args():
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
-        "--loss_type", type=str, default="contrastive_mse", choices=["td", "contrastive", "contrastive_mse"]
+        "--loss_type",
+        type=str,
+        default="contrastive_mse",
+        choices=["td", "contrastive", "contrastive_mse"],
     )
     p.add_argument("--contrastive_margin", type=float, default=0.0)
-    p.add_argument("--mse_loss_weight", type=float, default=1.0,
-                   help="Weight for MSE loss component in contrastive_mse mode")
+    p.add_argument(
+        "--mse_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for MSE loss component in contrastive_mse mode",
+    )
 
     # Accelerate
     p.add_argument(
@@ -193,10 +200,17 @@ def parse_args():
     )
     p.add_argument("--vl_max_text_len", type=int, default=8192)
     p.add_argument("--freeze_vl", action="store_true")
-    p.add_argument("--freeze_vision_tower", action="store_true",
-                   help="Also freeze the vision tower when freeze_vl is set")
-    p.add_argument("--vision_lr", type=float, default=1e-5,
-                   help="Separate learning rate for the vision tower parameters")
+    p.add_argument(
+        "--freeze_vision_tower",
+        action="store_true",
+        help="Also freeze the vision tower when freeze_vl is set",
+    )
+    p.add_argument(
+        "--vision_lr",
+        type=float,
+        default=1e-5,
+        help="Separate learning rate for the vision tower parameters",
+    )
 
     # PEFT / LoRA
     p.add_argument(
@@ -302,6 +316,13 @@ def _apply_peft(model, args):
     for p in model.backbone.model.parameters():
         p.requires_grad = False
 
+    # Enable gradient checkpointing for ALL PEFT modes (saves ~30-40% activation memory)
+    if hasattr(model.backbone.model, "gradient_checkpointing_enable"):
+        model.backbone.model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        print("[PEFT] Gradient checkpointing ENABLED")
+
     if args.peft == "qlora":
         model.backbone.model = prepare_model_for_kbit_training(
             model.backbone.model,
@@ -319,34 +340,105 @@ def _apply_peft(model, args):
     )
     model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
 
-    # Re-unfreeze vision tower if the user wants it trainable alongside LoRA.
+    # Apply LoRA to vision tower if user wants it trainable (instead of full fine-tuning).
     freeze_vision_tower = getattr(args, "freeze_vision_tower", True)
     if not freeze_vision_tower:
-        # After get_peft_model wraps the backbone, the vision tower is nested
-        # under the base_model. Walk through possible paths to find it.
+        # Locate vision tower after PEFT wrapping
         base = model.backbone.model
-        # peft wraps as base_model -> model -> vision_tower
+        vt = None
         for attr_path in [
             ("model", "model", "vision_tower"),
             ("base_model", "model", "vision_tower"),
             ("model", "vision_tower"),
             ("vision_tower",),
         ]:
-            vt = base
+            candidate = base
             for attr in attr_path:
-                vt = getattr(vt, attr, None)
-                if vt is None:
+                candidate = getattr(candidate, attr, None)
+                if candidate is None:
                     break
-            if vt is not None:
+            if candidate is not None:
+                vt = candidate
+                break
+
+        if vt is not None:
+            # Apply a separate LoRA config to the vision tower
+            # Target the attention projection layers in the vision encoder
+            vision_lora_targets = []
+            vt_param_names = {n for n, _ in vt.named_parameters()}
+            # Detect common attention projection names in vision encoders
+            for candidate_name in [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "out_proj",
+                "qkv",
+                "proj",
+            ]:
+                if any(candidate_name in n for n in vt_param_names):
+                    vision_lora_targets.append(candidate_name)
+
+            if vision_lora_targets:
+                from peft import LoraConfig as VisionLoraConfig
+
+                vision_lora_cfg = VisionLoraConfig(
+                    r=args.lora_r,
+                    lora_alpha=args.lora_alpha,
+                    lora_dropout=args.lora_dropout,
+                    bias="none",
+                    target_modules=vision_lora_targets,
+                )
+                try:
+                    vt = get_peft_model(vt, vision_lora_cfg)
+                    # Replace the vision tower in the model
+                    for attr_path in [
+                        ("model", "model"),
+                        ("base_model", "model"),
+                        ("model",),
+                    ]:
+                        parent = base
+                        for attr in attr_path:
+                            parent = getattr(parent, attr, None)
+                            if parent is None:
+                                break
+                        if parent is not None and hasattr(parent, "vision_tower"):
+                            parent.vision_tower = vt
+                            break
+
+                    trainable = sum(
+                        p.numel() for p in vt.parameters() if p.requires_grad
+                    )
+                    total = sum(p.numel() for p in vt.parameters())
+                    print(
+                        f"[PEFT] Vision tower LoRA applied: "
+                        f"{trainable:,} trainable / {total:,} total params, "
+                        f"targets={vision_lora_targets}"
+                    )
+                except Exception as e:
+                    print(
+                        f"[PEFT] WARNING: Vision tower LoRA failed ({e}); "
+                        f"falling back to full fine-tuning."
+                    )
+                    for p in vt.parameters():
+                        p.requires_grad = True
+                    print(
+                        f"[PEFT] Vision tower UNFROZEN (full fine-tune fallback, "
+                        f"{sum(p.numel() for p in vt.parameters()):,} params)"
+                    )
+            else:
+                # No recognized attention layers; fall back to full unfreeze
                 for p in vt.parameters():
                     p.requires_grad = True
                 print(
-                    f"[PEFT] Vision tower UNFROZEN after LoRA wrapping "
-                    f"({sum(p.numel() for p in vt.parameters()):,} params)"
+                    f"[PEFT] Vision tower UNFROZEN (no LoRA targets found, "
+                    f"full fine-tune, "
+                    f"{sum(p.numel() for p in vt.parameters()):,} params)"
                 )
-                break
         else:
-            print("[PEFT] WARNING: Could not locate vision_tower after LoRA wrapping; it remains frozen.")
+            print(
+                "[PEFT] WARNING: Could not locate vision_tower "
+                "after LoRA wrapping; it remains frozen."
+            )
 
     return model
 
@@ -938,18 +1030,65 @@ class SequenceWebDataset(IterableDataset):
                 # Text
                 step_val = state_data.get("step", 0)
                 requests = state_data.get("requests", [])
+                agents = state_data.get("agents", [])
 
-                prompt_lines = [f"Step: {step_val}.", f"Requested boxes: {requests}."]
-                for ag in state_data.get("agents", []):
+                # Parse config for environment description
+                cfg = self.rware_config
+                n_ag = len(agents) if agents else "unknown"
+                # Extract difficulty from config name
+                # e.g. "tiny-2ag-hard", "tiny-4ag-easy-v2",
+                #      "mixed-rware"
+                cfg_lower = cfg.lower() if cfg else ""
+                if "hard" in cfg_lower:
+                    difficulty = "hard"
+                elif "easy" in cfg_lower:
+                    difficulty = "easy"
+                else:
+                    difficulty = "default"
+
+                # Build structured observation lines
+                obs_lines = []
+                obs_lines.append(f"Timestep: {step_val}.")
+                obs_lines.append(f"Requested boxes: {requests}.")
+                for ag in agents:
                     aid = ag.get("id", "?")
-                    line = f"Agent {aid}: at {ag.get('pos','?')}, facing {ag.get('dir','?')}, action {ag.get('action','?')}, carrying {'yes' if ag.get('carrying') else 'no'}."
-                    prompt_lines.append(line)
+                    pos = ag.get("pos", "?")
+                    d = ag.get("dir", "?")
+                    act = ag.get("action", "?")
+                    carry = ag.get("carrying")
+                    carry_str = "yes" if carry else "no"
+                    obs_lines.append(
+                        f"Agent {aid}: position {pos},"
+                        f" facing {d},"
+                        f" action {act},"
+                        f" carrying {carry_str}."
+                    )
 
                 if self.text_prompt_template is None:
-                    header = "Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). "
-                    text = header + " ".join(prompt_lines)
+                    header = (
+                        "You are a vision-language critic"
+                        " model that evaluates"
+                        " multi-agent trajectories by"
+                        " estimating the expected"
+                        " cumulative return."
+                        f" This is a robotic warehouse"
+                        f" environment with {n_ag}"
+                        f" agents ({difficulty}"
+                        f" difficulty, config: {cfg})."
+                        " Agents must navigate to"
+                        " requested shelf locations,"
+                        " pick up the correct boxes,"
+                        " deliver them to the goal"
+                        " area, and avoid collisions"
+                        " (distance < 3m)."
+                        " Given the video frames and"
+                        " agent states below, assess"
+                        " the quality of the current"
+                        " policy. "
+                    )
+                    text = header + " ".join(obs_lines)
                 else:
-                    text = self.text_prompt_template + " " + " ".join(prompt_lines)
+                    text = self.text_prompt_template + " " + " ".join(obs_lines)
 
             else:
                 # Default MA-VLCM behavior
@@ -1049,7 +1188,7 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
         include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=False,
-        vlm_padding="max_length",
+        vlm_padding="longest",
         resize_width=args.resize_width,
         resize_height=args.resize_height,
     )
@@ -1397,8 +1536,16 @@ def main():
 
     if vision_tower is not None:
         vision_tower_ids = {id(p) for p in vision_tower.parameters() if p.requires_grad}
-        vision_params = [p for p in model.parameters() if p.requires_grad and id(p) in vision_tower_ids]
-        other_params = [p for p in model.parameters() if p.requires_grad and id(p) not in vision_tower_ids]
+        vision_params = [
+            p
+            for p in model.parameters()
+            if p.requires_grad and id(p) in vision_tower_ids
+        ]
+        other_params = [
+            p
+            for p in model.parameters()
+            if p.requires_grad and id(p) not in vision_tower_ids
+        ]
         accelerator.print(
             f"Param groups: vision_tower={len(vision_params)} params (lr={args.vision_lr}), "
             f"other={len(other_params)} params (lr={args.lr})"
@@ -1409,11 +1556,14 @@ def main():
         ]
     else:
         accelerator.print("No vision tower found; using single param group.")
-        param_groups = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": args.lr}]
+        param_groups = [
+            {
+                "params": [p for p in model.parameters() if p.requires_grad],
+                "lr": args.lr,
+            }
+        ]
 
-    optimizer = torch.optim.AdamW(
-        param_groups, weight_decay=args.weight_decay
-    )
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
     # ── Cosine LR scheduler with linear warmup ──
     # Estimate total steps: (samples_per_epoch / batch_size / grad_accum) * epochs
