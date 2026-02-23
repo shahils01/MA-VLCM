@@ -1,0 +1,24 @@
+name: ma-vlcm
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch>=2.3,<2.6
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - numpy
+  - pillow
+  - pip:
+      - transformers>=4.45
+      - accelerate>=0.34
+      - webdataset>=0.2
+      - datasets>=2.20
+      - wandb>=0.17
+      - peft>=0.12
+      - sentencepiece
+      - protobuf
+      - safetensors
