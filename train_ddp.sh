@@ -1,6 +1,6 @@
-accelerate launch --num_processes 8 train.py \
+accelerate launch --num_processes 2 train.py \
   --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
-  --batch_size 3 \
+  --batch_size 2 \
   --epochs 500 \
   --clip_len 5 \
   --clip_stride 5 \
@@ -22,3 +22,6 @@ accelerate launch --num_processes 8 train.py \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
+  # --wandb \
+  # --wandb_project ma-vlcm \
+  # --wandb_run_name ma-vlcm-ddp
