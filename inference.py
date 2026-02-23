@@ -17,6 +17,9 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import torch
@@ -74,6 +77,12 @@ def parse_inference_args():
         default=None,
         help="Optional output CSV file for per-sample predictions.",
     )
+    p.add_argument(
+        "--plot_dir",
+        type=str,
+        default="inference_plots",
+        help="Directory to save comparison plots (set to '' to disable).",
+    )
 
     return p.parse_args()
 
@@ -97,6 +106,112 @@ def _spearman_corr(x, y):
     from scipy.stats import spearmanr
     corr, _ = spearmanr(x, y)
     return float(corr)
+
+
+# ────────────────────────── Plotting ────────────────────────────────────────
+def _generate_plots(preds, rewards, returns, plot_dir, epoch):
+    """Generate comparison plots of predicted vs true values."""
+    os.makedirs(plot_dir, exist_ok=True)
+    print(f"\nGenerating plots in: {plot_dir}")
+
+    has_returns = returns is not None
+    # Use returns as the "true" target when available, otherwise rewards
+    true_label = "Return" if has_returns else "Reward"
+    true_vals = returns if has_returns else rewards
+
+    # ── 1. Scatter plot: Predicted vs True ───────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 7))
+    ax.scatter(true_vals, preds, alpha=0.35, s=12, c="#4C72B0", edgecolors="none")
+    # Perfect prediction line
+    lo = min(true_vals.min(), preds.min())
+    hi = max(true_vals.max(), preds.max())
+    margin = (hi - lo) * 0.05
+    ax.plot([lo - margin, hi + margin], [lo - margin, hi + margin],
+            "--", color="#C44E52", linewidth=1.5, label="y = x (perfect)")
+    # Linear fit
+    if len(true_vals) > 1:
+        coeffs = np.polyfit(true_vals, preds, 1)
+        fit_x = np.linspace(lo - margin, hi + margin, 100)
+        ax.plot(fit_x, np.polyval(coeffs, fit_x), "-",
+                color="#55A868", linewidth=1.5,
+                label=f"Linear fit (slope={coeffs[0]:.3f})")
+    pearson = _pearson_corr(preds, true_vals)
+    ax.set_xlabel(f"True {true_label}", fontsize=13)
+    ax.set_ylabel("Predicted Value", fontsize=13)
+    ax.set_title(f"Predicted vs True {true_label}  (epoch {epoch}, r={pearson:.3f})",
+                 fontsize=14, fontweight="bold")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "scatter_pred_vs_true.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+    # ── 2. Residual histogram ────────────────────────────────────────────
+    residuals = preds - true_vals
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(residuals, bins=min(80, max(20, len(residuals) // 50)),
+            color="#4C72B0", edgecolor="white", alpha=0.85)
+    ax.axvline(0, color="#C44E52", linestyle="--", linewidth=1.5)
+    ax.axvline(residuals.mean(), color="#55A868", linestyle="-", linewidth=1.5,
+              label=f"Mean = {residuals.mean():.4f}")
+    ax.set_xlabel(f"Residual  (Predicted − True {true_label})", fontsize=13)
+    ax.set_ylabel("Count", fontsize=13)
+    ax.set_title("Residual Distribution", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "residual_histogram.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+    # ── 3. Per-sample comparison (first 500 samples) ─────────────────────
+    show_n = min(500, len(preds))
+    fig, ax = plt.subplots(figsize=(14, 5))
+    idx = np.arange(show_n)
+    ax.plot(idx, true_vals[:show_n], "-", color="#4C72B0", linewidth=1.0,
+            alpha=0.8, label=f"True {true_label}")
+    ax.plot(idx, preds[:show_n], "-", color="#C44E52", linewidth=1.0,
+            alpha=0.8, label="Predicted")
+    ax.set_xlabel("Sample Index", fontsize=13)
+    ax.set_ylabel("Value", fontsize=13)
+    ax.set_title(f"Per-Sample Comparison  (first {show_n} samples)",
+                 fontsize=14, fontweight="bold")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "sample_comparison.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+    # ── 4. If both rewards AND returns are available, plot both ───────────
+    if has_returns:
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+        for ax_i, (vals, label) in enumerate(
+            [(rewards, "Reward"), (returns, "Return")]
+        ):
+            ax = axes[ax_i]
+            ax.scatter(vals, preds, alpha=0.35, s=12, c="#4C72B0", edgecolors="none")
+            lo_i = min(vals.min(), preds.min())
+            hi_i = max(vals.max(), preds.max())
+            m_i = (hi_i - lo_i) * 0.05
+            ax.plot([lo_i - m_i, hi_i + m_i], [lo_i - m_i, hi_i + m_i],
+                    "--", color="#C44E52", linewidth=1.5)
+            r_i = _pearson_corr(preds, vals)
+            ax.set_xlabel(f"True {label}", fontsize=12)
+            ax.set_ylabel("Predicted", fontsize=12)
+            ax.set_title(f"Predicted vs {label}  (r={r_i:.3f})",
+                         fontsize=13, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+        fig.suptitle(f"Epoch {epoch}", fontsize=14)
+        fig.tight_layout()
+        path = os.path.join(plot_dir, "scatter_reward_and_return.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        print(f"  Saved: {path}")
 
 
 # ──────────────────────────────── Main ──────────────────────────────────────
@@ -281,7 +396,17 @@ def main():
 
     print(f"{'=' * 60}")
 
-    # ── 7. Optional CSV output ──────────────────────────────────────────────
+    # ── 7. Generate plots ───────────────────────────────────────────────────
+    if cli_args.plot_dir:
+        _generate_plots(
+            preds,
+            rewards,
+            returns if has_returns else None,
+            cli_args.plot_dir,
+            epoch,
+        )
+
+    # ── 8. Optional CSV output ──────────────────────────────────────────────
     if cli_args.output_file:
         print(f"\nWriting per-sample results to: {cli_args.output_file}")
         with open(cli_args.output_file, "w", newline="") as f:
