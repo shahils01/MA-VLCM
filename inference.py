@@ -89,6 +89,13 @@ def parse_inference_args():
         help="Baseline mode: skip LoRA adapters, keep LLaVA at pretrained weights. "
              "Only loads GNN + value head from checkpoint for apples-to-apples comparison.",
     )
+    p.add_argument(
+        "--compare_csv",
+        type=str,
+        default=None,
+        help="Path to a CSV from a previous run (e.g. baseline) to overlay on the "
+             "current run's plots for side-by-side comparison.",
+    )
 
     return p.parse_args()
 
@@ -225,6 +232,134 @@ def _generate_plots(preds, rewards, targets, plot_dir, epoch, target_label=None)
         fig.savefig(path, dpi=150)
         plt.close(fig)
         print(f"  Saved: {path}")
+
+
+def _generate_overlay_plots(preds, targets, compare_csv, plot_dir, epoch):
+    """Overlay current run predictions with a previous run's CSV for comparison."""
+    import pandas as pd
+
+    os.makedirs(plot_dir, exist_ok=True)
+    df = pd.read_csv(compare_csv)
+    comp_preds = df["prediction"].values
+    # Use td_target if available, else reward as the ground truth
+    if "td_target" in df.columns:
+        comp_targets = df["td_target"].values
+        target_col = "td_target"
+    else:
+        comp_targets = df["reward"].values
+        target_col = "reward"
+
+    # Detect which run is which from filename
+    is_current_baseline = "baseline" in plot_dir.lower()
+    if is_current_baseline:
+        curr_label = "Baseline (no LoRA)"
+        comp_label = "Fine-tuned"
+    else:
+        curr_label = "Fine-tuned"
+        comp_label = "Baseline (no LoRA)"
+
+    true_vals = targets if targets is not None else comp_targets
+    true_label = "TD Target"
+    n = min(len(preds), len(comp_preds))
+
+    print(f"\nGenerating overlay comparison plots in: {plot_dir}")
+    print(f"  Current: {curr_label}  ({len(preds)} samples)")
+    print(f"  Compare: {comp_label}  ({len(comp_preds)} samples, from {compare_csv})")
+
+    # ── 1. Overlay scatter: both predictions vs true target ──────────────
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.scatter(true_vals[:n], comp_preds[:n], alpha=0.3, s=14,
+              c="#8DA0CB", edgecolors="none", label=comp_label, zorder=2)
+    ax.scatter(true_vals[:n], preds[:n], alpha=0.4, s=14,
+              c="#E78AC3", edgecolors="none", label=curr_label, zorder=3)
+    lo = min(true_vals[:n].min(), preds[:n].min(), comp_preds[:n].min())
+    hi = max(true_vals[:n].max(), preds[:n].max(), comp_preds[:n].max())
+    m = (hi - lo) * 0.05
+    ax.plot([lo - m, hi + m], [lo - m, hi + m], "--",
+            color="#333333", linewidth=1.5, alpha=0.6, label="y = x")
+    r_curr = _pearson_corr(preds[:n], true_vals[:n])
+    r_comp = _pearson_corr(comp_preds[:n], true_vals[:n])
+    ax.set_xlabel(f"True {true_label}", fontsize=13)
+    ax.set_ylabel("Predicted Value", fontsize=13)
+    ax.set_title(f"Scatter Overlay  (r: {curr_label}={r_curr:.3f}, {comp_label}={r_comp:.3f})",
+                 fontsize=13, fontweight="bold")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "overlay_scatter.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+    # ── 2. Overlay residual histograms ───────────────────────────────────
+    res_curr = preds[:n] - true_vals[:n]
+    res_comp = comp_preds[:n] - true_vals[:n]
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bins = min(60, max(20, n // 50))
+    ax.hist(res_comp, bins=bins, color="#8DA0CB", alpha=0.6,
+            edgecolor="white", label=f"{comp_label} (μ={res_comp.mean():.3f})")
+    ax.hist(res_curr, bins=bins, color="#E78AC3", alpha=0.6,
+            edgecolor="white", label=f"{curr_label} (μ={res_curr.mean():.3f})")
+    ax.axvline(0, color="#333333", linestyle="--", linewidth=1.5, alpha=0.6)
+    ax.set_xlabel(f"Residual  (Predicted − True {true_label})", fontsize=13)
+    ax.set_ylabel("Count", fontsize=13)
+    ax.set_title("Residual Distribution: Baseline vs Fine-tuned",
+                 fontsize=13, fontweight="bold")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "overlay_residuals.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+    # ── 3. Overlay per-sample comparison ─────────────────────────────────
+    show_n = min(300, n)
+    idx = np.arange(show_n)
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.plot(idx, true_vals[:show_n], "-", color="#333333", linewidth=1.2,
+            alpha=0.7, label=f"True {true_label}")
+    ax.plot(idx, comp_preds[:show_n], "-", color="#8DA0CB", linewidth=1.0,
+            alpha=0.7, label=comp_label)
+    ax.plot(idx, preds[:show_n], "-", color="#E78AC3", linewidth=1.0,
+            alpha=0.7, label=curr_label)
+    ax.set_xlabel("Sample Index", fontsize=13)
+    ax.set_ylabel("Value", fontsize=13)
+    ax.set_title(f"Per-Sample: Baseline vs Fine-tuned  (first {show_n})",
+                 fontsize=13, fontweight="bold")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "overlay_sample_comparison.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+    # ── 4. MSE bar chart ────────────────────────────────────────────────
+    mse_curr = float(np.mean((preds[:n] - true_vals[:n]) ** 2))
+    mse_comp = float(np.mean((comp_preds[:n] - true_vals[:n]) ** 2))
+    mae_curr = float(np.mean(np.abs(preds[:n] - true_vals[:n])))
+    mae_comp = float(np.mean(np.abs(comp_preds[:n] - true_vals[:n])))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    for ax_i, (metric, vals, title) in enumerate([
+        ("MSE", [mse_comp, mse_curr], "MSE"),
+        ("MAE", [mae_comp, mae_curr], "MAE"),
+    ]):
+        ax = axes[ax_i]
+        bars = ax.bar([comp_label, curr_label], vals,
+                      color=["#8DA0CB", "#E78AC3"], edgecolor="white")
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
+                    f"{val:.4f}", ha="center", va="bottom", fontsize=11, fontweight="bold")
+        ax.set_title(title, fontsize=13, fontweight="bold")
+        ax.set_ylabel(title, fontsize=12)
+        ax.grid(True, alpha=0.3, axis="y")
+    fig.suptitle(f"Metrics Comparison (epoch {epoch})", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    path = os.path.join(plot_dir, "overlay_metrics_bar.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
 
 
 # ──────────────────────────────── Main ──────────────────────────────────────
@@ -498,11 +633,23 @@ def main():
             output_file = f"{base}{suffix}{ext}"
 
     # ── 7. Generate plots ───────────────────────────────────────────────────
+    td_or_returns = td_targets if has_td_targets else (returns if has_returns else None)
+
     if plot_dir:
         _generate_plots(
             preds,
             rewards,
-            td_targets if has_td_targets else (returns if has_returns else None),
+            td_or_returns,
+            plot_dir,
+            epoch,
+        )
+
+    # ── 7b. Overlay comparison plots (if --compare_csv provided) ────────────
+    if cli_args.compare_csv and plot_dir:
+        _generate_overlay_plots(
+            preds,
+            td_or_returns,
+            cli_args.compare_csv,
             plot_dir,
             epoch,
         )
