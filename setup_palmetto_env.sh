@@ -25,7 +25,7 @@ create_minimal_env_and_install() {
     torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1
 
   pip install -r requirements.txt
-  pip install peft sentencepiece protobuf safetensors
+  pip install --no-cache-dir peft sentencepiece protobuf safetensors torch-geometric
 }
 
 echo "[1/4] Creating or updating Conda env: ${ENV_NAME}"
@@ -70,8 +70,8 @@ echo "Using PyG wheel index: ${PYG_URL}"
 
 echo "[3/4] Installing PyTorch Geometric compiled deps"
 pip install --upgrade pip
-pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f "${PYG_URL}"
-pip install torch_geometric
+pip install --no-cache-dir pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f "${PYG_URL}"
+pip install --no-cache-dir torch_geometric
 
 echo "[4/4] Verifying imports used by MA-VLCM"
 python - <<'PY'

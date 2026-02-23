@@ -19,6 +19,7 @@ dependencies:
       - datasets>=2.20
       - wandb>=0.17
       - peft>=0.12
+      - torch-geometric
       - sentencepiece
       - protobuf
       - safetensors
