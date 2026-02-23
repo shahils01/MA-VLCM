@@ -8,15 +8,44 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[1/4] Creating or updating Conda env: ${ENV_NAME}"
-if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
-  conda env update -n "${ENV_NAME}" -f palmetto_env.yml --prune
-else
-  conda env create -n "${ENV_NAME}" -f palmetto_env.yml
-fi
+create_minimal_env_and_install() {
+  echo "[fallback] Creating minimal env to avoid Conda OOM during solve"
+  if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
+    echo "Env ${ENV_NAME} already exists; reusing it."
+  else
+    conda create -y -n "${ENV_NAME}" python=3.10 pip
+  fi
 
-eval "$(conda shell.bash hook)"
-conda activate "${ENV_NAME}"
+  eval "$(conda shell.bash hook)"
+  conda activate "${ENV_NAME}"
+
+  pip install --upgrade pip
+  # Install CUDA-enabled PyTorch wheels directly to avoid heavy Conda SAT solve.
+  pip install --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1
+
+  pip install -r requirements.txt
+  pip install peft sentencepiece protobuf safetensors
+}
+
+echo "[1/4] Creating or updating Conda env: ${ENV_NAME}"
+set +e
+if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
+  conda env update -n "${ENV_NAME}" -f palmetto_env.yml --prune --solver libmamba
+  CONDA_STATUS=$?
+else
+  conda env create -n "${ENV_NAME}" -f palmetto_env.yml --solver libmamba
+  CONDA_STATUS=$?
+fi
+set -e
+
+if [[ ${CONDA_STATUS} -ne 0 ]]; then
+  echo "Conda yaml solve failed (often OOM on clusters). Switching to fallback installer."
+  create_minimal_env_and_install
+else
+  eval "$(conda shell.bash hook)"
+  conda activate "${ENV_NAME}"
+fi
 
 echo "[2/4] Detecting torch + CUDA for PyG wheel URL"
 TORCH_VER="$(python - <<'PY'
