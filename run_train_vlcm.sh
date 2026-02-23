@@ -97,7 +97,10 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
   --loss_type td \
+  --return_mode td \
   --mse_loss_weight 0.5 \
+  --max_grad_norm 1.0 \
+  --samples_per_epoch 50000 \
   --vl_max_text_len 4700
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)

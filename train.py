@@ -55,6 +55,10 @@ SHELF_MAP = {
     32: (8, 8),
 }
 
+# Maximum possible distance in the warehouse grid for normalization.
+# Grid spans (1,1) to (8,8), so diagonal = sqrt(7^2 + 7^2) ≈ 9.9
+_WAREHOUSE_MAX_DIST = float(np.sqrt(7**2 + 7**2))  # ~9.899
+
 
 try:
     from accelerate.utils import DistributedDataParallelKwargs
@@ -96,7 +100,8 @@ def parse_args():
     )
     p.add_argument("--batch_size", type=int, default=2)
     p.add_argument("--num_workers", type=int, default=2)
-    p.add_argument("--samples_per_epoch", type=int, default=1000)
+    p.add_argument("--samples_per_epoch", type=int, default=50000,
+                   help="Approximate samples per epoch for LR schedule (970 shards × ~50 clips)")
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
     p.add_argument(
@@ -146,6 +151,12 @@ def parse_args():
         type=float,
         default=1.0,
         help="Weight for MSE loss component in contrastive_mse mode",
+    )
+    p.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for clipping (0 to disable)",
     )
 
     # Accelerate
@@ -934,9 +945,10 @@ class SequenceWebDataset(IterableDataset):
                     times_data = self.times_cache[traj_id]
                     if times_data is not None and 0 <= step_idx < times_data.shape[1]:
                         step_times = times_data[:, step_idx]
-                        # Reward rules: >0 -> +1, <0 -> -5, else 0
+                        # Reward rules: >0 -> +5, <0 -> -5, else 0
+                        # Scaled positive reward to balance the asymmetry
                         rs = [
-                            1.0 if t > 0 else -5.0 if t < 0 else 0.0 for t in step_times
+                            5.0 if t > 0 else -5.0 if t < 0 else 0.0 for t in step_times
                         ]
                         base_reward = sum(rs) / max(len(rs), 1)
                     else:
@@ -1014,8 +1026,8 @@ class SequenceWebDataset(IterableDataset):
                             dist_sum += dist
 
                         avg_min_dist = dist_sum / max(num_agents, 1)
-                        # r_dist = -avg_min_dist
-                        r_dist = -avg_min_dist
+                        # Normalize r_dist to [-1, 0] using max warehouse diagonal
+                        r_dist = -min(avg_min_dist / _WAREHOUSE_MAX_DIST, 1.0)
 
                     total_reward += r_dist
 
@@ -1357,6 +1369,10 @@ def run_epoch(
                     loss = loss_fn(pred, target)
                 if train:
                     accelerator.backward(loss)
+                    if args.max_grad_norm > 0:
+                        accelerator.clip_grad_norm_(
+                            model.parameters(), max_norm=args.max_grad_norm
+                        )
                     optimizer.step()
                     if scheduler is not None:
                         scheduler.step()
@@ -1384,11 +1400,15 @@ def run_epoch(
                     log_dict = {
                         "train/step_loss": loss.item(),
                         "train/step": step,
+                        "train/pred_mean": pred.detach().mean().item(),
+                        "train/reward_mean": reward.detach().mean().item(),
                     }
                     if args.loss_type in ("contrastive", "contrastive_mse"):
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
+                    elif args.loss_type == "td" and use_td:
+                        log_dict["train/td_target_mean"] = target.detach().mean().item()
                     wandb.log(log_dict)
             except ImportError:
                 pass
