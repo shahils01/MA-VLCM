@@ -109,15 +109,22 @@ def _spearman_corr(x, y):
 
 
 # ────────────────────────── Plotting ────────────────────────────────────────
-def _generate_plots(preds, rewards, returns, plot_dir, epoch):
-    """Generate comparison plots of predicted vs true values."""
+def _generate_plots(preds, rewards, targets, plot_dir, epoch, target_label=None):
+    """Generate comparison plots of predicted vs true values.
+
+    Args:
+        targets: TD targets, returns, or None — whatever the model was trained on.
+        target_label: Label for the target values in plots (auto-detected if None).
+    """
     os.makedirs(plot_dir, exist_ok=True)
     print(f"\nGenerating plots in: {plot_dir}")
 
-    has_returns = returns is not None
-    # Use returns as the "true" target when available, otherwise rewards
-    true_label = "Return" if has_returns else "Reward"
-    true_vals = returns if has_returns else rewards
+    has_targets = targets is not None
+    if target_label is None:
+        true_label = "TD Target" if has_targets else "Reward"
+    else:
+        true_label = target_label
+    true_vals = targets if has_targets else rewards
 
     # ── 1. Scatter plot: Predicted vs True ───────────────────────────────
     fig, ax = plt.subplots(figsize=(8, 7))
@@ -187,11 +194,11 @@ def _generate_plots(preds, rewards, returns, plot_dir, epoch):
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 4. If both rewards AND returns are available, plot both ───────────
-    if has_returns:
+    # ── 4. If targets AND rewards are different, plot both ─────────────────
+    if has_targets:
         fig, axes = plt.subplots(1, 2, figsize=(15, 6))
         for ax_i, (vals, label) in enumerate(
-            [(rewards, "Reward"), (returns, "Return")]
+            [(rewards, "Reward"), (targets, true_label)]
         ):
             ax = axes[ax_i]
             ax.scatter(vals, preds, alpha=0.35, s=12, c="#4C72B0", edgecolors="none")
@@ -298,6 +305,12 @@ def main():
     print(f"Loading test data from: {cli_args.test_shards}")
     args.train_shards = cli_args.test_shards  # webdataset_loader reads this indirectly
 
+    # Force include_next=True so we get next-state data for TD target computation
+    saved_loss_type = getattr(args, "loss_type", "td")
+    saved_return_mode = getattr(args, "return_mode", "td")
+    args.loss_type = "td"       # Ensures include_next=True in webdataset_loader
+    args.return_mode = "td"
+
     test_loader = webdataset_loader(
         args,
         shards=cli_args.test_shards,
@@ -306,36 +319,55 @@ def main():
         shuffle=False,
     )
 
+    # Restore original values for logging
+    args.loss_type = saved_loss_type
+    args.return_mode = saved_return_mode
+
+    gamma = getattr(args, "gamma", 0.99)
+
     # ── 5. Inference loop ───────────────────────────────────────────────────
     print("Running inference...")
+    print(f"  Computing TD targets with gamma={gamma}")
     all_preds = []
+    all_td_targets = []
     all_rewards = []
     all_returns = []
     num_processed = 0
 
+    def _move_and_cast(tensor_dict):
+        """Move dict of tensors to device and cast floats to model_dtype."""
+        out = {}
+        for k, v in tensor_dict.items():
+            if torch.is_tensor(v):
+                v = v.to(device)
+                if v.is_floating_point():
+                    v = v.to(dtype=model_dtype)
+                out[k] = v
+            else:
+                out[k] = v
+        return out
+
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="inference", dynamic_ncols=True):
             # Move inputs to device and cast to model dtype
-            inputs = {}
-            for k, v in batch["inputs"].items():
-                if torch.is_tensor(v):
-                    v = v.to(device)
-                    # Cast float tensors (e.g. pixel_values) to model dtype;
-                    # keep integer tensors (input_ids, attention_mask) as-is.
-                    if v.is_floating_point():
-                        v = v.to(dtype=model_dtype)
-                    inputs[k] = v
-                else:
-                    inputs[k] = v
-
+            inputs = _move_and_cast(batch["inputs"])
             robot_obs = batch["robot_obs"].to(device=device, dtype=model_dtype)
             adj = batch["adj"].to(device=device, dtype=model_dtype)
             reward = batch["reward"]  # keep on CPU for collection
-            done = batch["done"]
+            done = batch["done"].float()
 
-            # Forward pass
+            # Forward pass: V(s)
             pred = model(inputs, robot_obs, adj)
             pred_cpu = pred.detach().cpu().float()
+
+            # Compute TD target: r + γ*(1-done)*V(s')
+            if "next_inputs" in batch:
+                next_inputs = _move_and_cast(batch["next_inputs"])
+                next_robot_obs = batch["next_robot_obs"].to(device=device, dtype=model_dtype)
+                next_adj = batch["next_adj"].to(device=device, dtype=model_dtype)
+                next_pred = model(next_inputs, next_robot_obs, next_adj)
+                td_target = reward + gamma * (1.0 - done) * next_pred.detach().cpu().float()
+                all_td_targets.append(td_target.view(-1))
 
             all_preds.append(pred_cpu)
             all_rewards.append(reward.float())
@@ -351,14 +383,19 @@ def main():
     preds = torch.cat(all_preds, dim=0).view(-1).numpy()
     rewards = torch.cat(all_rewards, dim=0).view(-1).numpy()
     has_returns = len(all_returns) > 0
+    has_td_targets = len(all_td_targets) > 0
     if has_returns:
         returns = torch.cat(all_returns, dim=0).view(-1).numpy()
+    if has_td_targets:
+        td_targets = torch.cat(all_td_targets, dim=0).view(-1).numpy()
 
     if cli_args.max_samples:
         preds = preds[: cli_args.max_samples]
         rewards = rewards[: cli_args.max_samples]
         if has_returns:
             returns = returns[: cli_args.max_samples]
+        if has_td_targets:
+            td_targets = td_targets[: cli_args.max_samples]
 
     n = len(preds)
     print(f"\n{'=' * 60}")
@@ -371,11 +408,28 @@ def main():
     print(f"  Reward — mean: {rewards.mean():.4f}  std: {rewards.std():.4f}  "
           f"min: {rewards.min():.4f}  max: {rewards.max():.4f}")
 
-    # MSE and MAE vs reward
+    # Primary comparison: V(s) vs TD target  (this is what the model was trained on)
+    if has_td_targets:
+        print(f"  TD Tgt — mean: {td_targets.mean():.4f}  std: {td_targets.std():.4f}  "
+              f"min: {td_targets.min():.4f}  max: {td_targets.max():.4f}")
+        mse_td = float(np.mean((preds - td_targets) ** 2))
+        mae_td = float(np.mean(np.abs(preds - td_targets)))
+        pearson_td = _pearson_corr(preds, td_targets)
+        print(f"\n  vs TD Target  (r + γ*(1-done)*V(s')):  [PRIMARY — training objective]")
+        print(f"    MSE:              {mse_td:.6f}")
+        print(f"    MAE:              {mae_td:.6f}")
+        print(f"    Pearson corr:     {pearson_td:.4f}")
+        try:
+            spearman_td = _spearman_corr(preds, td_targets)
+            print(f"    Spearman corr:    {spearman_td:.4f}")
+        except ImportError:
+            print(f"    Spearman corr:    (scipy not available)")
+
+    # Secondary: V(s) vs raw reward
     mse_reward = float(np.mean((preds - rewards) ** 2))
     mae_reward = float(np.mean(np.abs(preds - rewards)))
     pearson_reward = _pearson_corr(preds, rewards)
-    print(f"\n  vs Reward:")
+    print(f"\n  vs Raw Reward  (for reference):")
     print(f"    MSE:              {mse_reward:.6f}")
     print(f"    MAE:              {mae_reward:.6f}")
     print(f"    Pearson corr:     {pearson_reward:.4f}")
@@ -389,7 +443,7 @@ def main():
         mse_ret = float(np.mean((preds - returns) ** 2))
         mae_ret = float(np.mean(np.abs(preds - returns)))
         pearson_ret = _pearson_corr(preds, returns)
-        print(f"\n  vs Returns (n-step / TD target):")
+        print(f"\n  vs Cumulative Returns (sum of rewards in clip):")
         print(f"    MSE:              {mse_ret:.6f}")
         print(f"    MAE:              {mae_ret:.6f}")
         print(f"    Pearson corr:     {pearson_ret:.4f}")
@@ -406,7 +460,7 @@ def main():
         _generate_plots(
             preds,
             rewards,
-            returns if has_returns else None,
+            td_targets if has_td_targets else (returns if has_returns else None),
             cli_args.plot_dir,
             epoch,
         )
@@ -417,21 +471,26 @@ def main():
         with open(cli_args.output_file, "w", newline="") as f:
             writer = csv.writer(f)
             header = ["sample_idx", "prediction", "reward"]
+            if has_td_targets:
+                header.append("td_target")
             if has_returns:
                 header.append("return")
             writer.writerow(header)
             for i in range(n):
                 row = [i, f"{preds[i]:.6f}", f"{rewards[i]:.6f}"]
+                if has_td_targets:
+                    row.append(f"{td_targets[i]:.6f}")
                 if has_returns:
                     row.append(f"{returns[i]:.6f}")
                 writer.writerow(row)
         print(f"  Wrote {n} rows.")
 
-    # ── 8. Summary dict (for programmatic use) ──────────────────────────────
+    # ── 9. Summary dict (for programmatic use) ──────────────────────────────
     summary = {
         "checkpoint": cli_args.checkpoint,
         "epoch": epoch,
         "num_samples": n,
+        "gamma": gamma,
         "pred_mean": float(preds.mean()),
         "pred_std": float(preds.std()),
         "reward_mean": float(rewards.mean()),
@@ -439,6 +498,11 @@ def main():
         "mae_vs_reward": mae_reward,
         "pearson_vs_reward": pearson_reward,
     }
+    if has_td_targets:
+        summary["td_target_mean"] = float(td_targets.mean())
+        summary["mse_vs_td_target"] = mse_td
+        summary["mae_vs_td_target"] = mae_td
+        summary["pearson_vs_td_target"] = pearson_td
     if has_returns:
         summary["mse_vs_return"] = mse_ret
         summary["mae_vs_return"] = mae_ret
@@ -459,3 +523,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

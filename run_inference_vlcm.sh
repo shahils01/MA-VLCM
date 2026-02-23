@@ -13,7 +13,7 @@ echo "Date: $(date)"
 
 # ── Paths (edit these) ──────────────────────────────────────────────────────
 CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/ckpt_epoch_3.pt"
-TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch"
+TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_test"
 OUTPUT_FILE="inference_results.csv"
 
 # ── Model / data config (should match training) ────────────────────────────
@@ -45,7 +45,8 @@ if [ -n "$CONTAINER_PATH" ] && [ -f "$CONTAINER_PATH" ]; then
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \
         --num_workers 8 \
-        --output_file "$OUTPUT_FILE"
+        --output_file "$OUTPUT_FILE" \
+        --max_samples 25
 else
     echo "Running natively (no container)"
     python3 inference.py \
@@ -53,7 +54,8 @@ else
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \
         --num_workers 8 \
-        --output_file "$OUTPUT_FILE"
+        --output_file "$OUTPUT_FILE" \
+        --max_samples 25
 fi
 
 echo "Done. Results written to: $OUTPUT_FILE"
