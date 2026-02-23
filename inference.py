@@ -315,16 +315,21 @@ def main():
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="inference", dynamic_ncols=True):
-            # Move inputs to device
+            # Move inputs to device and cast to model dtype
             inputs = {}
             for k, v in batch["inputs"].items():
                 if torch.is_tensor(v):
-                    inputs[k] = v.to(device)
+                    v = v.to(device)
+                    # Cast float tensors (e.g. pixel_values) to model dtype;
+                    # keep integer tensors (input_ids, attention_mask) as-is.
+                    if v.is_floating_point():
+                        v = v.to(dtype=model_dtype)
+                    inputs[k] = v
                 else:
                     inputs[k] = v
 
-            robot_obs = batch["robot_obs"].to(device)
-            adj = batch["adj"].to(device)
+            robot_obs = batch["robot_obs"].to(device=device, dtype=model_dtype)
+            adj = batch["adj"].to(device=device, dtype=model_dtype)
             reward = batch["reward"]  # keep on CPU for collection
             done = batch["done"]
 
