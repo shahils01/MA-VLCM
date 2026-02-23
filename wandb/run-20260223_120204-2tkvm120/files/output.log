@@ -1,5 +1,5 @@
 The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
-Loading weights: 100%|██████████| 687/687 [00:02<00:00, 253.79it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+Loading weights: 100%|██████████| 687/687 [00:01<00:00, 362.12it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
 [ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
 [PEFT] Gradient checkpointing ENABLED
 /usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
@@ -9,4 +9,10 @@ No vision tower found; using single param group.
 Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
 Found 951 shards.
 train: 0it [00:00, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
-train: 168it [28:04,  9.95s/it, loss=3.8920, lr=3.00e-04]
+train: 522it [1:26:49,  9.98s/it, loss=0.1208, lr=3.01e-05]
+epoch=1 train_loss=0.1208 val_loss=n/a
+train: 522it [1:26:09,  9.90s/it, loss=0.1609, lr=6.01e-05]
+epoch=2 train_loss=0.1609 val_loss=n/a
+train: 522it [1:27:54, 10.10s/it, loss=0.1413, lr=9.02e-05]
+epoch=3 train_loss=0.1413 val_loss=n/a
+train: 50it [08:30, 10.17s/it, loss=0.2008, lr=9.31e-05]

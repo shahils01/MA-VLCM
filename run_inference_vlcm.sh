@@ -40,19 +40,19 @@ if [ -n "$CONTAINER_PATH" ] && [ -f "$CONTAINER_PATH" ]; then
     echo "Running via Apptainer container: $CONTAINER_PATH"
     apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
       --env HF_TOKEN="$HF_TOKEN" \
-      "$CONTAINER_PATH" python inference.py \
+      "$CONTAINER_PATH" python3 inference.py \
         --checkpoint "$CHECKPOINT" \
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \
-        --num_workers 4 \
+        --num_workers 8 \
         --output_file "$OUTPUT_FILE"
 else
     echo "Running natively (no container)"
-    python inference.py \
+    python3 inference.py \
         --checkpoint "$CHECKPOINT" \
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \
-        --num_workers 4 \
+        --num_workers 8 \
         --output_file "$OUTPUT_FILE"
 fi
 
