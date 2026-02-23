@@ -1,0 +1,23 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 246.07it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1528, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1371, in main
+    model = _apply_peft(model, args)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 342, in _apply_peft
+    p.requires_grad = True
+  File "/usr/local/lib/python3.10/dist-packages/bitsandbytes/nn/modules.py", line 402, in __torch_function__
+    return super().__torch_function__(func, types, args, kwargs)
+RuntimeError: only Tensors of floating point and complex dtype can require gradients
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1528, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1371, in main
+[rank0]:     model = _apply_peft(model, args)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 342, in _apply_peft
+[rank0]:     p.requires_grad = True
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/bitsandbytes/nn/modules.py", line 402, in __torch_function__
+[rank0]:     return super().__torch_function__(func, types, args, kwargs)
+[rank0]: RuntimeError: only Tensors of floating point and complex dtype can require gradients

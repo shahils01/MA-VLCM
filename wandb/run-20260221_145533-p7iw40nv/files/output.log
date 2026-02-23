@@ -1,0 +1,88 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 295.59it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 1,572,864 trainable / 305,080,320 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 951 shards.
+train: 0it [00:02, ?it/s]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1678, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1611, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1293, in run_epoch
+    for batch in pbar:
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 866, in __iter__
+    next_batch, next_batch_info = self._fetch_batches(main_iterator)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 820, in _fetch_batches
+    batches.append(next(iterator))
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+ValueError: Caught ValueError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1143, in __iter__
+    out_sample = _process_clip_data(clip, next_clip)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 793, in _process_clip_data
+    inputs = _proc(raw_video, text)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 771, in _proc
+    inputs = self.vlm_processor(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/processing_llava_next_video.py", line 170, in __call__
+    self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video"])
+  File "/usr/local/lib/python3.10/dist-packages/transformers/processing_utils.py", line 1911, in _check_special_mm_tokens
+    raise ValueError(
+ValueError: Mismatch in `video` token count between text and `input_ids`. Got ids=[4499] and text=[4608]. Likely due to `truncation='max_length'`. Please disable truncation or increase `max_length`.
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1678, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1611, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1293, in run_epoch
+[rank0]:     for batch in pbar:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 866, in __iter__
+[rank0]:     next_batch, next_batch_info = self._fetch_batches(main_iterator)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 820, in _fetch_batches
+[rank0]:     batches.append(next(iterator))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+[rank0]:     data = self._next_data()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+[rank0]:     return self._process_data(data)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+[rank0]:     data.reraise()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+[rank0]:     raise exception
+[rank0]: ValueError: Caught ValueError in DataLoader worker process 0.
+[rank0]: Original Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+[rank0]:     data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+[rank0]:     data.append(next(self.dataset_iter))
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1143, in __iter__
+[rank0]:     out_sample = _process_clip_data(clip, next_clip)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 793, in _process_clip_data
+[rank0]:     inputs = _proc(raw_video, text)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 771, in _proc
+[rank0]:     inputs = self.vlm_processor(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/processing_llava_next_video.py", line 170, in __call__
+[rank0]:     self._check_special_mm_tokens(text, text_inputs, modalities=["image", "video"])
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/processing_utils.py", line 1911, in _check_special_mm_tokens
+[rank0]:     raise ValueError(
+[rank0]: ValueError: Mismatch in `video` token count between text and `input_ids`. Got ids=[4499] and text=[4608]. Likely due to `truncation='max_length'`. Please disable truncation or increase `max_length`.

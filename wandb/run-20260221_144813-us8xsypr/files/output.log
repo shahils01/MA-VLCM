@@ -1,0 +1,73 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 291.49it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 1,572,864 trainable / 305,080,320 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 951 shards.
+train: 0it [00:01, ?it/s]
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 822, in _fetch_batches
+    batch = concatenate(batches, dim=0)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in concatenate
+    return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in <dictcomp>
+    return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in concatenate
+    return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in <dictcomp>
+    return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 620, in concatenate
+    return torch.cat(data, dim=dim)
+RuntimeError: Sizes of tensors must match except in dimension 0. Expected size 881 but got size 931 for tensor number 1 in the list.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1678, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1611, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1293, in run_epoch
+    for batch in pbar:
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 866, in __iter__
+    next_batch, next_batch_info = self._fetch_batches(main_iterator)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 824, in _fetch_batches
+    raise RuntimeError(
+RuntimeError: You can't use batches of different size with `dispatch_batches=True` or when using an `IterableDataset`.either pass `dispatch_batches=False` and have each process fetch its own batch  or pass `split_batches=True`. By doing so, the main process will fetch a full batch and slice it into `num_processes` batches for each process.
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 822, in _fetch_batches
+[rank0]:     batch = concatenate(batches, dim=0)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in concatenate
+[rank0]:     return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in <dictcomp>
+[rank0]:     return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in concatenate
+[rank0]:     return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 617, in <dictcomp>
+[rank0]:     return type(data[0])({k: concatenate([d[k] for d in data], dim=dim) for k in data[0].keys()})
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 620, in concatenate
+[rank0]:     return torch.cat(data, dim=dim)
+[rank0]: RuntimeError: Sizes of tensors must match except in dimension 0. Expected size 881 but got size 931 for tensor number 1 in the list.
+
+[rank0]: The above exception was the direct cause of the following exception:
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1678, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1611, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1293, in run_epoch
+[rank0]:     for batch in pbar:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 866, in __iter__
+[rank0]:     next_batch, next_batch_info = self._fetch_batches(main_iterator)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 824, in _fetch_batches
+[rank0]:     raise RuntimeError(
+[rank0]: RuntimeError: You can't use batches of different size with `dispatch_batches=True` or when using an `IterableDataset`.either pass `dispatch_batches=False` and have each process fetch its own batch  or pass `split_batches=True`. By doing so, the main process will fetch a full batch and slice it into `num_processes` batches for each process.

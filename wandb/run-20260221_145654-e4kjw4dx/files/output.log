@@ -1,0 +1,80 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 296.11it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 1,572,864 trainable / 305,080,320 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 951 shards.
+train: 0it [00:00, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train: 569it [40:35,  4.28s/it, loss=4.2215, lr=2.97e-04]
+epoch=1 train_loss=4.2215 val_loss=n/a
+train: 569it [40:35,  4.28s/it, loss=3.5549, lr=2.75e-04]
+epoch=2 train_loss=3.5549 val_loss=n/a
+train: 569it [41:41,  4.40s/it, loss=3.1541, lr=2.35e-04]
+epoch=3 train_loss=3.1541 val_loss=n/a
+train: 569it [41:48,  4.41s/it, loss=2.7632, lr=1.83e-04]
+epoch=4 train_loss=2.7632 val_loss=n/a
+train: 569it [41:11,  4.34s/it, loss=3.0382, lr=1.27e-04]
+epoch=5 train_loss=3.0382 val_loss=n/a
+train: 569it [41:13,  4.35s/it, loss=3.0417, lr=7.37e-05]
+epoch=6 train_loss=3.0417 val_loss=n/a
+train: 569it [41:10,  4.34s/it, loss=2.5937, lr=3.14e-05]
+epoch=7 train_loss=2.5937 val_loss=n/a
+train: 569it [40:57,  4.32s/it, loss=2.5944, lr=5.86e-06]
+epoch=8 train_loss=2.5944 val_loss=n/a
+train: 569it [40:55,  4.32s/it, loss=2.4087, lr=7.18e-07]
+epoch=9 train_loss=2.4087 val_loss=n/a
+train: 569it [40:52,  4.31s/it, loss=2.2471, lr=1.67e-05]
+epoch=10 train_loss=2.2471 val_loss=n/a
+train: 569it [41:14,  4.35s/it, loss=2.2067, lr=5.15e-05]
+epoch=11 train_loss=2.2067 val_loss=n/a
+train: 569it [40:54,  4.31s/it, loss=2.5135, lr=1.00e-04]
+epoch=12 train_loss=2.5135 val_loss=n/a
+train: 569it [40:53,  4.31s/it, loss=2.3696, lr=1.56e-04]
+epoch=13 train_loss=2.3696 val_loss=n/a
+train: 569it [40:40,  4.29s/it, loss=3.1513, lr=2.11e-04]
+epoch=14 train_loss=3.1513 val_loss=n/a
+train: 569it [40:18,  4.25s/it, loss=3.2936, lr=2.57e-04]
+epoch=15 train_loss=3.2936 val_loss=n/a
+train: 569it [40:16,  4.25s/it, loss=2.9433, lr=2.88e-04]
+epoch=16 train_loss=2.9433 val_loss=n/a
+train: 569it [40:16,  4.25s/it, loss=5.0092, lr=3.00e-04] 
+epoch=17 train_loss=5.0092 val_loss=n/a
+train: 569it [40:17,  4.25s/it, loss=2.9086, lr=2.90e-04]
+epoch=18 train_loss=2.9086 val_loss=n/a
+train: 569it [40:17,  4.25s/it, loss=3.2138, lr=2.61e-04]
+epoch=19 train_loss=3.2138 val_loss=n/a
+train: 569it [40:16,  4.25s/it, loss=3.1363, lr=2.16e-04]
+epoch=20 train_loss=3.1363 val_loss=n/a
+train: 569it [40:31,  4.27s/it, loss=3.1293, lr=1.61e-04]
+epoch=21 train_loss=3.1293 val_loss=n/a
+train: 569it [40:42,  4.29s/it, loss=2.6911, lr=1.05e-04]
+epoch=22 train_loss=2.6911 val_loss=n/a
+train: 569it [40:53,  4.31s/it, loss=2.6398, lr=5.55e-05]
+epoch=23 train_loss=2.6398 val_loss=n/a
+train: 569it [41:10,  4.34s/it, loss=2.8849, lr=1.91e-05]
+epoch=24 train_loss=2.8849 val_loss=n/a
+train: 569it [40:48,  4.30s/it, loss=2.7526, lr=1.31e-06]
+epoch=25 train_loss=2.7526 val_loss=n/a
+train: 569it [40:37,  4.28s/it, loss=2.5369, lr=4.52e-06]
+epoch=26 train_loss=2.5369 val_loss=n/a
+train: 569it [40:41,  4.29s/it, loss=2.5628, lr=2.83e-05]
+epoch=27 train_loss=2.5628 val_loss=n/a
+train: 569it [40:51,  4.31s/it, loss=2.9504, lr=6.93e-05]
+epoch=28 train_loss=2.9504 val_loss=n/a
+train: 569it [40:37,  4.28s/it, loss=2.6249, lr=1.22e-04]
+epoch=29 train_loss=2.6249 val_loss=n/a
+train: 569it [40:33,  4.28s/it, loss=2.9262, lr=1.78e-04]
+epoch=30 train_loss=2.9262 val_loss=n/a
+train: 569it [40:30,  4.27s/it, loss=3.0247, lr=2.31e-04]
+epoch=31 train_loss=3.0247 val_loss=n/a
+train: 569it [40:46,  4.30s/it, loss=2.8516, lr=2.72e-04]
+epoch=32 train_loss=2.8516 val_loss=n/a
+train: 569it [40:47,  4.30s/it, loss=2.6451, lr=2.95e-04]
+epoch=33 train_loss=2.6451 val_loss=n/a
+train: 569it [40:47,  4.30s/it, loss=3.0849, lr=2.99e-04]
+epoch=34 train_loss=3.0849 val_loss=n/a
+train: 69it [05:01,  4.29s/it, loss=3.0151, lr=2.98e-04]

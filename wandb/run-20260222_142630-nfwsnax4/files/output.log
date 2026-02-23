@@ -1,0 +1,78 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:01<00:00, 355.35it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 6,291,456 trainable / 309,798,912 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/data_scratch
+Found 951 shards.
+train: 0it [00:00, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train: 286it [45:02,  9.45s/it, loss=1.9627, lr=2.97e-04]
+epoch=1 train_loss=1.9627 val_loss=n/a
+train: 286it [41:23,  8.68s/it, loss=1.8303, lr=2.75e-04]
+epoch=2 train_loss=1.8303 val_loss=n/a
+train: 286it [41:21,  8.68s/it, loss=7.7856, lr=2.35e-04]
+epoch=3 train_loss=7.7856 val_loss=n/a
+train: 286it [41:04,  8.62s/it, loss=1.9916, lr=1.83e-04]
+epoch=4 train_loss=1.9916 val_loss=n/a
+train: 286it [40:49,  8.57s/it, loss=13.7083, lr=1.27e-04]
+epoch=5 train_loss=13.7083 val_loss=n/a
+train: 286it [40:51,  8.57s/it, loss=1.9715, lr=7.37e-05]
+epoch=6 train_loss=1.9715 val_loss=n/a
+train: 286it [40:51,  8.57s/it, loss=1.8018, lr=3.14e-05]
+epoch=7 train_loss=1.8018 val_loss=n/a
+train: 286it [40:41,  8.54s/it, loss=1.7594, lr=5.86e-06]
+epoch=8 train_loss=1.7594 val_loss=n/a
+train: 286it [40:39,  8.53s/it, loss=1.7620, lr=7.18e-07]
+epoch=9 train_loss=1.7620 val_loss=n/a
+train: 0it [00:17, ?it/s]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1678, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1611, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1293, in run_epoch
+    for batch in pbar:
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 874, in __iter__
+    batch = send_to_device(batch, self.state.device, non_blocking=self._non_blocking)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 179, in send_to_device
+    {
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 180, in <dictcomp>
+    k: t if k in skip_keys else send_to_device(t, device, non_blocking=non_blocking, skip_keys=skip_keys)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 179, in send_to_device
+    {
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 180, in <dictcomp>
+    k: t if k in skip_keys else send_to_device(t, device, non_blocking=non_blocking, skip_keys=skip_keys)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 154, in send_to_device
+    return tensor.to(device, non_blocking=non_blocking)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+    _error_if_any_worker_fails()
+RuntimeError: DataLoader worker (pid 3529713) is killed by signal: Bus error. It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1678, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1611, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1293, in run_epoch
+[rank0]:     for batch in pbar:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/data_loader.py", line 874, in __iter__
+[rank0]:     batch = send_to_device(batch, self.state.device, non_blocking=self._non_blocking)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 179, in send_to_device
+[rank0]:     {
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 180, in <dictcomp>
+[rank0]:     k: t if k in skip_keys else send_to_device(t, device, non_blocking=non_blocking, skip_keys=skip_keys)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 179, in send_to_device
+[rank0]:     {
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 180, in <dictcomp>
+[rank0]:     k: t if k in skip_keys else send_to_device(t, device, non_blocking=non_blocking, skip_keys=skip_keys)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 154, in send_to_device
+[rank0]:     return tensor.to(device, non_blocking=non_blocking)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+[rank0]:     _error_if_any_worker_fails()
+[rank0]: RuntimeError: DataLoader worker (pid 3529713) is killed by signal: Bus error. It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.

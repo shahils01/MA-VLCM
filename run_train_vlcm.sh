@@ -79,25 +79,25 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --train_shards "$SHARD_PATTERN" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 2 \
-  --grad_accum_steps 8 \
-  --clip_len 5 \
+  --batch_size 6 \
+  --grad_accum_steps 2 \
+  --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 6 \
   --epochs 50 \
   --vl_backend llava_video \
   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir "$SAVE_DIR" \
-  --num_workers 4 \
+  --num_workers 16 \
   --mixed_precision bf16 \
   --freeze_vl \
   --peft lora \
-  --lora_r 8 \
-  --lora_alpha 16 \
+  --lora_r 32 \
+  --lora_alpha 64 \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
-  --loss_type contrastive_mse \
-  --mse_loss_weight 1.0 \
-  --vl_max_text_len 1024
+  --loss_type td \
+  --mse_loss_weight 0.5 \
+  --vl_max_text_len 4700
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
