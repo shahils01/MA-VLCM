@@ -46,7 +46,7 @@ if [ -n "$CONTAINER_PATH" ] && [ -f "$CONTAINER_PATH" ]; then
         --batch_size 4 \
         --num_workers 8 \
         --output_file "$OUTPUT_FILE" \
-        --max_samples 25
+        --max_samples 100
 else
     echo "Running natively (no container)"
     python3 inference.py \
@@ -55,7 +55,7 @@ else
         --batch_size 4 \
         --num_workers 8 \
         --output_file "$OUTPUT_FILE" \
-        --max_samples 25
+        --max_samples 100
 fi
 
 echo "Done. Results written to: $OUTPUT_FILE"

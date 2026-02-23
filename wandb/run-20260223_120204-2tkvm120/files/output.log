@@ -15,4 +15,4 @@ train: 522it [1:26:09,  9.90s/it, loss=0.1609, lr=6.01e-05]
 epoch=2 train_loss=0.1609 val_loss=n/a
 train: 522it [1:27:54, 10.10s/it, loss=0.1413, lr=9.02e-05]
 epoch=3 train_loss=0.1413 val_loss=n/a
-train: 50it [08:30, 10.17s/it, loss=0.2008, lr=9.31e-05]
+train: 254it [42:40,  9.96s/it, loss=0.1820, lr=1.05e-04]
