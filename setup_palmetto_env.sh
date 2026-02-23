@@ -70,7 +70,23 @@ echo "Using PyG wheel index: ${PYG_URL}"
 
 echo "[3/4] Installing PyTorch Geometric compiled deps"
 pip install --upgrade pip
-pip install --no-cache-dir pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f "${PYG_URL}"
+
+# Older cluster images often have glibc < 2.29, which breaks prebuilt
+# wheels for pyg_lib/torch_sparse. Install a compatible subset in that case.
+GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+if [[ -z "${GLIBC_VER:-}" ]]; then
+  GLIBC_VER="0.0"
+fi
+echo "Detected glibc: ${GLIBC_VER}"
+
+if [[ "$(printf '%s\n' "2.29" "${GLIBC_VER}" | sort -V | head -n1)" == "2.29" ]]; then
+  echo "glibc >= 2.29: installing full PyG optional stack"
+  pip install --no-cache-dir pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f "${PYG_URL}"
+else
+  echo "glibc < 2.29: skipping pyg_lib and torch_sparse to avoid GLIBC mismatch warnings"
+  pip install --no-cache-dir torch_scatter torch_cluster torch_spline_conv -f "${PYG_URL}"
+fi
+
 pip install --no-cache-dir torch_geometric
 
 echo "[4/4] Verifying imports used by MA-VLCM"
