@@ -83,6 +83,12 @@ def parse_inference_args():
         default="inference_plots",
         help="Directory to save comparison plots (set to '' to disable).",
     )
+    p.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Baseline mode: skip LoRA adapters, keep LLaVA at pretrained weights. "
+             "Only loads GNN + value head from checkpoint for apples-to-apples comparison.",
+    )
 
     return p.parse_args()
 
@@ -268,9 +274,19 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
 
     # ── 3. Rebuild model + load weights ─────────────────────────────────────
-    print("Building model...")
-    model = build_model(args, device=device)
-    model = _apply_peft(model, args)
+    baseline_mode = cli_args.baseline
+    if baseline_mode:
+        print("Building model in BASELINE mode (no LoRA, pretrained LLaVA backbone)...")
+        # Build without LoRA — pretrained LLaVA + random custom heads
+        saved_peft = getattr(args, "peft", "none")
+        args.peft = "none"
+        model = build_model(args, device=device)
+        model = _apply_peft(model, args)  # no-op since peft="none"
+        args.peft = saved_peft  # restore for logging
+    else:
+        print("Building model (with LoRA)...")
+        model = build_model(args, device=device)
+        model = _apply_peft(model, args)
 
     # Load state dict
     state_dict = ckpt["model"]
@@ -280,14 +296,29 @@ def main():
         new_k = k.replace("module.", "") if k.startswith("module.") else k
         cleaned_sd[new_k] = v
 
-    missing, unexpected = model.load_state_dict(cleaned_sd, strict=False)
-    if missing:
-        print(f"  WARNING: {len(missing)} missing keys (first 5): {missing[:5]}")
-    if unexpected:
-        print(f"  WARNING: {len(unexpected)} unexpected keys (first 5): {unexpected[:5]}")
+    if baseline_mode:
+        # Only load custom heads: robot_gnn, value_head, obs_to_lm
+        # Skip all LoRA and backbone keys — keep LLaVA at pretrained weights
+        custom_prefixes = ("robot_gnn.", "value_head.", "obs_to_lm.")
+        baseline_sd = {k: v for k, v in cleaned_sd.items()
+                       if k.startswith(custom_prefixes)}
+        print(f"  BASELINE: Loading {len(baseline_sd)} custom head keys "
+              f"(skipping {len(cleaned_sd) - len(baseline_sd)} backbone/LoRA keys)")
+        missing, unexpected = model.load_state_dict(baseline_sd, strict=False)
+        # Many "missing" keys expected (entire backbone) — only warn about custom heads
+        missing_custom = [k for k in missing if k.startswith(custom_prefixes)]
+        if missing_custom:
+            print(f"  WARNING: {len(missing_custom)} custom head keys missing: {missing_custom}")
+    else:
+        missing, unexpected = model.load_state_dict(cleaned_sd, strict=False)
+        if missing:
+            print(f"  WARNING: {len(missing)} missing keys (first 5): {missing[:5]}")
+        if unexpected:
+            print(f"  WARNING: {len(unexpected)} unexpected keys (first 5): {unexpected[:5]}")
 
     epoch = ckpt.get("epoch", "?")
-    print(f"  Loaded checkpoint from epoch {epoch}")
+    mode_str = "BASELINE (no LoRA)" if baseline_mode else "fine-tuned"
+    print(f"  Loaded checkpoint from epoch {epoch} [{mode_str}]")
 
     # Determine dtype for inference
     mp = getattr(args, "mixed_precision", "no")
@@ -455,20 +486,31 @@ def main():
 
     print(f"{'=' * 60}")
 
+    # ── Suffix outputs in baseline mode so they don't overwrite fine-tuned results ──
+    suffix = "_baseline" if baseline_mode else ""
+    plot_dir = cli_args.plot_dir
+    output_file = cli_args.output_file
+    if suffix:
+        if plot_dir:
+            plot_dir = plot_dir.rstrip("/") + suffix
+        if output_file:
+            base, ext = os.path.splitext(output_file)
+            output_file = f"{base}{suffix}{ext}"
+
     # ── 7. Generate plots ───────────────────────────────────────────────────
-    if cli_args.plot_dir:
+    if plot_dir:
         _generate_plots(
             preds,
             rewards,
             td_targets if has_td_targets else (returns if has_returns else None),
-            cli_args.plot_dir,
+            plot_dir,
             epoch,
         )
 
     # ── 8. Optional CSV output ──────────────────────────────────────────────
-    if cli_args.output_file:
-        print(f"\nWriting per-sample results to: {cli_args.output_file}")
-        with open(cli_args.output_file, "w", newline="") as f:
+    if output_file:
+        print(f"\nWriting per-sample results to: {output_file}")
+        with open(output_file, "w", newline="") as f:
             writer = csv.writer(f)
             header = ["sample_idx", "prediction", "reward"]
             if has_td_targets:
@@ -488,6 +530,7 @@ def main():
     # ── 9. Summary dict (for programmatic use) ──────────────────────────────
     summary = {
         "checkpoint": cli_args.checkpoint,
+        "baseline": baseline_mode,
         "epoch": epoch,
         "num_samples": n,
         "gamma": gamma,
@@ -509,11 +552,10 @@ def main():
         summary["pearson_vs_return"] = pearson_ret
 
     # Save summary JSON alongside output
-    summary_path = cli_args.output_file
-    if summary_path:
-        json_path = summary_path.rsplit(".", 1)[0] + "_summary.json"
+    if output_file:
+        json_path = os.path.splitext(output_file)[0] + "_summary.json"
     else:
-        json_path = "inference_summary.json"
+        json_path = f"inference_summary{suffix}.json"
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"  Summary JSON saved to: {json_path}")
@@ -523,4 +565,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
