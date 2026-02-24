@@ -1,4 +1,5 @@
 import math
+import inspect
 from dataclasses import dataclass
 from typing import Any, Optional
 from types import SimpleNamespace
@@ -51,6 +52,12 @@ class ModelConfig:
 
     # Debug
     debug_save_video: bool = False
+    # Value head pooling strategy:
+    # - hidden_mean: pool final hidden states over tokens (higher memory)
+    # - last_token_logits: use last-token logits as VLM feature (lower memory)
+    value_pooling: str = "hidden_mean"
+    # If the backend forward supports it, keep logits only for last K tokens.
+    logits_to_keep: int = 1
 
 
 
@@ -227,6 +234,10 @@ class MultimodalValueModel(nn.Module):
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
+        try:
+            self._backbone_forward_params = set(inspect.signature(self.backbone.model.forward).parameters.keys())
+        except Exception:
+            self._backbone_forward_params = set()
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
@@ -260,7 +271,13 @@ class MultimodalValueModel(nn.Module):
         )
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
+        if cfg.value_pooling == "last_token_logits":
+            vl_feat_dim = int(getattr(self.backbone.model.config, "vocab_size", 0))
+            if vl_feat_dim <= 0:
+                raise RuntimeError("Invalid vocab size on VLM backbone for logits-based value pooling.")
+        else:
+            vl_feat_dim = lm_hidden
+        self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
 
     def _decode_debug_text(self, logits: torch.Tensor, attention_mask: Optional[torch.Tensor], max_tokens: int):
         # Decode greedy token predictions from the LM head for quick introspection.
@@ -349,10 +366,8 @@ class MultimodalValueModel(nn.Module):
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
-        input_ids = inputs["input_ids"].clone()
+        input_ids = inputs["input_ids"]
         attn_mask = inputs.get("attention_mask")
-        if attn_mask is not None:
-            inputs["attention_mask"] = attn_mask.clone()
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool team graph features to one token and inject at <obs>.
@@ -364,25 +379,41 @@ class MultimodalValueModel(nn.Module):
             obs_mask = input_ids.eq(obs_token_id)
 
             if obs_mask.any():
-                # Avoid in-place updates that can break autograd version tracking.
-                obs_mask = obs_mask.unsqueeze(-1)
+                # Avoid dense broadcast replacements over the full sequence.
+                inputs_embeds = inputs_embeds.clone()
                 if input_ids.shape[0] == bsz:
                     # input_ids: [B, S]
-                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
+                    b_idx, s_idx = obs_mask.nonzero(as_tuple=True)
+                    inputs_embeds[b_idx, s_idx, :] = obs_token[b_idx, 0, :]
                 elif input_ids.shape[1] == bsz:
                     # input_ids: [S, B]
-                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                    s_idx, b_idx = obs_mask.nonzero(as_tuple=True)
+                    inputs_embeds[s_idx, b_idx, :] = obs_token[b_idx, 0, :]
                 else:
                     raise RuntimeError(
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
                     )
-                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
-        output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
+        forward_kwargs = {"return_dict": True}
+        if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
+            # KV cache is only useful for autoregressive generation, not value regression training.
+            forward_kwargs["use_cache"] = False
+        if self.cfg.value_pooling == "hidden_mean":
+            forward_kwargs["output_hidden_states"] = True
+        if self.cfg.logits_to_keep > 0:
+            # Some transformers versions expose either logits_to_keep or num_logits_to_keep.
+            if "logits_to_keep" in self._backbone_forward_params:
+                forward_kwargs["logits_to_keep"] = self.cfg.logits_to_keep
+            elif "num_logits_to_keep" in self._backbone_forward_params:
+                forward_kwargs["num_logits_to_keep"] = self.cfg.logits_to_keep
 
-        final_hidden = output.hidden_states[-1]
+        output = self.backbone.model(**inputs, **forward_kwargs)
+
+        final_hidden = None
+        if self.cfg.value_pooling == "hidden_mean":
+            final_hidden = output.hidden_states[-1]
         debug_text = None
         if return_debug:
             logits = getattr(output, "logits", None)
@@ -394,11 +425,19 @@ class MultimodalValueModel(nn.Module):
             debug_text = self._decode_debug_text(logits, inputs.get("attention_mask"), max_tokens=debug_max_tokens)
 
         attn = inputs.get("attention_mask")
-        if attn is not None:
-            mask = attn.unsqueeze(-1)
-            pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        if self.cfg.value_pooling == "hidden_mean":
+            if final_hidden is None:
+                raise RuntimeError("hidden_mean value pooling requested but hidden states were not returned.")
+            if attn is not None:
+                mask = attn.unsqueeze(-1)
+                pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+            else:
+                pooled = final_hidden[:, -1, :]
         else:
-            pooled = final_hidden[:, -1, :]
+            logits = getattr(output, "logits", None)
+            if logits is None:
+                raise RuntimeError("logits-based value pooling requested but model output has no logits.")
+            pooled = logits[:, -1, :]
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
 

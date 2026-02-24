@@ -76,6 +76,9 @@ def parse_args():
     p.add_argument("--fsdp_use_orig_params", action="store_true", help="Use FSDP use_orig_params to allow mixed requires_grad")
     p.add_argument("--ddp_find_unused_parameters", action="store_true", help="Set DDP find_unused_parameters=True")
     p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
+    p.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing on VLM backbone")
+    p.add_argument("--disable_vl_cache", action="store_true", help="Disable VLM KV cache during training for lower memory")
+    p.add_argument("--allow_tf32", action="store_true", help="Enable TF32 matmul/cuDNN kernels on Ampere+ GPUs")
 
     # VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
@@ -83,6 +86,14 @@ def parse_args():
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
     p.add_argument("--freeze_vl", action="store_true")
+    p.add_argument(
+        "--value_pooling",
+        type=str,
+        default="hidden_mean",
+        choices=["last_token_logits", "hidden_mean"],
+        help="Feature pooling strategy for value head; last_token_logits is more memory efficient.",
+    )
+    p.add_argument("--vl_logits_to_keep", type=int, default=1, help="If supported, keep logits for only last K tokens")
 
     # PEFT / LoRA
     p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
@@ -162,8 +173,32 @@ def build_model(args, device):
         moe_experts=args.moe_experts,
         moe_top_k=args.moe_top_k,
         debug_save_video=args.debug_save_video,
+        value_pooling=args.value_pooling,
+        logits_to_keep=args.vl_logits_to_keep,
     )
     return MultimodalValueModel(cfg, device=device)
+
+
+def _configure_memory_optimizations(model, args):
+    if args.allow_tf32 and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    if args.disable_vl_cache and hasattr(model.backbone.model, "config") and hasattr(model.backbone.model.config, "use_cache"):
+        model.backbone.model.config.use_cache = False
+
+    if args.gradient_checkpointing:
+        fn = getattr(model.backbone.model, "gradient_checkpointing_enable", None)
+        if callable(fn):
+            try:
+                fn(gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:
+                fn()
+        if hasattr(model.backbone.model, "enable_input_require_grads"):
+            try:
+                model.backbone.model.enable_input_require_grads()
+            except Exception:
+                pass
 
 
 def _parse_lora_targets(args):
@@ -403,6 +438,7 @@ def main():
 
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
+    _configure_memory_optimizations(model, args)
 
     if args.fsdp:
         if args.mixed_precision == "bf16":
