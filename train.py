@@ -1,20 +1,18 @@
 import argparse
 import os
-import io
 import functools
 import inspect
-
-from PIL import Image
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, IterableDataset
 from accelerate import Accelerator
+
 try:
     from accelerate.utils import DistributedDataParallelKwargs
 except Exception:
     DistributedDataParallelKwargs = None
+
 try:
     from accelerate.utils import FullyShardedDataParallelPlugin
 except Exception:
@@ -22,6 +20,7 @@ except Exception:
         from accelerate.utils import FSDPPlugin as FullyShardedDataParallelPlugin
     except Exception:
         FullyShardedDataParallelPlugin = None
+
 try:
     from torch.distributed.fsdp import CPUOffload
     from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
@@ -29,8 +28,8 @@ except Exception:
     CPUOffload = None
     size_based_auto_wrap_policy = None
 
-import webdataset as wds
 from model import ModelConfig, MultimodalValueModel
+from data_loading import webdataset_loader
 
 
 def parse_args():
@@ -43,7 +42,11 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--samples_per_epoch", type=int, default=10000)
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
-    p.add_argument("--text_prompt_template", type=str, default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.")
+    p.add_argument(
+        "--text_prompt_template",
+        type=str,
+        default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.",
+    )
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=20)
@@ -71,10 +74,8 @@ def parse_args():
     p.add_argument("--ddp_find_unused_parameters", action="store_true", help="Set DDP find_unused_parameters=True")
     p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 
-    # DeepSeek VLM backbone
-    p.add_argument(
-        "--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"]
-    )
+    # VLM backbone
+    p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
     p.add_argument("--vl_model_name", type=str, default="deepseek-community/deepseek-vl-1.3b-base")
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
@@ -165,7 +166,6 @@ def build_model(args, device):
 def _parse_lora_targets(args):
     if args.lora_target_modules:
         return [t.strip() for t in args.lora_target_modules.split(",") if t.strip()]
-    # Default targets for LLaMA-style blocks used by LLaVA
     return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
@@ -177,7 +177,6 @@ def _apply_peft(model, args):
     except Exception as e:
         raise RuntimeError("PEFT requested but 'peft' is not installed. `pip install peft`.") from e
 
-    # Freeze backbone weights; keep custom heads trainable.
     for p in model.backbone.model.parameters():
         p.requires_grad = False
 
@@ -196,385 +195,17 @@ def _apply_peft(model, args):
     return model
 
 
-def _as_numpy(x):
-    if isinstance(x, bytes):
-        import numpy as np
-        try:
-            return np.load(io.BytesIO(x), allow_pickle=True)
-        except Exception:
-            import torch
-            return torch.load(io.BytesIO(x), map_location="cpu")
-    return x
-
-
-def _edge_index_to_adj(edge_index, num_nodes):
-    edge_index = _as_numpy(edge_index)
-    if hasattr(edge_index, "shape") and len(edge_index.shape) == 2 and edge_index.shape[0] == num_nodes and edge_index.shape[1] == num_nodes:
-        return torch.from_numpy(edge_index).float()
-    if hasattr(edge_index, "shape") and edge_index.shape[0] == 2:
-        src = edge_index[0]
-        dst = edge_index[1]
-        mask = (src >= 0) & (dst >= 0)
-        src = src[mask]
-        dst = dst[mask]
-        adj = torch.zeros((num_nodes, num_nodes), dtype=torch.float32)
-        if len(src) > 0:
-            adj[src, dst] = 1.0
-        return adj
-    raise ValueError("edge_index has unexpected shape")
-
-
-def _reduce_value(x, reduce_mode):
-    if reduce_mode == "sum":
-        return x.sum()
-    if reduce_mode == "first":
-        return x.flatten()[0]
-    return x.mean()
-
-
-def _reduce_done(x, reduce_mode):
-    if reduce_mode == "all":
-        return (x > 0).all()
-    if reduce_mode == "sum":
-        return x.sum() > 0
-    if reduce_mode == "first":
-        return x.flatten()[0] > 0
-    if reduce_mode == "mean":
-        return x.float().mean() > 0.5
-    return (x > 0).any()
-
-
 def _save_debug_video(batch, args, accelerator, tag="train"):
     if not accelerator.is_main_process:
         return
     os.makedirs(args.debug_out_dir, exist_ok=True)
     if "video" not in batch:
         return
-    video = batch["video"]
     out_dir = os.path.join(args.debug_out_dir, f"{tag}_sample")
     os.makedirs(out_dir, exist_ok=True)
 
 
-def _reward_from_frame(sample, reduce_mode):
-    arr = _as_numpy(sample["rewards.npy"])
-    if hasattr(arr, "numpy"):
-        arr = arr.numpy()
-    t = torch.tensor(arr, dtype=torch.float32)
-    return _reduce_value(t, reduce_mode)
-
-
-def _done_from_frame(sample, reduce_mode):
-    arr = _as_numpy(sample["dones.npy"])
-    if hasattr(arr, "numpy"):
-        arr = arr.numpy()
-    t = torch.tensor(arr, dtype=torch.float32)
-    return _reduce_done(t, reduce_mode)
-
-
-class SequenceWebDataset(IterableDataset):
-    def __init__(
-        self,
-        shards,
-        clip_len,
-        clip_stride,
-        text_mode,
-        robot_source,
-        reward_reduce,
-        done_reduce,
-        vlm_processor=None,
-        text_prompt_template=None,
-        return_mode="td",
-        n_step=50,
-        gamma=0.99,
-        keep_raw_video=False,
-        include_next=False,
-        vlm_max_text_len=256,
-        vlm_truncation=False,
-        vlm_padding="longest",
-    ):
-        self.shards = shards
-        self.clip_len = clip_len
-        self.clip_stride = clip_stride
-        self.text_mode = text_mode
-        self.robot_source = robot_source
-        self.reward_reduce = reward_reduce
-        self.done_reduce = done_reduce
-        self.vlm_processor = vlm_processor
-        self.text_prompt_template = text_prompt_template
-        self.return_mode = return_mode
-        self.n_step = n_step
-        self.gamma = gamma
-        self.keep_raw_video = keep_raw_video
-        self.include_next = include_next
-        self.vlm_max_text_len = vlm_max_text_len
-        self.vlm_truncation = vlm_truncation
-        self.vlm_padding = vlm_padding
-
-    @staticmethod
-    def _as_bool(x):
-        if torch.is_tensor(x):
-            if x.numel() == 0:
-                return False
-            return bool(x.detach().float().max().item() > 0.0)
-        return bool(x)
-
-    @staticmethod
-    def _terminal_pad_from(frame):
-        padded = dict(frame)
-        reward = frame["reward"]
-        done = frame["done"]
-        if torch.is_tensor(reward):
-            padded["reward"] = reward.new_zeros(())
-        else:
-            padded["reward"] = 0.0
-        if torch.is_tensor(done):
-            padded["done"] = torch.ones_like(done, dtype=done.dtype)
-        else:
-            padded["done"] = True
-        return padded
-
-    def _apply_done_termination(self, clip):
-        """Terminate clip at first done=True and pad the tail with terminal-frame copies."""
-        done_idx = None
-        for idx, frame in enumerate(clip):
-            if self._as_bool(frame["done"]):
-                done_idx = idx
-                break
-        if done_idx is None or done_idx == len(clip) - 1:
-            return clip
-
-        terminal = clip[done_idx]
-        out = list(clip[: done_idx + 1])
-        for _ in range(done_idx + 1, len(clip)):
-            out.append(self._terminal_pad_from(terminal))
-        return out
-
-    def __iter__(self):
-        if wds is None:
-            raise RuntimeError("webdataset is not installed.")
-
-        # Prefer explicit node/worker splitters for multi-GPU setups
-        try:
-            dataset = wds.WebDataset(
-                self.shards,
-                shardshuffle=100,
-                nodesplitter=getattr(wds, "split_by_node", None),
-                workersplitter=getattr(wds, "split_by_worker", None),
-            ).decode("pil")
-        except TypeError:
-            dataset = wds.WebDataset(self.shards, shardshuffle=100).decode("pil")
-            if hasattr(dataset, "split_by_node"):
-                dataset = dataset.split_by_node()
-            if hasattr(dataset, "split_by_worker"):
-                dataset = dataset.split_by_worker()
-
-        current_ep = None
-        buffer = []
-
-        def flush_buffer():
-            min_len = self.clip_len + (1 if self.include_next else 0)
-            if len(buffer) < min_len:
-                return
-            max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
-            start_idxs = list(range(0, max_i + 1, self.clip_stride))
-            if len(start_idxs) > 1:
-                perm = torch.randperm(len(start_idxs)).tolist()
-                start_idxs = [start_idxs[p] for p in perm]
-
-            for i in start_idxs:
-                clip = self._apply_done_termination(buffer[i : i + self.clip_len])
-
-                raw_video = [f["image"] for f in clip]
-                raw_next_video = None
-                if self.include_next:
-                    next_clip = self._apply_done_termination(buffer[i + 1 : i + 1 + self.clip_len])
-                    raw_next_video = [f["image"] for f in next_clip]
-                if self.vlm_processor is not None:
-                    def _proc(frames, text):
-                        if not isinstance(text, str):
-                            text = self.text_prompt_template
-                        tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                        if tokenizer is not None:
-                            vocab = tokenizer.get_vocab()
-                            if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
-                                text = f"<video>\n{text}"
-                            if "<obs>" in vocab and "<obs>" not in text:
-                                if "<video>" in text:
-                                    text = text.replace("<video>\n", "<video><obs>\n", 1)
-                                else:
-                                    text = f"<obs>\n{text}"
-                        try:
-                            max_len = self.vlm_max_text_len if self.vlm_truncation else None
-                            inputs = self.vlm_processor(
-                                text=text,
-                                videos=frames,
-                                return_tensors="pt",
-                                padding=self.vlm_padding,
-                                truncation=self.vlm_truncation,
-                                max_length=max_len,
-                            )
-                        except TypeError:
-                            print('using image processor instead of video processor')
-                            inputs = self.vlm_processor(
-                                images=frames,
-                                return_tensors="pt",
-                            )
-                        packed = {}
-                        for k, v in dict(inputs).items():
-                            if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
-                                v = v.squeeze(0)
-                            packed[k] = v
-                        return packed
-
-                    text = clip[0]["text"]
-                    inputs = _proc(raw_video, text)
-                    next_inputs = None
-                    if self.include_next:
-                        next_inputs = _proc(raw_next_video, text)
-                else:
-                    raise RuntimeError("Dataloader proprocessor not set.")
-
-                robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
-                adj = torch.stack([f["adj"] for f in clip], dim=0)
-                if self.include_next:
-                    next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
-                    next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
-
-                reward = clip[-1]["reward"]
-                done = clip[-1]["done"]
-
-                returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
-
-                out = {
-                    "robot_obs": robot_obs,
-                    "adj": adj,
-                    "reward": reward.view(1),
-                    "returns": returns.view(1),
-                    "done": done.view(1),
-                }
-                out["inputs"] = inputs
-                if self.include_next:
-                    out["next_inputs"] = next_inputs
-                    out["next_robot_obs"] = next_robot_obs
-                    out["next_adj"] = next_adj
-
-                yield out
-
-        for sample in dataset:
-            key = sample.get("__key__", "")
-            if isinstance(key, bytes):
-                key = key.decode("utf-8", errors="ignore")
-
-            if "_" in key:
-                ep_id = key.split("_")[0]
-            else:
-                ep_id = key
-
-            if current_ep is None:
-                current_ep = ep_id
-
-            if ep_id != current_ep:
-                yield from flush_buffer()
-                buffer = []
-                current_ep = ep_id
-
-            image = sample["image.png"]
-            robot_src = _as_numpy(sample[f"{self.robot_source}.npy"])
-            if hasattr(robot_src, "numpy"):
-                robot_src = robot_src.numpy()
-            robot_obs = torch.tensor(robot_src, dtype=torch.float32)
-
-            num_nodes = robot_obs.shape[0]
-            edge_index = _as_numpy(sample["edge_index.npy"])
-            adj = _edge_index_to_adj(edge_index, num_nodes)
-
-            if self.text_mode == "raw":
-                text = self.text_prompt_template
-            else:
-                text = _as_numpy(sample["text_emb.npy"])
-                if hasattr(text, "numpy"):
-                    text = text.numpy()
-                text = torch.tensor(text, dtype=torch.float32)
-
-            reward = _reward_from_frame(sample, self.reward_reduce)
-            done = _done_from_frame(sample, self.done_reduce)
-
-            buffer.append(
-                {
-                    "image": image,
-                    "robot_obs": robot_obs,
-                    "adj": adj,
-                    "text": text,
-                    "reward": reward,
-                    "done": done,
-                }
-            )
-
-        yield from flush_buffer()
-
-
-def webdataset_loader(args, shards, batch_size, num_workers):
-    vlm_processor = None
-    if args.preprocess_in_loader:
-        from transformers import LlavaNextVideoProcessor
-        vlm_processor = LlavaNextVideoProcessor.from_pretrained(args.vl_model_name)
-        tokenizer = getattr(vlm_processor, "tokenizer", None)
-        if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
-            tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
-
-    dataset = SequenceWebDataset(
-        shards=shards,
-        clip_len=args.clip_len,
-        clip_stride=args.clip_stride,
-        text_mode=args.text_mode,
-        robot_source=args.robot_source,
-        reward_reduce=args.reward_reduce,
-        done_reduce=args.done_reduce,
-        vlm_processor=vlm_processor,
-        text_prompt_template=args.text_prompt_template,
-        return_mode=args.return_mode,
-        n_step=args.n_step,
-        gamma=args.gamma,
-        keep_raw_video=False,
-        include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
-        vlm_max_text_len=args.vl_max_text_len,
-        vlm_truncation=(args.vl_backend != "llava_video"),
-        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
-    )
-
-    def _collate(batch):
-        def _stack_inputs(items):
-            out = {}
-            keys = items[0].keys()
-            for k in keys:
-                vals = [d[k] for d in items]
-                if torch.is_tensor(vals[0]):
-                    out[k] = torch.stack(vals, dim=0)
-                else:
-                    out[k] = vals
-            return out
-
-        out = {
-            "inputs": _stack_inputs([b["inputs"] for b in batch]),
-            "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
-            "adj": torch.stack([b["adj"] for b in batch], dim=0),
-            "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
-            "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
-        }
-        if "next_inputs" in batch[0]:
-            out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
-            out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)
-            out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
-        if "returns" in batch[0]:
-            out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
-        return out
-
-    return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate)
-
-
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
-    # scores: [B], rewards: [B]
-    # For each pair with different reward, enforce higher reward -> higher score.
     diff_r = rewards[:, None] - rewards[None, :]
     diff_s = scores[:, None] - scores[None, :]
     sign = diff_r.sign()
@@ -589,10 +220,7 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
 
 
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
-    if train:
-        model.train()
-    else:
-        model.eval()
+    model.train() if train else model.eval()
 
     loss_fn = nn.MSELoss()
     total_loss = 0.0
@@ -600,13 +228,11 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
     for batch in loader:
         step += 1
+
         def _move_inputs(inputs):
             moved = {}
             for k, v in inputs.items():
-                if torch.is_tensor(v):
-                    moved[k] = v.to(accelerator.device)
-                else:
-                    moved[k] = v
+                moved[k] = v.to(accelerator.device) if torch.is_tensor(v) else v
             return moved
 
         inputs = _move_inputs(batch["inputs"])
@@ -619,10 +245,6 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
-        else:
-            next_inputs = None
-            next_robot_obs = None
-            next_adj = None
 
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
@@ -630,29 +252,19 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
-                pred = model(
-                    inputs,
-                    robot_obs,
-                    adj)
+                pred = model(inputs, robot_obs, adj)
                 if args.loss_type == "contrastive":
-                    # Use returns if available, otherwise use per-clip reward.
-                    if args.return_mode == "nstep" and "returns" in batch:
-                        returns = batch["returns"].to(accelerator.device)
-                    else:
-                        returns = reward
+                    returns = batch["returns"].to(accelerator.device) if args.return_mode == "nstep" and "returns" in batch else reward
                     loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
                 else:
                     if args.return_mode == "td":
                         with torch.no_grad():
-                            next_pred = model(
-                                next_inputs,
-                                next_robot_obs,
-                                next_adj,
-                            )
+                            next_pred = model(next_inputs, next_robot_obs, next_adj)
                         target = reward + gamma * (1.0 - done) * next_pred
                     else:
-                        target = batch["return"].to(accelerator.device)
+                        target = batch["returns"].to(accelerator.device)
                     loss = loss_fn(pred, target)
+
                 if train:
                     accelerator.backward(loss)
                     optimizer.step()
@@ -675,10 +287,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
     if args.wandb:
         phase = "train" if train else "val"
         metrics = {f"{phase}/epoch_loss": avg_loss}
-        if train:
-            accelerator.log(metrics, step=global_step + step)
-        else:
-            accelerator.log(metrics, step=global_step)
+        accelerator.log(metrics, step=(global_step + step if train else global_step))
 
     return avg_loss, (global_step + step if train else global_step)
 
@@ -720,9 +329,7 @@ def main():
         fsdp_kwargs = {}
         use_orig_params = args.fsdp_use_orig_params or (args.peft != "none")
         if size_based_auto_wrap_policy is not None:
-            fsdp_kwargs["auto_wrap_policy"] = functools.partial(
-                size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params
-            )
+            fsdp_kwargs["auto_wrap_policy"] = functools.partial(size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params)
         else:
             try:
                 params = inspect.signature(FullyShardedDataParallelPlugin).parameters
@@ -756,6 +363,7 @@ def main():
     if args.wandb:
         accelerator_kwargs["log_with"] = ["wandb"]
     accelerator = Accelerator(**accelerator_kwargs)
+
     if args.wandb:
         tags = [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
         wandb_kwargs = {}
@@ -765,13 +373,11 @@ def main():
             wandb_kwargs["name"] = args.wandb_run_name
         if tags:
             wandb_kwargs["tags"] = tags
-        accelerator.init_trackers(
-            project_name=args.wandb_project,
-            config=vars(args),
-            init_kwargs={"wandb": wandb_kwargs},
-        )
+        accelerator.init_trackers(project_name=args.wandb_project, config=vars(args), init_kwargs={"wandb": wandb_kwargs})
+
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
+
     if args.fsdp:
         if args.mixed_precision == "bf16":
             target_dtype = torch.bfloat16
@@ -780,24 +386,20 @@ def main():
         else:
             target_dtype = torch.float32
         model = model.to(dtype=target_dtype)
-        # Enforce a uniform dtype across all params/buffers for FSDP flattening.
         for p in model.parameters():
             if p.dtype != target_dtype:
                 p.data = p.data.to(dtype=target_dtype)
         for b in model.buffers():
             if torch.is_floating_point(b) and b.dtype != target_dtype:
                 b.data = b.data.to(dtype=target_dtype)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
-    val_loader = None
-    if args.val_shards:
-        val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers)
+    val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers) if args.val_shards else None
 
     if val_loader is not None:
-        model, optimizer, train_loader, val_loader = accelerator.prepare(
-            model, optimizer, train_loader, val_loader
-        )
+        model, optimizer, train_loader, val_loader = accelerator.prepare(model, optimizer, train_loader, val_loader)
     else:
         model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 

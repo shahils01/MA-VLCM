@@ -2,8 +2,8 @@ accelerate launch --num_processes 2 train.py \
   --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
   --batch_size 2 \
   --epochs 500 \
-  --clip_len 5 \
-  --clip_stride 5 \
+  --clip_len 10 \
+  --clip_stride 10 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \
@@ -19,9 +19,12 @@ accelerate launch --num_processes 2 train.py \
   without colliding with one another. They also have to be efficient by taking the shortest parth. How Good or Bad are \
   the team of robots doing to accomplish the given task?" \
   --peft lora \
-  --lora_r 16 \
-  --lora_alpha 32 \
+  --lora_r 4 \
+  --lora_alpha 8 \
   --lora_dropout 0.05 \
+  --lora_target_modules "q_proj,v_proj" \
   --wandb \
   --wandb_project ma-vlcm \
   --wandb_run_name ma-vlcm-ddp
+
+  # --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000002..000080}.tar::/scratch/shahils/data/wds_gotogoal_bad/shard-{000000..000004}.tar" \

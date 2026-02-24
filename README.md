@@ -9,10 +9,11 @@ Backbone used here:
 This is a minimal, clean starting point for video + text + robot state + dynamic graph, with all key sizes configurable.
 
 ## Install
+Conda (recommended on clusters):
 ```
-pip install -r requirements.txt
+bash setup_palmetto_env.sh ma-vlcm
+conda activate ma-vlcm
 ```
-
 For DeepSeek-VL2 (MoE backbone), follow the official DeepSeek-VL2 repo install steps and then use `--vl_backend deepseek_vl2`.
 
 ## WebDataset expected keys
@@ -25,6 +26,9 @@ Each **frame** sample should contain these keys:
 - `dones.npy`
 
 The loader groups consecutive frames by episode id (parsed from `__key__` like `000000_000123`) and builds clips of length `--clip_len`.
+
+## Hugging Face-hosted shards
+If your data is stored on Hugging Face as `shard-*.tar`, use the same WebDataset loader by pointing `--train_shards` to HF `resolve` URLs.
 
 ## Value loss (TD)
 We use TD(0) with reward from `rewards.npy`:
@@ -48,6 +52,25 @@ python train.py \
   --wandb \
   --wandb_project ma-vlcm \
   --wandb_run_name local-debug \
+  --epochs 2
+```
+
+### Run from Hugging Face-hosted WebDataset shards
+```
+python train.py \
+  --train_shards "https://huggingface.co/datasets/your-org/your-dataset/resolve/main/shard-{000000..000099}.tar" \
+  --batch_size 4 \
+  --clip_len 8 \
+  --clip_stride 1 \
+  --robot_source obs \
+  --reward_reduce mean \
+  --done_reduce any \
+  --gamma 0.99 \
+  --text_mode raw \
+  --preprocess_in_loader \
+  --wandb \
+  --wandb_project ma-vlcm \
+  --wandb_run_name hf-debug \
   --epochs 2
 ```
 
