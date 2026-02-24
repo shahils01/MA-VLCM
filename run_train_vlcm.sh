@@ -9,10 +9,10 @@ echo "Date: $(date)"
 # 2. Data Setup
 echo "Checking data..."
 
-DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_scratch"
+DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch"
 
 # OFFROAD Dataset
-OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_high_traversable_smooth_small_map_15x15_slope_45_friction_pt8_3d_num_agents_5_episodes_300"
+OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_2"
 
 # User stated data is already extracted in data_scratch
 if [ ! -d "$DATA_DIR" ]; then
