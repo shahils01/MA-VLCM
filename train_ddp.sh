@@ -2,8 +2,8 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000110}.tar::/s
 
 accelerate launch --num_processes 2 train.py \
   --train_shards $TRAIN_SHARDS \
-  --batch_size 2 \
-  --grad_accum_steps 1 \
+  --batch_size 4 \
+  --grad_accum_steps 4 \
   --mixed_precision bf16 \
   --gradient_checkpointing \
   --disable_vl_cache \
@@ -11,8 +11,8 @@ accelerate launch --num_processes 2 train.py \
   --value_pooling last_token_logits \
   --vl_logits_to_keep 1 \
   --epochs 500 \
-  --clip_len 5 \
-  --clip_stride 5 \
+  --clip_len 30 \
+  --clip_stride 30 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \
@@ -28,8 +28,8 @@ accelerate launch --num_processes 2 train.py \
   without colliding with one another. They also have to be efficient by taking the shortest parth. How Good or Bad are \
   the team of robots doing to accomplish the given task?" \
   --peft lora \
-  --lora_r 4 \
-  --lora_alpha 8 \
+  --lora_r 8 \
+  --lora_alpha 16 \
   --lora_dropout 0.05 \
   --wandb \
   --wandb_project ma-vlcm \
