@@ -9,6 +9,13 @@ Backbone used here:
 This is a minimal, clean starting point for video + text + robot state + dynamic graph, with all key sizes configurable.
 
 ## Install
+Conda (recommended on clusters):
+```
+bash setup_palmetto_env.sh ma-vlcm
+conda activate ma-vlcm
+```
+
+Pip (existing env):
 ```
 pip install -r requirements.txt
 ```
