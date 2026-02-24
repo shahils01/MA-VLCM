@@ -14,7 +14,6 @@ accelerate launch --num_processes 2 train.py \
   --epochs 500 \
   --clip_len 25 \
   --clip_stride 25 \
-  --clip_shuffle_buffer 256 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \

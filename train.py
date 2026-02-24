@@ -51,12 +51,6 @@ def parse_args():
     # Sequence building
     p.add_argument("--clip_len", type=int, default=20)
     p.add_argument("--clip_stride", type=int, default=1)
-    p.add_argument(
-        "--clip_shuffle_buffer",
-        type=int,
-        default=512,
-        help="Number of built clips to keep in a global shuffle buffer before yielding (higher => stronger cross-episode mixing).",
-    )
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
     p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
