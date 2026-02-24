@@ -429,7 +429,8 @@ def main():
 
     ddp_kwargs = None
     if not args.fsdp and DistributedDataParallelKwargs is not None:
-        find_unused = args.ddp_find_unused_parameters or (args.peft != "none") or args.freeze_vl
+        # Keep this explicit: default False for speed, enable only when needed.
+        find_unused = args.ddp_find_unused_parameters
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
     accelerator_kwargs = dict(
