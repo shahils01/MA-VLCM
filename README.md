@@ -26,23 +26,8 @@ Each **frame** sample should contain these keys:
 
 The loader groups consecutive frames by episode id (parsed from `__key__` like `000000_000123`) and builds clips of length `--clip_len`.
 
-## Hugging Face dataset support
-You can now train directly from a Hugging Face dataset with:
-- `--data_backend huggingface`
-- `--hf_dataset <repo_or_local_path>`
-- `--hf_train_split <split>` (default: `train`)
-- `--hf_val_split <split>` (optional)
-- `--hf_streaming` (recommended for large datasets)
-
-Expected per-frame columns are the same semantic fields as WebDataset. The loader accepts either naming style:
-- `image` or `image.png`
-- `obs`/`state` or `obs.npy`/`state.npy`
-- `edge_index` or `edge_index.npy`
-- `rewards` or `rewards.npy`
-- `dones` or `dones.npy`
-- `text_emb` or `text_emb.npy` (when `--text_mode emb`)
-
-Episode grouping is inferred from `__key__` (or `key`/`id`) when present. As fallback, it uses `episode_id`.
+## Hugging Face-hosted shards
+If your data is stored on Hugging Face as `shard-*.tar`, use the same WebDataset loader by pointing `--train_shards` to HF `resolve` URLs.
 
 ## Value loss (TD)
 We use TD(0) with reward from `rewards.npy`:
@@ -53,7 +38,6 @@ V_loss = MSE(V(s_t), r_t + gamma * (1 - done_t) * V(s_{t+1}))
 ## Run
 ```
 python train.py \
-  --data_backend webdataset \
   --train_shards "/path/to/train/{00000..00099}.tar" \
   --batch_size 4 \
   --clip_len 8 \
@@ -70,14 +54,10 @@ python train.py \
   --epochs 2
 ```
 
-### Run from Hugging Face dataset
+### Run from Hugging Face-hosted WebDataset shards
 ```
 python train.py \
-  --data_backend huggingface \
-  --hf_dataset "your-org/your-dataset" \
-  --hf_train_split train \
-  --hf_val_split validation \
-  --hf_streaming \
+  --train_shards "https://huggingface.co/datasets/your-org/your-dataset/resolve/main/shard-{000000..000099}.tar" \
   --batch_size 4 \
   --clip_len 8 \
   --clip_stride 1 \
