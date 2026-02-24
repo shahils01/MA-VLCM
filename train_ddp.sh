@@ -11,8 +11,9 @@ accelerate launch --num_processes 2 train.py \
   --value_pooling last_token_logits \
   --vl_logits_to_keep 1 \
   --epochs 500 \
-  --clip_len 30 \
-  --clip_stride 30 \
+  --clip_len 25 \
+  --clip_stride 25 \
+  --clip_shuffle_buffer 1024 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \
