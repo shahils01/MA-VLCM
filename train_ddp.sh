@@ -1,4 +1,5 @@
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_45/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_225/shard-{000000..000110}.tar"
+VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_next_video_7b}"  # or: llava_onevision_0p5b
 
 accelerate launch --num_processes 2 train.py \
   --train_shards $TRAIN_SHARDS \
@@ -22,7 +23,7 @@ accelerate launch --num_processes 2 train.py \
   --return_mode nstep \
   --n_step 5 \
   --vl_backend llava_video \
-  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-hf \
+  --vl_model_preset $VL_MODEL_PRESET \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\
   with heading denoted by an arrow) is: <video>, and the robot team observations over ten episodes is <obs>.\
   The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal \

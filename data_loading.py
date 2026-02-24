@@ -334,9 +334,9 @@ def _collate_sequence_batch(batch):
 def webdataset_loader(args, shards, batch_size, num_workers):
     vlm_processor = None
     if args.preprocess_in_loader:
-        from transformers import LlavaNextVideoProcessor
+        from transformers import AutoProcessor
 
-        vlm_processor = LlavaNextVideoProcessor.from_pretrained(args.vl_model_name)
+        vlm_processor = AutoProcessor.from_pretrained(args.vl_model_name)
         tokenizer = getattr(vlm_processor, "tokenizer", None)
         if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
             tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})

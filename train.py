@@ -83,6 +83,13 @@ def parse_args():
     # VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
     p.add_argument("--vl_model_name", type=str, default="deepseek-community/deepseek-vl-1.3b-base")
+    p.add_argument(
+        "--vl_model_preset",
+        type=str,
+        default="custom",
+        choices=["custom", "llava_next_video_7b", "llava_onevision_0p5b"],
+        help="Convenience preset for known LLaVA video-capable checkpoints.",
+    )
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
     p.add_argument("--freeze_vl", action="store_true")
@@ -199,6 +206,15 @@ def _configure_memory_optimizations(model, args):
                 model.backbone.model.enable_input_require_grads()
             except Exception:
                 pass
+
+
+def _resolve_vl_model_preset(args):
+    if args.vl_model_preset == "llava_next_video_7b":
+        args.vl_backend = "llava_video"
+        args.vl_model_name = "llava-hf/LLaVA-NeXT-Video-7B-hf"
+    elif args.vl_model_preset == "llava_onevision_0p5b":
+        args.vl_backend = "llava_video"
+        args.vl_model_name = "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
 
 
 def _parse_lora_targets(args):
@@ -355,6 +371,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
 def main():
     args = parse_args()
+    _resolve_vl_model_preset(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
     if args.preprocess_in_loader:
