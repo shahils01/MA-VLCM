@@ -79,6 +79,7 @@ class LLaVAVideoBackbone(nn.Module):
 
         try:
             from transformers import AutoConfig, AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+            from transformers.utils import logging as hf_logging
             try:
                 from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
             except Exception:
@@ -107,6 +108,7 @@ class LLaVAVideoBackbone(nn.Module):
         model_kwargs = {"torch_dtype": dtype}
         if cfg.quantization_config is not None:
             model_kwargs["quantization_config"] = cfg.quantization_config
+        load_info = None
         if model_type == "llava_next_video":
             if LlavaNextVideoForConditionalGeneration is None:
                 raise ImportError("This transformers build does not provide LlavaNextVideoForConditionalGeneration.")
@@ -116,15 +118,34 @@ class LLaVAVideoBackbone(nn.Module):
         elif model_type == "llava_onevision":
             if LlavaOnevisionForConditionalGeneration is None:
                 raise ImportError("This transformers build does not provide LlavaOnevisionForConditionalGeneration.")
-            self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
-                cfg.vl_model_name, **model_kwargs
-            )
+            # OneVision checkpoints can rely on tied LM head weights. Handle that case explicitly.
+            old_verbosity = hf_logging.get_verbosity()
+            try:
+                hf_logging.set_verbosity_error()
+                self.model, load_info = LlavaOnevisionForConditionalGeneration.from_pretrained(
+                    cfg.vl_model_name,
+                    output_loading_info=True,
+                    **model_kwargs,
+                )
+            finally:
+                hf_logging.set_verbosity(old_verbosity)
         elif AutoModelForVision2Seq is not None:
             self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, **model_kwargs)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(cfg.vl_model_name, **model_kwargs)
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
             self.model.resize_token_embeddings(len(self.tokenizer))
+        if hasattr(self.model, "tie_weights"):
+            try:
+                self.model.tie_weights()
+            except Exception:
+                pass
+        if load_info is not None:
+            missing = set(load_info.get("missing_keys", []))
+            if missing and missing != {"lm_head.weight"}:
+                raise RuntimeError(
+                    f"Unexpected missing checkpoint keys for {cfg.vl_model_name}: {sorted(missing)}"
+                )
 
         self.model.to(device)
         if cfg.freeze_vl:

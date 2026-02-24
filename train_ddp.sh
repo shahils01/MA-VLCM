@@ -5,7 +5,7 @@ accelerate launch --num_processes 2 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 4 \
   --num_workers 2 \
-  --grad_accum_steps 4 \
+  --grad_accum_steps 1 \
   --mixed_precision bf16 \
   --disable_vl_cache \
   --allow_tf32 \
