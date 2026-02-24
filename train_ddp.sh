@@ -1,5 +1,5 @@
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_45/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_225/shard-{000000..000110}.tar"
-VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_next_video_7b}"  # or: llava_onevision_0p5b
+VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
 accelerate launch --num_processes 2 train.py \
   --train_shards $TRAIN_SHARDS \
@@ -7,7 +7,6 @@ accelerate launch --num_processes 2 train.py \
   --num_workers 2 \
   --grad_accum_steps 4 \
   --mixed_precision bf16 \
-  --gradient_checkpointing \
   --disable_vl_cache \
   --allow_tf32 \
   --value_pooling last_token_logits \
@@ -36,6 +35,7 @@ accelerate launch --num_processes 2 train.py \
   --wandb \
   --wandb_project ma-vlcm \
   --wandb_run_name ma-vlcm-ddp \
+  # --gradient_checkpointing \
   # --lora_target_modules "q_proj,v_proj" \
 
   # --debug_decode_text \
