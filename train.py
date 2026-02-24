@@ -57,6 +57,9 @@ def parse_args():
     p.add_argument("--preprocess_in_loader", default=True, action="store_true", help="Use VLM image processor in dataloader")
     p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
+    p.add_argument("--debug_decode_text", action="store_true", help="Decode VLM token predictions for debugging")
+    p.add_argument("--debug_decode_every", type=int, default=200, help="Decode/print debug text every N steps")
+    p.add_argument("--debug_decode_max_tokens", type=int, default=32, help="Max decoded tokens for debug text")
 
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
@@ -252,7 +255,25 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
-                pred = model(inputs, robot_obs, adj)
+                should_decode = (
+                    args.debug_decode_text
+                    and accelerator.is_main_process
+                    and (args.debug_decode_every > 0)
+                    and (step % args.debug_decode_every == 0)
+                )
+                model_out = model(
+                    inputs,
+                    robot_obs,
+                    adj,
+                    return_debug=should_decode,
+                    debug_max_tokens=args.debug_decode_max_tokens,
+                )
+                if isinstance(model_out, dict):
+                    pred = model_out["value"]
+                    debug_text = model_out.get("debug_text")
+                else:
+                    pred = model_out
+                    debug_text = None
                 if args.loss_type == "contrastive":
                     returns = batch["returns"].to(accelerator.device) if args.return_mode == "nstep" and "returns" in batch else reward
                     loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
@@ -269,6 +290,11 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     accelerator.backward(loss)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+
+        if debug_text:
+            text0 = debug_text[0].replace("\n", " ").strip()
+            phase = "train" if train else "val"
+            accelerator.print(f"{phase} step={step} debug_decode[0]: {text0}")
 
         total_loss += loss.item()
         if log_every > 0 and step % log_every == 0:

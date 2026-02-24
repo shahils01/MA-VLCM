@@ -262,6 +262,32 @@ class MultimodalValueModel(nn.Module):
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
         self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
 
+    def _decode_debug_text(self, logits: torch.Tensor, attention_mask: Optional[torch.Tensor], max_tokens: int):
+        # Decode greedy token predictions from the LM head for quick introspection.
+        pred_ids = logits.argmax(dim=-1)
+        if max_tokens is not None and max_tokens > 0 and pred_ids.size(1) > max_tokens:
+            pred_ids = pred_ids[:, -max_tokens:]
+
+        if attention_mask is not None and attention_mask.shape[:2] == logits.shape[:2]:
+            trimmed_ids = []
+            for i in range(pred_ids.size(0)):
+                valid_len = int(attention_mask[i].sum().item())
+                if valid_len <= 0:
+                    sample_ids = pred_ids[i, -1:]
+                else:
+                    start = max(0, valid_len - max_tokens)
+                    sample_ids = logits[i, start:valid_len, :].argmax(dim=-1)
+                trimmed_ids.append(sample_ids)
+            text = [
+                self.backbone.tokenizer.decode(ids.detach().cpu().tolist(), skip_special_tokens=True)
+                for ids in trimmed_ids
+            ]
+            return text
+
+        return self.backbone.tokenizer.batch_decode(
+            pred_ids.detach().cpu(), skip_special_tokens=True
+        )
+
     def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
         # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
         bsz, num_nodes, _ = adj.shape
@@ -288,6 +314,8 @@ class MultimodalValueModel(nn.Module):
         text_ids=None,
         text_mask=None,
         image_sizes=None,
+        return_debug: bool = False,
+        debug_max_tokens: int = 32,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
@@ -355,6 +383,16 @@ class MultimodalValueModel(nn.Module):
         output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
 
         final_hidden = output.hidden_states[-1]
+        debug_text = None
+        if return_debug:
+            logits = getattr(output, "logits", None)
+            if logits is None:
+                lm_head = self.backbone.model.get_output_embeddings()
+                if lm_head is None:
+                    raise RuntimeError("Unable to decode debug text: no LM logits or output embeddings available.")
+                logits = lm_head(final_hidden)
+            debug_text = self._decode_debug_text(logits, inputs.get("attention_mask"), max_tokens=debug_max_tokens)
+
         attn = inputs.get("attention_mask")
         if attn is not None:
             mask = attn.unsqueeze(-1)
@@ -366,5 +404,6 @@ class MultimodalValueModel(nn.Module):
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
-        # print('value shape = ', value.shape)
+        if return_debug:
+            return {"value": value, "debug_text": debug_text}
         return value
