@@ -14,12 +14,6 @@ Conda (recommended on clusters):
 bash setup_palmetto_env.sh ma-vlcm
 conda activate ma-vlcm
 ```
-
-Pip (existing env):
-```
-pip install -r requirements.txt
-```
-
 For DeepSeek-VL2 (MoE backbone), follow the official DeepSeek-VL2 repo install steps and then use `--vl_backend deepseek_vl2`.
 
 ## WebDataset expected keys
