@@ -272,12 +272,45 @@ class MultimodalValueModel(nn.Module):
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
         if cfg.value_pooling == "last_token_logits":
-            vl_feat_dim = int(getattr(self.backbone.model.config, "vocab_size", 0))
+            vl_feat_dim = self._infer_vocab_size()
             if vl_feat_dim <= 0:
-                raise RuntimeError("Invalid vocab size on VLM backbone for logits-based value pooling.")
+                raise RuntimeError(
+                    "Unable to infer vocab size for logits-based value pooling. "
+                    "Use --value_pooling hidden_mean or check model output embeddings."
+                )
         else:
             vl_feat_dim = lm_hidden
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
+
+    def _infer_vocab_size(self) -> int:
+        # Prefer LM head/output embeddings shape, then fall back to config fields.
+        get_out = getattr(self.backbone.model, "get_output_embeddings", None)
+        if callable(get_out):
+            try:
+                out_emb = get_out()
+            except Exception:
+                out_emb = None
+            if out_emb is not None and hasattr(out_emb, "weight") and out_emb.weight is not None:
+                return int(out_emb.weight.shape[0])
+
+        cfg = getattr(self.backbone.model, "config", None)
+        candidates = []
+        if cfg is not None:
+            candidates.append(getattr(cfg, "vocab_size", 0))
+            text_cfg = getattr(cfg, "text_config", None)
+            if text_cfg is not None:
+                candidates.append(getattr(text_cfg, "vocab_size", 0))
+            lm_cfg = getattr(getattr(self.backbone.model, "language_model", None), "config", None)
+            if lm_cfg is not None:
+                candidates.append(getattr(lm_cfg, "vocab_size", 0))
+        for v in candidates:
+            try:
+                iv = int(v)
+            except Exception:
+                iv = 0
+            if iv > 0:
+                return iv
+        return 0
 
     def _decode_debug_text(self, logits: torch.Tensor, attention_mask: Optional[torch.Tensor], max_tokens: int):
         # Decode greedy token predictions from the LM head for quick introspection.
