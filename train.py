@@ -105,9 +105,19 @@ def parse_args():
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
     p.add_argument(
-        "--dataset_type", type=str, default="rware", choices=["default", "rware"]
+        "--dataset_type", type=str, default="rware", choices=["default", "rware", "offroad"]
     )
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
+    p.add_argument(
+        "--offroad_shards",
+        type=str,
+        default="",
+        help="WebDataset shard directory for OFFROAD data (enables multi-dataset training)",
+    )
+    p.add_argument("--offroad_num_robots", type=int, default=5,
+                   help="Number of agents in the OFFROAD environment")
+    p.add_argument("--val_split", type=float, default=0.2,
+                   help="Fraction of shards to hold out for validation")
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=10)
@@ -591,6 +601,55 @@ def _parse_rware_state(state_json, num_robots=None, robot_obs_dim=8):
         # Action
         a_str = ag.get("action", "NOOP")
         obs[i, 5] = float(action_map.get(a_str, 0))
+
+    return obs
+
+
+def _parse_offroad_state(state_json, num_robots=None, robot_obs_dim=8):
+    """Parse OFFROAD state.json into a robot observation tensor.
+
+    Encoding per agent: [x, y, cos(yaw), sin(yaw), v_cmd, w_cmd, dist_to_goal, traversability]
+
+    Args:
+        state_json: dict from state.json
+        num_robots: number of robots to pad/truncate to
+        robot_obs_dim: observation dimension per robot (default 8)
+
+    Returns:
+        torch.Tensor [num_robots, robot_obs_dim]
+    """
+    agents = state_json.get("agents", [])
+    agents = sorted(agents, key=lambda x: x.get("id", 0))
+
+    if num_robots is None:
+        num_robots = len(agents)
+
+    obs = torch.zeros((num_robots, robot_obs_dim), dtype=torch.float32)
+
+    for i, ag in enumerate(agents):
+        if i >= num_robots:
+            break
+
+        # Position
+        pos = ag.get("pos", [0.0, 0.0])
+        obs[i, 0] = float(pos[0])
+        obs[i, 1] = float(pos[1])
+
+        # Heading (yaw) as cos/sin for continuity
+        yaw = ag.get("yaw", 0.0)
+        obs[i, 2] = float(np.cos(yaw))
+        obs[i, 3] = float(np.sin(yaw))
+
+        # Velocity commands [v_cmd, w_cmd]
+        vel = ag.get("vel", [0.0, 0.0])
+        obs[i, 4] = float(vel[0])  # v_cmd (linear)
+        obs[i, 5] = float(vel[1])  # w_cmd (angular)
+
+        # Distance to goal
+        obs[i, 6] = float(ag.get("dist_to_goal", 0.0))
+
+        # Traversability at current position
+        obs[i, 7] = float(ag.get("traversability", 0.0))
 
     return obs
 
@@ -1102,6 +1161,79 @@ class SequenceWebDataset(IterableDataset):
                 else:
                     text = self.text_prompt_template + " " + " ".join(obs_lines)
 
+            elif self.dataset_type == "offroad":
+                # ---------------- OFFROAD Handling ----------------
+                try:
+                    state_json = json.loads(sample["state.json"])
+                except Exception as e:
+                    print(f"Error parsing state.json: {e}")
+                    continue
+
+                # Parse OFFROAD observation tensor [max_num_robots, 8]
+                robot_obs = _parse_offroad_state(
+                    state_json,
+                    num_robots=self.num_robots,
+                    robot_obs_dim=self.robot_obs_dim,
+                )
+
+                # Adj Matrix directly from saved numpy array
+                adj = _as_numpy(sample["adj.npy"])
+                if hasattr(adj, "numpy"):
+                    adj = adj.numpy()
+                adj = torch.tensor(adj, dtype=torch.float32)
+
+                # Reward: mean of per-agent rewards
+                agents = state_json.get("agents", [])
+                if len(agents) > 0:
+                    agent_rewards = [ag.get("reward", 0.0) for ag in agents]
+                    reward = float(np.mean(agent_rewards))
+                else:
+                    reward = 0.0
+
+                # Done: True if ANY agent reached goal (or use dones.npy)
+                # Currently using individual reached signals
+                done = any([ag.get("reached", False) for ag in agents])
+
+                # Construct text prompt specific to OFFROAD
+                obs_lines = []
+                for i, ag in enumerate(agents[: self.num_robots]):
+                    ag_id = ag.get("id", i)
+                    color = ag.get("color", "unknown")
+                    pos = ag.get("pos", [0.0, 0.0])
+                    yaw = ag.get("yaw", 0.0)
+                    vel = ag.get("vel", [0.0, 0.0])
+                    v = np.linalg.norm(vel)
+                    dist_to_goal = ag.get("dist_to_goal", 0.0)
+                    traversability = ag.get("traversability", 0.0)
+                    reached = "yes" if ag.get("reached", False) else "no"
+                    collision = "yes" if ag.get("collision", False) else "no"
+
+                    obs_lines.append(
+                        f"Agent {ag_id} ({color}): position ({pos[0]:.2f}, {pos[1]:.2f}), "
+                        f"heading {yaw:.2f} rad, speed {v:.2f} m/s, dist_to_goal {dist_to_goal:.2f}m, "
+                        f"traversability {traversability:.2f}, reached: {reached}, collision: {collision}."
+                    )
+
+                n_ag = len(agents)
+                step_idx = state_json.get("episode_meta", {}).get("step", episode_frame_count)
+
+                if self.text_prompt_template is None:
+                    header = (
+                        "You are a vision-language critic model that evaluates"
+                        " multi-agent trajectories by estimating the expected"
+                        " cumulative return."
+                        f" This is an offroad navigation environment with {n_ag}"
+                        " agents traversing rough terrain."
+                        " Each agent must reach its color-matched goal while"
+                        " minimizing traversability cost and avoiding inter-agent collisions."
+                        " Given the video frames and agent states below, assess"
+                        " the quality of the current policy. "
+                        f"Timestep: {step_idx}. "
+                    )
+                    text = header + " ".join(obs_lines)
+                else:
+                    text = self.text_prompt_template + " " + " ".join(obs_lines)
+
             else:
                 # Default MA-VLCM behavior
                 robot_src = _as_numpy(sample[f"{self.robot_source}.npy"])
@@ -1160,7 +1292,7 @@ class SequenceWebDataset(IterableDataset):
                 buffer.popleft()
 
 
-def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
+def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False, dataset_type=None):
     # Support glob patterns if passed as shards string
     if isinstance(shards, str) and "*" in shards:
         import glob
@@ -1171,6 +1303,9 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False):
             print(f"Expanded shard pattern specific to {len(shards)} files.")
         else:
             print(f"Warning: No files matched glob pattern {shards}")
+
+    if dataset_type is None:
+        dataset_type = args.dataset_type
 
     vlm_processor = None
     # vlm_processor is now lazily loaded in the dataset worker to avoid pickling issues
@@ -1417,6 +1552,25 @@ def run_epoch(
     return total_loss / max(step, 1)
 
 
+def split_shards(shards_pattern, val_split=0.2, seed=42):
+    import glob, random
+    if not isinstance(shards_pattern, str) or "*" not in shards_pattern:
+        return shards_pattern, None
+
+    files = sorted(glob.glob(shards_pattern))
+    if not files:
+        return shards_pattern, None
+        
+    random.Random(seed).shuffle(files)
+    split_idx = int(len(files) * (1.0 - val_split))
+    train_shards = files[:split_idx]
+    val_shards = files[split_idx:]
+    
+    if len(val_shards) == 0:
+        val_shards = None
+        
+    return train_shards, val_shards
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -1609,14 +1763,68 @@ def main():
 
     scheduler = LambdaLR(optimizer, lr_lambda)
 
-    train_loader = webdataset_loader(
-        args, args.train_shards, args.batch_size, args.num_workers, shuffle=True
-    )
-    val_loader = None
-    if args.val_shards:
-        val_loader = webdataset_loader(
-            args, args.val_shards, args.batch_size, args.num_workers, shuffle=False
+    # --- Shard Splitting & Loader Creation ---
+    train_main_shards, val_main_shards = split_shards(args.train_shards, args.val_split)
+
+    if args.offroad_shards:
+        accelerator.print(f"Multi-dataset training enabled. Interleaving {args.dataset_type} and offroad datasets.")
+        train_offroad_shards, val_offroad_shards = split_shards(args.offroad_shards, args.val_split)
+
+        class InterleavedDataLoader:
+            def __init__(self, loader1, loader2):
+                self.loader1 = loader1
+                self.loader2 = loader2
+            
+            def __iter__(self):
+                iter1 = iter(self.loader1)
+                iter2 = iter(self.loader2)
+                while True:
+                    try:
+                        yield next(iter1)
+                    except StopIteration:
+                        iter1 = iter(self.loader1)
+                        yield next(iter1)
+                        
+                    try:
+                        yield next(iter2)
+                    except StopIteration:
+                        iter2 = iter(self.loader2)
+                        yield next(iter2)
+
+            def __len__(self):
+                # Approximation of dataset length for progress bar and steps
+                return 1000000 
+
+        # Train Loader
+        main_train_loader = webdataset_loader(
+            args, train_main_shards, args.batch_size, args.num_workers, shuffle=True, dataset_type=args.dataset_type
         )
+        offroad_train_loader = webdataset_loader(
+            args, train_offroad_shards, args.batch_size, args.num_workers, shuffle=True, dataset_type="offroad"
+        )
+        train_loader = InterleavedDataLoader(main_train_loader, offroad_train_loader)
+
+        # Val Loader
+        val_loader = None
+        if val_main_shards and val_offroad_shards:
+            main_val_loader = webdataset_loader(
+                args, val_main_shards, args.batch_size, args.num_workers, shuffle=False, dataset_type=args.dataset_type
+            )
+            offroad_val_loader = webdataset_loader(
+                args, val_offroad_shards, args.batch_size, args.num_workers, shuffle=False, dataset_type="offroad"
+            )
+            val_loader = InterleavedDataLoader(main_val_loader, offroad_val_loader)
+
+    else:
+        # Standard single dataset loading
+        train_loader = webdataset_loader(
+            args, train_main_shards, args.batch_size, args.num_workers, shuffle=True
+        )
+        val_loader = None
+        if val_main_shards:
+            val_loader = webdataset_loader(
+                args, val_main_shards, args.batch_size, args.num_workers, shuffle=False
+            )
 
     if val_loader is not None:
         model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(

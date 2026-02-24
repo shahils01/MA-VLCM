@@ -24,11 +24,17 @@ This script handles:
 ### 2. Observation Structure
 The model processes a sequence of observations (video clip + state history).
 - **Video**: 8 frames per clip (`--clip_len 8`).
-- **Robot State**: A 6-dimensional vector for each robot, derived from `state.json`:
+- **RWARE State**: A 6-dimensional vector for each robot, derived from `state.json`:
   - `[0, 1]`: Position (x, y)
   - `[2, 3]`: Direction vector (dx, dy) - e.g., (0, 1) for North
   - `[4]`: Carrying status (1.0 if carrying a shelf, 0.0 otherwise)
   - `[5]`: Last Action (mapped to integer: NOOP=0, FORWARD=1, LEFT=2, RIGHT=3, TOGGLE_LOAD=4)
+- **OFFROAD State**: An 8-dimensional vector per agent, representing continuous navigation commands:
+  - `[0, 1]`: Position (x, y)
+  - `[2, 3]`: Heading (cos(yaw), sin(yaw))
+  - `[4, 5]`: Velocity commands (v_cmd, w_cmd)
+  - `[6]`: Distance to Goal
+  - `[7]`: Traversability of current position
 - **Graph**: Fully connected graph between agents (unless `adj.npy` is provided), allowing the GNN to model agent interactions.
 
 ### 3. Reward Structure
@@ -42,19 +48,22 @@ The reward function is a combination of the environment reward and a custom safe
 
 ### 4. Language Prompt
 A dynamic text prompt is generated for every step to ground the VLM:
-**Template:**
+
+**RWARE Template:**
 > "Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). Step: {step}. Requested boxes: {requests}. Agent {id}: at {pos}, facing {dir}, action {action}, carrying {yes/no}. ..."
 
-**Example:**
-> Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). Step: 105. Requested boxes: ['b1', 'b2']. Agent 1: at [10, 5], facing NORTH, action FORWARD, carrying no. Agent 2: at [12, 5], facing SOUTH, action LEFT, carrying yes.
+**OFFROAD Template:**
+> "You are a vision-language critic model that evaluates multi-agent trajectories by estimating the expected cumulative return. This is an offroad navigation environment with {n_ag} agents traversing rough terrain. Each agent must reach its color-matched goal while minimizing traversability cost and avoiding inter-agent collisions. Given the video frames and agent states below, assess the quality of the current policy. Timestep: {step}. Agent {id} ({color}): position ({x}, {y}), heading {yaw} rad, speed {v} m/s, dist_to_goal {d}m, traversability {t}, reached: {yes/no}, collision: {yes/no}."
 
 ## Training Script Arguments
 The `run_train_vlcm.sh` script passes the following key arguments to `train.py`:
-- `--dataset_type rware`: Enables the specific RWARE state parsing logic.
+- `--train_shards`: Primary dataset path (typically RWARE).
+- `--offroad_shards`: Optional secondary dataset path to enable Multi-Dataset interleaving training.
+- `--dataset_type rware`: Enables the specific RWARE state parsing logic (will round-robin with "offroad" if multi-dataset enabled).
 - `--rware_config`: The specific map configuration (e.g., `tiny-2ag-hard`).
 - `--vl_backend llava_video`: Selects the LLaVA-NeXT-Video backend.
-- `--num_robots`: Automatically detected from the config name.
-- `--robot_obs_dim 6`: Matches the 6 constructed features.
+- `--num_robots`: Automatically detected, or artificially padded to max across datasets (e.g. 5 if mixing RWARE and OFFROAD).
+- `--robot_obs_dim 8`: Updated to 8 to accommodate the larger feature set of OFFROAD when training jointly.
 - `--batch_size 4`, `--epochs 2`, `--num_workers 1`.
 
 ## Installation
