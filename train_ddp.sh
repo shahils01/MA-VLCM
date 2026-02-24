@@ -3,6 +3,7 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000110}.tar::/s
 accelerate launch --num_processes 2 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 4 \
+  --num_workers 2 \
   --grad_accum_steps 4 \
   --mixed_precision bf16 \
   --gradient_checkpointing \
@@ -13,7 +14,7 @@ accelerate launch --num_processes 2 train.py \
   --epochs 500 \
   --clip_len 25 \
   --clip_stride 25 \
-  --clip_shuffle_buffer 1024 \
+  --clip_shuffle_buffer 256 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \
