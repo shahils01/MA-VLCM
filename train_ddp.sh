@@ -1,9 +1,11 @@
+TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_45/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_pt_225/shard-{000000..000110}.tar"
+
 accelerate launch --num_processes 2 train.py \
-  --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
+  --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
   --epochs 500 \
-  --clip_len 10 \
-  --clip_stride 10 \
+  --clip_len 5 \
+  --clip_stride 5 \
   --robot_source obs \
   --reward_reduce mean \
   --done_reduce any \
@@ -22,9 +24,13 @@ accelerate launch --num_processes 2 train.py \
   --lora_r 4 \
   --lora_alpha 8 \
   --lora_dropout 0.05 \
-  --lora_target_modules "q_proj,v_proj" \
   --wandb \
   --wandb_project ma-vlcm \
-  --wandb_run_name ma-vlcm-ddp
+  --wandb_run_name ma-vlcm-ddp \
+  # --lora_target_modules "q_proj,v_proj" \
+
+  # --debug_decode_text \
+  # --debug_decode_every 50 \
+  # --debug_decode_max_tokens 256 \
 
   # --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000002..000080}.tar::/scratch/shahils/data/wds_gotogoal_bad/shard-{000000..000004}.tar" \
