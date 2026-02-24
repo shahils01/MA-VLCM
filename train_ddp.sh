@@ -1,7 +1,5 @@
-TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000077}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000072}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000063}.tar::/scratch/shahils/data/gotogoal_pt_45/shard-{000000..000068}.tar::/scratch/shahils/data/gotogoal_pt_225/shard-{000000..000048}.tar"
-
 accelerate launch --num_processes 2 train.py \
-  --train_shards "$TRAIN_SHARDS" \
+  --train_shards "/scratch/shahils/data/wds_gotogoal/shard-{000000..000080}.tar" \
   --batch_size 2 \
   --epochs 500 \
   --clip_len 10 \
