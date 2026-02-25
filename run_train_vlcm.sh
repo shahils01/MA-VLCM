@@ -55,7 +55,7 @@ fi
 
 # Export variables for the host environment (Apptainer uses these)
 
-export HF_TOKEN=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
+export HF_TOKEN=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
 
 # Performance tuning for multi-GPU H100
 export NCCL_ALGO=Ring

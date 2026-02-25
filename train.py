@@ -1516,7 +1516,7 @@ def run_epoch(
                     loss = loss_fn(pred, target)
                 if train:
                     accelerator.backward(loss)
-                    if args.max_grad_norm > 0:
+                    if args.max_grad_norm > 0 and accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(
                             model.parameters(), max_norm=args.max_grad_norm
                         )
