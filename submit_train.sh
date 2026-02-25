@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
 #SBATCH --time=72:00:00
-#SBATCH --gpus=h100:4
+#SBATCH --gpus=a100:4
 
 # Ensure logs directory exists
 mkdir -p logs

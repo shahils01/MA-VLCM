@@ -90,11 +90,9 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
-  --epochs 50 \
-  #--vl_backend llava_video \
-  #--vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
-  --vl_backend llava_onevision \
-  --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  --epochs 10 \
+  --vl_backend llava_video \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir "$SAVE_DIR" \
   --num_workers 16 \
   --mixed_precision bf16 \
