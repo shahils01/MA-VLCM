@@ -1793,29 +1793,36 @@ def main():
         train_offroad_shards, val_offroad_shards = split_shards(args.offroad_shards, args.val_split)
 
         class InterleavedDataLoader:
-            def __init__(self, loader1, loader2):
+            def __init__(self, loader1, loader2, main_shards, offroad_shards):
                 self.loader1 = loader1
                 self.loader2 = loader2
+                self.main_shards_count = len(main_shards) if main_shards else 0
+                self.offroad_shards_count = len(offroad_shards) if offroad_shards else 0
             
             def __iter__(self):
                 iter1 = iter(self.loader1)
                 iter2 = iter(self.loader2)
-                while True:
-                    try:
-                        yield next(iter1)
-                    except StopIteration:
-                        iter1 = iter(self.loader1)
-                        yield next(iter1)
-                        
-                    try:
-                        yield next(iter2)
-                    except StopIteration:
-                        iter2 = iter(self.loader2)
-                        yield next(iter2)
+                exhausted1 = False
+                exhausted2 = False
+                while not (exhausted1 and exhausted2):
+                    if not exhausted1:
+                        try:
+                            yield next(iter1)
+                        except StopIteration:
+                            exhausted1 = True
+                            
+                    if not exhausted2:
+                        try:
+                            yield next(iter2)
+                        except StopIteration:
+                            exhausted2 = True
 
             def __len__(self):
                 # Approximation of dataset length for progress bar and steps
-                return 1000000 
+                # Assumes ~50 clips per shard (as stated in defaults)
+                total_samples = (self.main_shards_count + self.offroad_shards_count) * 50
+                # Scale correctly down based on batch size & world size
+                return max(1, total_samples // max(1, args.batch_size) // max(1, accelerator.num_processes))
 
         # Train Loader
         main_train_loader = webdataset_loader(
@@ -1824,7 +1831,7 @@ def main():
         offroad_train_loader = webdataset_loader(
             args, train_offroad_shards, args.batch_size, args.num_workers, shuffle=True, dataset_type="offroad"
         )
-        train_loader = InterleavedDataLoader(main_train_loader, offroad_train_loader)
+        train_loader = InterleavedDataLoader(main_train_loader, offroad_train_loader, train_main_shards, train_offroad_shards)
 
         # Val Loader
         val_loader = None
