@@ -261,6 +261,35 @@ def _save_debug_video(batch, args, accelerator, tag="train"):
     os.makedirs(out_dir, exist_ok=True)
 
 
+def _load_checkpoint_state(model, ckpt_state, args, accelerator):
+    unwrapped = accelerator.unwrap_model(model)
+    try:
+        unwrapped.load_state_dict(ckpt_state)
+        return
+    except RuntimeError as e:
+        if args.peft not in {"lora", "qlora"}:
+            raise
+        accelerator.print(f"Strict checkpoint load failed under PEFT ({e}). Retrying with filtered non-strict load.")
+
+    # bitsandbytes quantized modules can expose version-dependent metadata keys.
+    quant_meta_tokens = ("absmax", "quant_map", "quant_state", "bitsandbytes__")
+    filtered_state = {k: v for k, v in ckpt_state.items() if not any(tok in k for tok in quant_meta_tokens)}
+
+    incompatible = unwrapped.load_state_dict(filtered_state, strict=False)
+    missing = list(getattr(incompatible, "missing_keys", []))
+    unexpected = list(getattr(incompatible, "unexpected_keys", []))
+
+    accelerator.print(
+        "Non-strict PEFT load complete: "
+        f"skipped_quant_meta={len(ckpt_state) - len(filtered_state)} "
+        f"missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
+    )
+    if missing:
+        accelerator.print(f"First missing keys: {missing[:10]}")
+    if unexpected:
+        accelerator.print(f"First unexpected keys: {unexpected[:10]}")
+
+
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     diff_r = rewards[:, None] - rewards[None, :]
     diff_s = scores[:, None] - scores[None, :]
@@ -494,7 +523,7 @@ def main():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
         ckpt = torch.load(ckpt_path, map_location="cpu")
 
-        accelerator.unwrap_model(model).load_state_dict(ckpt["model"])
+        _load_checkpoint_state(model, ckpt["model"], args, accelerator)
         if not args.load_model_only:
             if "optimizer" not in ckpt:
                 raise KeyError("Checkpoint does not contain optimizer state. Use --load_model_only to ignore this.")
