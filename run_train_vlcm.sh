@@ -12,7 +12,7 @@ echo "Checking data..."
 DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch"
 
 # OFFROAD Dataset
-OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_2"
+OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad"
 
 # User stated data is already extracted in data_scratch
 if [ ! -d "$DATA_DIR" ]; then
@@ -79,36 +79,36 @@ echo "Saving checkpoints to: $SAVE_DIR"
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_TOKEN="$HF_TOKEN" \
-  "$CONTAINER_PATH" accelerate launch --num_processes 4 train.py \
+  "$CONTAINER_PATH" accelerate launch --num_processes 1 train.py \
   --train_shards "$SHARD_PATTERN" \
   --offroad_shards "$OFFROAD_DATA_DIR" \
   --offroad_num_robots 5 \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 6 \
-  --grad_accum_steps 2 \
-  --clip_len 16 \
+  --batch_size 1 \
+  --grad_accum_steps 4 \
+  --clip_len 2 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 10 \
-#   --vl_backend llava_video \
-#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
- --vl_backend llava_onevision \
- --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  --vl_backend llava_onevision \
+  --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
   --save_dir "$SAVE_DIR" \
-  --num_workers 16 \
-  --mixed_precision bf16 \
+  --num_workers 4 \
+  --mixed_precision fp16 \
   --freeze_vl \
-  --peft lora \
+  --peft none \
   --lora_r 32 \
   --lora_alpha 64 \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
-  --loss_type contrastive_mse \
-  --return_mode nstep \
+  --loss_type td \
+  --return_mode td \
   --mse_loss_weight 0.5 \
   --max_grad_norm 1.0 \
-  --samples_per_epoch 50000 \
-  --vl_max_text_len 4700
+  --samples_per_epoch 5000 \
+  --vl_max_text_len 1024
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
+##   --vl_backend llava_video \
+#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \

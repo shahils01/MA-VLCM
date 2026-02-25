@@ -1,0 +1,42 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights:   9%| | 60/687 [00:07<01:20,  7.77it/s, Materializing param=model.language_model.layers.6.mlp.gate_proj.weight
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1695, in main
+    model = build_model(args, device=accelerator.device)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 316, in build_model
+    return MultimodalValueModel(cfg, device=device)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 303, in __init__
+    self.backbone = LLaVAVideoBackbone(cfg, device=device)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 138, in __init__
+    self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4063, in from_pretrained
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4182, in _load_pretrained_model
+  File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 1192, in convert_and_load_state_dict_in_model
+  File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 665, in convert
+  File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 641, in materialize_tensors
+  File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 641, in <listcomp>
+  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 453, in result
+  File "/usr/lib/python3.10/threading.py", line 320, in wait
+KeyboardInterrupt
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1695, in main
+[rank0]:     model = build_model(args, device=accelerator.device)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 316, in build_model
+[rank0]:     return MultimodalValueModel(cfg, device=device)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 303, in __init__
+[rank0]:     self.backbone = LLaVAVideoBackbone(cfg, device=device)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 138, in __init__
+[rank0]:     self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4063, in from_pretrained
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4182, in _load_pretrained_model
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 1192, in convert_and_load_state_dict_in_model
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 665, in convert
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 641, in materialize_tensors
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/core_model_loading.py", line 641, in <listcomp>
+[rank0]:   File "/usr/lib/python3.10/concurrent/futures/_base.py", line 453, in result
+[rank0]:   File "/usr/lib/python3.10/threading.py", line 320, in wait
+[rank0]: KeyboardInterrupt

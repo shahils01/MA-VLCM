@@ -1,0 +1,2 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|█| 687/687 [00:04<00:00, 171.67it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.wei

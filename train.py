@@ -171,7 +171,7 @@ def parse_args():
 
     # Accelerate
     p.add_argument(
-        "--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"]
+        "--mixed_precision", type=str, default="no", choices=["no","int8", "fp16", "bf16"]
     )
     p.add_argument(
         "--fsdp",
