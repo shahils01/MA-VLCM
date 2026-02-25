@@ -20,7 +20,7 @@ if [ "$DATA_SOURCE" = "huggingface" ]; then
 else
     DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch"
     # OFFROAD Dataset
-    OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad"
+    OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/Varied_Traversability"
 
     # User stated data is already extracted in data_scratch
     if [ ! -d "$DATA_DIR" ]; then
@@ -73,9 +73,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 
 
-# Set NUM_ROBOTS to the maximum expected across all configs (e.g. 5 for OFFROAD).
+# Set NUM_ROBOTS to the maximum expected across all configs (e.g. 8 for OFFROAD max).
 # train.py will pad observations for configs with fewer robots (e.g. 2ag RWARE) to this size.
-NUM_ROBOTS=5
+NUM_ROBOTS=8
 echo "Using Max Num Robots: $NUM_ROBOTS"
 
 SAVE_DIR="/scratch/aparame/Research/VLCM_checkpoints"
@@ -90,7 +90,7 @@ echo "Saving checkpoints to: $SAVE_DIR"
 #   "$CONTAINER_PATH" accelerate launch --num_processes 4 train.py \
 #   --train_shards "$SHARD_PATTERN" \
 #   --offroad_shards "$OFFROAD_DATA_DIR" \
-#   --offroad_num_robots 5 \
+#   --offroad_num_robots "$NUM_ROBOTS" \
 #   --dataset_type rware \
 #   --rware_config "$CONFIG_NAME" \
 #   --batch_size 8 \
@@ -126,7 +126,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   "$CONTAINER_PATH" accelerate launch --num_processes 1 train.py \
   --train_shards "$SHARD_PATTERN" \
   --offroad_shards "$OFFROAD_DATA_DIR" \
-  --offroad_num_robots 5 \
+  --offroad_num_robots "$NUM_ROBOTS" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
   --batch_size 8 \
@@ -135,8 +135,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 10 \
-  --vl_backend llava_onevision \
-  --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+##   --vl_backend llava_video \
+#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf
   --save_dir "$SAVE_DIR" \
   --num_workers 16 \
   --mixed_precision bf16 \

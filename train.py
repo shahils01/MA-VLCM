@@ -1194,6 +1194,17 @@ class SequenceWebDataset(IterableDataset):
                 if hasattr(adj, "numpy"):
                     adj = adj.numpy()
                 adj = torch.tensor(adj, dtype=torch.float32)
+                if (
+                    self.max_num_robots is not None
+                    and adj.shape[0] < self.max_num_robots
+                ):
+                    new_adj = torch.zeros(
+                        (self.max_num_robots, self.max_num_robots),
+                        dtype=torch.float32,
+                    )
+                    k = adj.shape[0]
+                    new_adj[:k, :k] = adj
+                    adj = new_adj
 
                 # Reward: mean of per-agent rewards
                 agents = state_json.get("agents", [])
