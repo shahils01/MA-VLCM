@@ -9,29 +9,37 @@ echo "Date: $(date)"
 # 2. Data Setup
 echo "Checking data..."
 
-DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch"
+DATA_SOURCE="${1:-local}"
 
-# OFFROAD Dataset
-OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad"
+if [ "$DATA_SOURCE" = "huggingface" ]; then
+    echo "Using Hugging Face Hub datasets..."
+    # IMPORTANT: Replace YOUR_HF_USERNAME and DATASET_NAME with your actual repository path
+    # e.g., hf://datasets/aparame/VLCM-RWARE/*.tar
+    SHARD_PATTERN="hf://datasets/adi2440/RWARE_Dataset/*.tar"
+    OFFROAD_DATA_DIR="hf://datasets/adi2440/OFFROAD_Dataset/*.tar"
+else
+    DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch"
+    # OFFROAD Dataset
+    OFFROAD_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad"
 
-# User stated data is already extracted in data_scratch
-if [ ! -d "$DATA_DIR" ]; then
-    echo "ERROR: Directory $DATA_DIR not found!"
-    echo "Current directory content:"
-    ls -l
-    exit 1
+    # User stated data is already extracted in data_scratch
+    if [ ! -d "$DATA_DIR" ]; then
+        echo "ERROR: Directory $DATA_DIR not found!"
+        echo "Current directory content:"
+        ls -l
+        exit 1
+    fi
+    echo "Using existing data in $DATA_DIR"
+    echo "Using OFFROAD data in $OFFROAD_DATA_DIR"
+    
+    # Point directly to the root data directory.
+    # train.py will recursively find all .tar files in all subdirectories (configs).
+    SHARD_PATTERN="$DATA_DIR"
 fi
-echo "Using existing data in $DATA_DIR"
-echo "Using OFFROAD data in $OFFROAD_DATA_DIR"
-
 
 # 4. Run Training
 echo "Running Training..."
 
-
-# Point directly to the root data directory.
-# train.py will recursively find all .tar files in all subdirectories (configs).
-SHARD_PATTERN="$DATA_DIR"
 CONFIG_NAME="mixed-rware"
 
 echo "Using Shard Pattern: $SHARD_PATTERN"

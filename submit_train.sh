@@ -19,4 +19,4 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run the training script
-bash run_train_vlcm.sh
+bash run_train_vlcm.sh huggingface

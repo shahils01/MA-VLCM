@@ -686,7 +686,9 @@ class SequenceWebDataset(IterableDataset):
         vl_backend="llava_video",
     ):
         if isinstance(shards, str):
-            if os.path.isdir(shards):
+            if shards.startswith(("hf://", "http://", "https://", "pipe:")):
+                print(f"Using remote dataset URL: {shards}")
+            elif os.path.isdir(shards):
                 print(f"Expanding shard directory: {shards}")
                 # Auto-expand directory to all .tar files recursively
                 expanded = sorted(
@@ -1566,7 +1568,15 @@ def run_epoch(
 
 def split_shards(shards_pattern, val_split=0.2, seed=42):
     import glob, random
-    if not isinstance(shards_pattern, str) or "*" not in shards_pattern:
+    if not isinstance(shards_pattern, str):
+        return shards_pattern, None
+
+    # Handle remote URLs seamlessly
+    if shards_pattern.startswith(("hf://", "http://", "https://", "pipe:")):
+        # Cannot glob remote URLs easily. Assume validation was handled earlier or use them entirely
+        return shards_pattern, None
+
+    if "*" not in shards_pattern:
         return shards_pattern, None
 
     files = sorted(glob.glob(shards_pattern))
