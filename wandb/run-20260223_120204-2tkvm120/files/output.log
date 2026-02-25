@@ -15,4 +15,28 @@ train: 522it [1:26:09,  9.90s/it, loss=0.1609, lr=6.01e-05]
 epoch=2 train_loss=0.1609 val_loss=n/a
 train: 522it [1:27:54, 10.10s/it, loss=0.1413, lr=9.02e-05]
 epoch=3 train_loss=0.1413 val_loss=n/a
-train: 254it [42:40,  9.96s/it, loss=0.1820, lr=1.05e-04]
+train: 522it [1:27:12, 10.02s/it, loss=0.1429, lr=1.20e-04]
+epoch=4 train_loss=0.1429 val_loss=n/a
+train: 522it [1:27:26, 10.05s/it, loss=0.1369, lr=1.50e-04]
+epoch=5 train_loss=0.1369 val_loss=n/a
+train: 522it [1:27:15, 10.03s/it, loss=0.2915, lr=1.80e-04]
+epoch=6 train_loss=0.2915 val_loss=n/a
+train: 522it [1:26:42,  9.97s/it, loss=0.1523, lr=2.11e-04]
+epoch=7 train_loss=0.1523 val_loss=n/a
+train: 522it [1:26:28,  9.94s/it, loss=0.1417, lr=2.41e-04]
+epoch=8 train_loss=0.1417 val_loss=n/a
+train: 522it [1:26:41,  9.97s/it, loss=0.1449, lr=2.71e-04]
+epoch=9 train_loss=0.1449 val_loss=n/a
+train: 522it [1:26:41,  9.96s/it, loss=0.2289, lr=3.00e-04]
+epoch=10 train_loss=0.2289 val_loss=n/a
+train: 522it [1:26:48,  9.98s/it, loss=0.2258, lr=3.00e-04]
+epoch=11 train_loss=0.2258 val_loss=n/a
+train: 522it [1:26:45,  9.97s/it, loss=0.2153, lr=3.00e-04]
+epoch=12 train_loss=0.2153 val_loss=n/a
+train: 522it [1:27:21, 10.04s/it, loss=0.1940, lr=3.00e-04]
+epoch=13 train_loss=0.1940 val_loss=n/a
+train: 522it [1:27:33, 10.06s/it, loss=0.1528, lr=3.00e-04]
+epoch=14 train_loss=0.1528 val_loss=n/a
+train: 522it [1:28:00, 10.11s/it, loss=0.1743, lr=2.99e-04]
+epoch=15 train_loss=0.1743 val_loss=n/a
+train: 220it [37:15,  9.97s/it, loss=0.3417, lr=2.99e-04]

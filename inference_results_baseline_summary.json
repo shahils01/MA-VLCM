@@ -1,0 +1,20 @@
+{
+  "checkpoint": "/scratch/aparame/Research/VLCM_checkpoints/ckpt_epoch_3.pt",
+  "baseline": true,
+  "epoch": 3,
+  "num_samples": 100,
+  "gamma": 0.99,
+  "pred_mean": -4.255312442779541,
+  "pred_std": 0.44063735008239746,
+  "reward_mean": -0.21218961477279663,
+  "mse_vs_reward": 16.585988998413086,
+  "mae_vs_reward": 4.043123722076416,
+  "pearson_vs_reward": 0.16754823923110962,
+  "td_target_mean": -4.429280757904053,
+  "mse_vs_td_target": 0.14470620453357697,
+  "mae_vs_td_target": 0.2958085536956787,
+  "pearson_vs_td_target": 0.8175173401832581,
+  "mse_vs_return": 9.163145065307617,
+  "mae_vs_return": 2.4008684158325195,
+  "pearson_vs_return": 0.6704714894294739
+}
