@@ -74,9 +74,27 @@ class LLaVAVideoBackbone(nn.Module):
                 AutoModelForCausalLM,
                 LlavaNextVideoProcessor,
             )
-            from transformers.models.llava_next_video import (
-                LlavaNextVideoForConditionalGeneration,
-            )
+            try:
+                from transformers import LlavaOnevisionProcessor
+            except ImportError:
+                LlavaOnevisionProcessor = None
+
+            try:
+                from transformers.models.llava_next_video import (
+                    LlavaNextVideoForConditionalGeneration,
+                )
+            except ImportError:
+                LlavaNextVideoForConditionalGeneration = None
+            
+            try:
+                from transformers.models.llava_onevision import (
+                    LlavaOnevisionForConditionalGeneration,
+                )
+            except ImportError:
+                try:
+                    from transformers import LlavaOnevisionForConditionalGeneration
+                except ImportError:
+                    LlavaOnevisionForConditionalGeneration = None
 
             try:
                 from transformers.models.auto.modeling_auto import (
@@ -89,7 +107,13 @@ class LLaVAVideoBackbone(nn.Module):
                 "LLaVA-Video backend requires transformers installed."
             ) from e
 
-        self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
+        if cfg.vl_backend == "llava_onevision":
+            if LlavaOnevisionProcessor is None:
+                raise ImportError("LlavaOnevisionProcessor not available in your transformers version.")
+            self.processor = LlavaOnevisionProcessor.from_pretrained(cfg.vl_model_name)
+        else:
+            self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
+
         self.tokenizer = getattr(
             self.processor, "tokenizer", None
         ) or AutoTokenizer.from_pretrained(cfg.vl_model_name)
@@ -104,9 +128,17 @@ class LLaVAVideoBackbone(nn.Module):
         # This is safe because each process has its own GPU (accelerator.device)
         model_kwargs["device_map"] = {"": device}
 
-        self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, **model_kwargs
-        )
+        if cfg.vl_backend == "llava_onevision":
+            if LlavaOnevisionForConditionalGeneration is None:
+                raise ImportError("LlavaOnevisionForConditionalGeneration not available.")
+            self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
+                cfg.vl_model_name, **model_kwargs
+            )
+        else:
+            self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+                cfg.vl_model_name, **model_kwargs
+            )
+
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(
             self.model, "resize_token_embeddings"
         ):

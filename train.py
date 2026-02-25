@@ -208,7 +208,7 @@ def parse_args():
         "--vl_backend",
         type=str,
         default="llava_video",
-        choices=["deepseek_vl", "deepseek_vl2", "llava_video"],
+        choices=["deepseek_vl", "deepseek_vl2", "llava_video", "llava_onevision"],
     )
     p.add_argument(
         "--vl_model_name", type=str, default="llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
@@ -683,6 +683,7 @@ class SequenceWebDataset(IterableDataset):
         rware_config="tiny-2ag-hard",
         resize_width=672,
         resize_height=336,
+        vl_backend="llava_video",
     ):
         if isinstance(shards, str):
             if os.path.isdir(shards):
@@ -731,6 +732,7 @@ class SequenceWebDataset(IterableDataset):
         self.max_num_robots = max_num_robots
         self.shuffle_shards = shuffle_shards
         self.times_cache = {}
+        self.vl_backend = vl_backend
 
     def _custom_decoder(self, key, data):
         # We only care about images here.
@@ -762,20 +764,29 @@ class SequenceWebDataset(IterableDataset):
             raise RuntimeError("webdataset is not installed.")
 
         if self.vlm_processor is None and self.vl_model_name is not None:
-            from transformers import LlavaNextVideoProcessor
-
-            try:
-                self.vlm_processor = LlavaNextVideoProcessor.from_pretrained(
-                    self.vl_model_name
-                )
-                # Ensure special tokens
-                tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
-                    tokenizer.add_special_tokens(
-                        {"additional_special_tokens": ["<obs>"]}
+            if self.vl_backend == "llava_onevision" or "llava-onevision" in self.vl_model_name.lower():
+                from transformers import LlavaOnevisionProcessor
+                try:
+                    self.vlm_processor = LlavaOnevisionProcessor.from_pretrained(self.vl_model_name)
+                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                    if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+                        tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
+                except Exception as e:
+                    print(f"Warning: Failed to load LLaVA-OneVision processor: {e}")
+            else:
+                from transformers import LlavaNextVideoProcessor
+                try:
+                    self.vlm_processor = LlavaNextVideoProcessor.from_pretrained(
+                        self.vl_model_name
                     )
-            except Exception as e:
-                print(f"Warning: Failed to load VLM processor: {e}")
+                    # Ensure special tokens
+                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                    if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+                        tokenizer.add_special_tokens(
+                            {"additional_special_tokens": ["<obs>"]}
+                        )
+                except Exception as e:
+                    print(f"Warning: Failed to load VLM processor: {e}")
 
         # Error handler: skip broken samples instead of crashing
         _handler = getattr(wds, "warn_and_continue", None)
@@ -1338,6 +1349,7 @@ def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False, data
         vlm_padding="max_length",
         resize_width=args.resize_width,
         resize_height=args.resize_height,
+        vl_backend=args.vl_backend,
     )
 
     def _collate(batch):
