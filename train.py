@@ -143,6 +143,8 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints")
+    p.add_argument("--resume_checkpoint", type=str, default="", help="Path to checkpoint .pt to resume training")
+    p.add_argument("--load_model_only", action="store_true", help="Load only model weights from checkpoint")
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging via Accelerate trackers")
     p.add_argument("--wandb_project", type=str, default="ma-vlcm", help="W&B project name")
     p.add_argument("--wandb_entity", type=str, default="", help="W&B entity/team (optional)")
@@ -483,8 +485,30 @@ def main():
     else:
         model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
+    start_epoch = 1
     global_step = 0
-    for epoch in range(1, args.epochs + 1):
+
+    if args.resume_checkpoint:
+        ckpt_path = args.resume_checkpoint
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+
+        accelerator.unwrap_model(model).load_state_dict(ckpt["model"])
+        if not args.load_model_only:
+            if "optimizer" not in ckpt:
+                raise KeyError("Checkpoint does not contain optimizer state. Use --load_model_only to ignore this.")
+            optimizer.load_state_dict(ckpt["optimizer"])
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+            global_step = int(ckpt.get("global_step", 0))
+
+        accelerator.print(
+            f"Resumed from {ckpt_path} (start_epoch={start_epoch}, global_step={global_step}, "
+            f"load_model_only={args.load_model_only})"
+        )
+        accelerator.wait_for_everyone()
+
+    for epoch in range(start_epoch, args.epochs + 1):
         train_loss, global_step = run_epoch(
             model, train_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=True, global_step=global_step
         )
@@ -506,6 +530,7 @@ def main():
                 "model": accelerator.get_state_dict(model),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
+                "global_step": global_step,
                 "args": vars(args),
             }
             torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
