@@ -1,0 +1,84 @@
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|█| 716/716 [00:02<00:00, 331.77it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.w
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+Found 951 shards.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad
+Found 307 shards.
+train:   0%|                                              | 1515/1000000 [37:06<407:32:56,  1.47s/it, loss=3.3426, lr=2.87e-04]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1489, in run_epoch
+    pred = model(inputs, robot_obs, adj)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+  File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+  File "/home/aparame/Research/MA-VLCM/model.py", line 433, in forward
+    output = self.backbone.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 783, in forward
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 553, in forward
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 410, in forward
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_layers.py", line 93, in __call__
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 954, in wrapped_forward
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 298, in forward
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 223, in forward
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 143, in apply_rotary_pos_emb
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 115, in rotate_half
+KeyboardInterrupt
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1489, in run_epoch
+[rank0]:     pred = model(inputs, robot_obs, adj)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 433, in forward
+[rank0]:     output = self.backbone.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 783, in forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 553, in forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 410, in forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_layers.py", line 93, in __call__
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 954, in wrapped_forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 298, in forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 223, in forward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 143, in apply_rotary_pos_emb
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/qwen2/modeling_qwen2.py", line 115, in rotate_half
+[rank0]: KeyboardInterrupt

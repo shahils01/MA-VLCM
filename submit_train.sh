@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
 #SBATCH --time=72:00:00
-#SBATCH --gpus=h100:4
+#SBATCH --gpus=h200:4
 
 # Ensure logs directory exists
 mkdir -p logs
@@ -19,4 +19,4 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run the training script
-bash run_train_vlcm.sh huggingface
+bash run_train_vlcm.sh 

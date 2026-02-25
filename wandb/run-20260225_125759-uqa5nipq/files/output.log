@@ -1,0 +1,26 @@
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|█| 716/716 [00:00<00:00, 1008.79it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+Found 951 shards.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad
+Found 307 shards.
+train:   0%|                                                | 14/1000000 [00:18<371:51:38,  1.34s/it, loss=1.7303, lr=0.00e+00]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1493, in run_epoch
+    returns = batch["returns"].to(accelerator.device)
+KeyboardInterrupt
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1493, in run_epoch
+[rank0]:     returns = batch["returns"].to(accelerator.device)
+[rank0]: KeyboardInterrupt

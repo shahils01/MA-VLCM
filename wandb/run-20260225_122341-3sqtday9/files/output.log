@@ -1,0 +1,82 @@
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_http.py", line 657, in hf_raise_for_status
+    response.raise_for_status()
+  File "/usr/local/lib/python3.10/dist-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '401 Unauthorized' for url 'https://huggingface.co/api/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf/tree/main/additional_chat_templates?recursive=false&expand=false'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1695, in main
+    model = build_model(args, device=accelerator.device)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 316, in build_model
+    return MultimodalValueModel(cfg, device=device)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 303, in __init__
+    self.backbone = LLaVAVideoBackbone(cfg, device=device)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 113, in __init__
+    self.processor = LlavaOnevisionProcessor.from_pretrained(cfg.vl_model_name)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/processing_utils.py", line 1401, in from_pretrained
+    processor_dict, instantiation_kwargs = cls.get_processor_dict(pretrained_model_name_or_path, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/processing_utils.py", line 949, in get_processor_dict
+    for template in list_repo_templates(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py", line 131, in list_repo_templates
+    return [
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py", line 131, in <listcomp>
+    return [
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/hf_api.py", line 3302, in list_repo_tree
+    for path_info in paginate(path=tree_url, headers=headers, params={"recursive": recursive, "expand": expand}):
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_pagination.py", line 37, in paginate
+    hf_raise_for_status(r)
+  File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_http.py", line 710, in hf_raise_for_status
+    raise _format(RepositoryNotFoundError, message, response) from e
+huggingface_hub.errors.RepositoryNotFoundError: 401 Client Error. (Request ID: Root=1-699f3021-0e7b0ed44bbe99f408447d91;043473d5-1fdb-4bf2-ae01-6b550f0317a2)
+
+Repository Not Found for url: https://huggingface.co/api/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf/tree/main/additional_chat_templates?recursive=false&expand=false.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+User Access Token "Palmetto" is expired
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_http.py", line 657, in hf_raise_for_status
+[rank0]:     response.raise_for_status()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/httpx/_models.py", line 829, in raise_for_status
+[rank0]:     raise HTTPStatusError(message, request=request, response=self)
+[rank0]: httpx.HTTPStatusError: Client error '401 Unauthorized' for url 'https://huggingface.co/api/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf/tree/main/additional_chat_templates?recursive=false&expand=false'
+[rank0]: For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+
+[rank0]: The above exception was the direct cause of the following exception:
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1695, in main
+[rank0]:     model = build_model(args, device=accelerator.device)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 316, in build_model
+[rank0]:     return MultimodalValueModel(cfg, device=device)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 303, in __init__
+[rank0]:     self.backbone = LLaVAVideoBackbone(cfg, device=device)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 113, in __init__
+[rank0]:     self.processor = LlavaOnevisionProcessor.from_pretrained(cfg.vl_model_name)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/processing_utils.py", line 1401, in from_pretrained
+[rank0]:     processor_dict, instantiation_kwargs = cls.get_processor_dict(pretrained_model_name_or_path, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/processing_utils.py", line 949, in get_processor_dict
+[rank0]:     for template in list_repo_templates(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py", line 131, in list_repo_templates
+[rank0]:     return [
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py", line 131, in <listcomp>
+[rank0]:     return [
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/hf_api.py", line 3302, in list_repo_tree
+[rank0]:     for path_info in paginate(path=tree_url, headers=headers, params={"recursive": recursive, "expand": expand}):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_pagination.py", line 37, in paginate
+[rank0]:     hf_raise_for_status(r)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/huggingface_hub/utils/_http.py", line 710, in hf_raise_for_status
+[rank0]:     raise _format(RepositoryNotFoundError, message, response) from e
+[rank0]: huggingface_hub.errors.RepositoryNotFoundError: 401 Client Error. (Request ID: Root=1-699f3021-0e7b0ed44bbe99f408447d91;043473d5-1fdb-4bf2-ae01-6b550f0317a2)
+
+[rank0]: Repository Not Found for url: https://huggingface.co/api/models/llava-hf/llava-onevision-qwen2-0.5b-ov-hf/tree/main/additional_chat_templates?recursive=false&expand=false.
+[rank0]: Please make sure you specified the correct `repo_id` and `repo_type`.
+[rank0]: If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+[rank0]: User Access Token "Palmetto" is expired

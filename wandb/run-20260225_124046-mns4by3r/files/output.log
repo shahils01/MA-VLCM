@@ -1,0 +1,34 @@
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|█| 716/716 [00:00<00:00, 1017.33it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+Found 951 shards.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad
+Found 307 shards.
+train:   0%|▏                                              | 3127/1000000 [11:50<62:55:41,  4.40it/s, loss=0.4811, lr=3.00e-04]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1518, in run_epoch
+    accelerator.backward(loss)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 2848, in backward
+  File "/usr/local/lib/python3.10/dist-packages/torch/_tensor.py", line 581, in backward
+  File "/usr/local/lib/python3.10/dist-packages/torch/autograd/__init__.py", line 347, in backward
+  File "/usr/local/lib/python3.10/dist-packages/torch/autograd/graph.py", line 825, in _engine_run_backward
+KeyboardInterrupt
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1518, in run_epoch
+[rank0]:     accelerator.backward(loss)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 2848, in backward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_tensor.py", line 581, in backward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/autograd/__init__.py", line 347, in backward
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/autograd/graph.py", line 825, in _engine_run_backward
+[rank0]: KeyboardInterrupt

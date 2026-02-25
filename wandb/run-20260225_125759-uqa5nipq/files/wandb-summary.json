@@ -1,0 +1,1 @@
+{"train/contrastive_loss":0,"_timestamp":1.7720423075875146e+09,"_runtime":26,"train/step_loss":0.00507965637370944,"_step":13,"_wandb":{"runtime":26},"train/pred_mean":-0.06845855712890625,"train/mse_loss":0.01015931274741888,"train/reward_mean":0,"train/step":14}

@@ -1,0 +1,57 @@
+processor_config.json: 100%|███████████████████████████████████████████████████████████████████| 178/178 [00:00<00:00, 482kB/s]
+chat_template.json: 100%|█████████████████████████████████████████████████████████████████████| 826/826 [00:00<00:00, 2.58MB/s]
+preprocessor_config.json: 1.73kB [00:00, 3.55MB/s]
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+config.json: 2.59kB [00:00, 5.08MB/s]
+tokenizer_config.json: 1.80kB [00:00, 3.51MB/s]
+tokenizer.json: 7.03MB [00:00, 18.0MB/s]
+added_tokens.json: 100%|███████████████████████████████████████████████████████████████████████| 122/122 [00:00<00:00, 442kB/s]
+special_tokens_map.json: 100%|████████████████████████████████████████████████████████████████| 367/367 [00:00<00:00, 1.33MB/s]
+video_preprocessor_config.json: 100%|█████████████████████████████████████████████████████████| 621/621 [00:00<00:00, 1.72MB/s]
+model.safetensors: 100%|███████████████████████████████████████████████████████████████████| 1.79G/1.79G [00:05<00:00, 344MB/s]
+Loading weights: 100%|█| 716/716 [00:02<00:00, 285.22it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.w
+generation_config.json: 100%|██████████████████████████████████████████████████████████████████| 126/126 [00:00<00:00, 380kB/s]
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+Found 951 shards.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/dataset_1_offroad
+Found 307 shards.
+train:   0%|                                                | 1/1000000 [00:07<2193:07:43,  7.90s/it, loss=0.0211, lr=0.00e+00]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1520, in run_epoch
+    accelerator.clip_grad_norm_(
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 3008, in clip_grad_norm_
+    self.unscale_gradients()
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 2946, in unscale_gradients
+    self.scaler.unscale_(opt)
+  File "/usr/local/lib/python3.10/dist-packages/torch/amp/grad_scaler.py", line 327, in unscale_
+    raise RuntimeError(
+RuntimeError: unscale_() has already been called on this optimizer since the last update().
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1918, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1851, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1520, in run_epoch
+[rank0]:     accelerator.clip_grad_norm_(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 3008, in clip_grad_norm_
+[rank0]:     self.unscale_gradients()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/accelerator.py", line 2946, in unscale_gradients
+[rank0]:     self.scaler.unscale_(opt)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/amp/grad_scaler.py", line 327, in unscale_
+[rank0]:     raise RuntimeError(
+[rank0]: RuntimeError: unscale_() has already been called on this optimizer since the last update().
+Exception ignored in atexit callback: <function _MultiProcessingDataLoaderIter._clean_up_worker at 0x7f030a3aaef0>
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1598, in _clean_up_worker
+  File "/usr/lib/python3.10/multiprocessing/process.py", line 149, in join
+  File "/usr/lib/python3.10/multiprocessing/popen_fork.py", line 40, in wait
+  File "/usr/lib/python3.10/multiprocessing/connection.py", line 931, in wait
+  File "/usr/lib/python3.10/selectors.py", line 416, in select
+KeyboardInterrupt:
