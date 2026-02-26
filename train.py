@@ -831,12 +831,16 @@ class SequenceWebDataset(IterableDataset):
             )
             if _handler is not None:
                 wds_kwargs["handler"] = _handler
-            dataset = wds.WebDataset(self.shards, **wds_kwargs).decode(
-                self._custom_decoder, handler=_handler
+            dataset = (
+                wds.WebDataset(self.shards, **wds_kwargs)
+                .repeat()
+                .decode(self._custom_decoder, handler=_handler)
             )
         except TypeError:
-            dataset = wds.WebDataset(self.shards, shardshuffle=False).decode(
-                self._custom_decoder
+            dataset = (
+                wds.WebDataset(self.shards, shardshuffle=False)
+                .repeat()
+                .decode(self._custom_decoder)
             )
             if hasattr(dataset, "split_by_node"):
                 dataset = dataset.split_by_node()
@@ -1463,6 +1467,7 @@ def run_epoch(
     args,
     train=True,
     scheduler=None,
+    max_steps=None,
 ):
     if train:
         model.train()
@@ -1483,6 +1488,8 @@ def run_epoch(
     )
 
     for batch in pbar:
+        if max_steps is not None and step >= max_steps:
+            break
         step += 1
 
         def _move_inputs(inputs):
@@ -1953,6 +1960,7 @@ def main():
             args,
             train=True,
             scheduler=scheduler,
+            max_steps=estimated_steps_per_epoch,
         )
         val_loss = None
         if val_loader is not None:
@@ -1965,6 +1973,7 @@ def main():
                 args.gamma,
                 args,
                 train=False,
+                max_steps=max(int(estimated_steps_per_epoch * 0.25), 10),
             )
 
         accelerator.print(
