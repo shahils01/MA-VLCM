@@ -889,7 +889,11 @@ class SequenceWebDataset(IterableDataset):
             reward = clip[-1]["reward"]
             done = clip[-1]["done"]
 
-            returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
+            # Calculate discounted return (n-step TD style)
+            returns = 0.0
+            for frame in reversed(clip):
+                returns = float(frame["reward"]) + self.gamma * (1.0 - float(frame["done"])) * returns
+            returns = torch.tensor(returns, dtype=torch.float32)
 
             out = {
                 "robot_obs": robot_obs,
@@ -1525,7 +1529,7 @@ def run_epoch(
                             )
                         target = reward + gamma * (1.0 - done) * next_pred
                     else:
-                        target = batch["return"].to(accelerator.device)
+                        target = batch["returns"].to(accelerator.device)
                     loss = loss_fn(pred, target)
                 if train:
                     accelerator.backward(loss)
