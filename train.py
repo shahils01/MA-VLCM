@@ -147,7 +147,7 @@ def parse_args():
 
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
-    p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
+    p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep", "nsteps"])
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
         "--loss_type",
@@ -1154,25 +1154,10 @@ class SequenceWebDataset(IterableDataset):
 
                 if self.text_prompt_template is None:
                     header = (
-                        "You are a vision-language critic"
-                        " model that evaluates"
-                        " multi-agent trajectories by"
-                        " estimating the expected"
-                        " cumulative return."
-                        f" This is a robotic warehouse"
-                        f" environment with {n_ag}"
-                        f" agents ({difficulty}"
-                        f" difficulty, config: {cfg})."
-                        " Agents must navigate to"
-                        " requested shelf locations,"
-                        " pick up the correct boxes,"
-                        " deliver them to the goal"
-                        " area, and avoid collisions"
-                        " (distance < 3m)."
-                        " Given the video frames and"
-                        " agent states below, assess"
-                        " the quality of the current"
-                        " policy. "
+                        "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
+                        f"This is a robotic warehouse environment with {n_ag} agents ({difficulty} difficulty, config: {cfg}). "
+                        "The reward is the sum of the minimum euclidean distance between an agent and its closest box, plus if an agent successfully places a box in the goal location (+5), and a penalty if the agents come within 3m of one another (-1). "
+                        "Assess the quality of the current policy based on these observations: "
                     )
                     text = header + " ".join(obs_lines)
                 else:
@@ -1247,15 +1232,10 @@ class SequenceWebDataset(IterableDataset):
 
                 if self.text_prompt_template is None:
                     header = (
-                        "You are a vision-language critic model that evaluates"
-                        " multi-agent trajectories by estimating the expected"
-                        " cumulative return."
-                        f" This is an offroad navigation environment with {n_ag}"
-                        " agents traversing rough terrain."
-                        " Each agent must reach its color-matched goal while"
-                        " minimizing traversability cost and avoiding inter-agent collisions."
-                        " Given the video frames and agent states below, assess"
-                        " the quality of the current policy. "
+                        "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
+                        f"This is an offroad navigation environment with {n_ag} agents traversing rough terrain. "
+                        "The reward is based on the progress towards the goal, a heading alignment reward, minus penalties for the distance to goal, each step taken (which increases over time), idling, control effort, and a terrain traversability penalty equal to 2.0 * (1 - traversability)^2. "
+                        "Assess the quality of the current policy based on these observations: "
                         f"Timestep: {step_idx}. "
                     )
                     text = header + " ".join(obs_lines)
@@ -1506,7 +1486,7 @@ def run_epoch(
                 pred = model(inputs, robot_obs, adj)
                 if args.loss_type in ("contrastive", "contrastive_mse"):
                     # Use returns if available, otherwise use per-clip reward.
-                    if args.return_mode == "nstep" and "returns" in batch:
+                    if args.return_mode in ("nstep", "nsteps") and "returns" in batch:
                         returns = batch["returns"].to(accelerator.device)
                     else:
                         returns = reward
@@ -1571,6 +1551,8 @@ def run_epoch(
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
+                        if args.return_mode in ("nstep", "nsteps") and "returns" in batch:
+                            log_dict["train/true_returns_mean"] = batch["returns"].to(accelerator.device).mean().item()
                     elif args.loss_type == "td" and use_td:
                         log_dict["train/td_target_mean"] = target.detach().mean().item()
                     wandb.log(log_dict)
@@ -1926,13 +1908,27 @@ def main():
                 pass
 
         if accelerator.is_main_process:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ckpt_name = f"ckpt_epoch_{epoch}_{timestamp}"
+            
             ckpt = {
                 "model": accelerator.get_state_dict(model),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
                 "args": vars(args),
             }
-            torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
+            torch.save(ckpt, os.path.join(args.save_dir, f"{ckpt_name}.pt"))
+            
+            # Save accompanying JSON spec file
+            info_dict = {
+                "dataset_type": args.dataset_type,
+                "config": vars(args),
+                "sample_text_prompt": args.text_prompt_template if args.text_prompt_template is not None else "(auto-generated depending on dataset_type)"
+            }
+            with open(os.path.join(args.save_dir, f"{ckpt_name}_info.json"), "w") as f:
+                json.dump(info_dict, f, indent=4)
+                
         accelerator.wait_for_everyone()
 
     # Finish wandb run

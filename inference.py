@@ -475,7 +475,10 @@ def main():
     saved_loss_type = getattr(args, "loss_type", "td")
     saved_return_mode = getattr(args, "return_mode", "td")
     args.loss_type = "td"       # Ensures include_next=True in webdataset_loader
-    args.return_mode = "td"
+    if saved_return_mode in ("nstep", "nsteps"):
+        args.return_mode = saved_return_mode
+    else:
+        args.return_mode = "td"
 
     test_loader = webdataset_loader(
         args,
