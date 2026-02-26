@@ -1,5 +1,7 @@
 import math
 import inspect
+import os
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 from types import SimpleNamespace
@@ -277,6 +279,8 @@ class MultimodalValueModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
+        self._debug_video_saved = False
+        self._debug_video_dir = os.environ.get("MA_VLCM_DEBUG_VIDEO_DIR", "debug_samples/model_forward")
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
         try:
             self._backbone_forward_params = set(inspect.signature(self.backbone.model.forward).parameters.keys())
@@ -325,6 +329,76 @@ class MultimodalValueModel(nn.Module):
         else:
             vl_feat_dim = lm_hidden
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
+
+    def _maybe_save_debug_video_from_inputs(self, inputs: dict):
+        if (not self.debug_save_video) or self._debug_video_saved:
+            return
+        if not isinstance(inputs, dict):
+            return
+
+        video = None
+        for key in ("pixel_values_videos", "pixel_values", "video_values", "videos"):
+            val = inputs.get(key, None)
+            if torch.is_tensor(val):
+                video = val
+                break
+        if video is None:
+            return
+
+        # Robustly reduce to [T,H,W,C] for a single sample.
+        x = video.detach().float().cpu()
+        while x.dim() > 5:
+            x = x[0]
+        if x.dim() == 5:
+            x = x[0]
+        if x.dim() == 4:
+            if x.shape[1] in (1, 3):  # [T,C,H,W]
+                frames = x.permute(0, 2, 3, 1).contiguous()
+            elif x.shape[-1] in (1, 3):  # [T,H,W,C]
+                frames = x
+            elif x.shape[0] in (1, 3):  # [C,T,H,W]
+                frames = x.permute(1, 2, 3, 0).contiguous()
+            else:
+                return
+        elif x.dim() == 3:
+            if x.shape[0] in (1, 3):  # [C,H,W]
+                frames = x.permute(1, 2, 0).unsqueeze(0).contiguous()
+            elif x.shape[-1] in (1, 3):  # [H,W,C]
+                frames = x.unsqueeze(0).contiguous()
+            else:
+                return
+        else:
+            return
+
+        mn = float(frames.min().item())
+        mx = float(frames.max().item())
+        mean = float(frames.mean().item())
+
+        # Convert common normalized ranges into uint8 for mp4 visualization.
+        if mn >= -1.01 and mx <= 1.01 and mn < 0.0:
+            frames_u8 = ((frames + 1.0) * 127.5).clamp(0.0, 255.0).to(torch.uint8)
+        elif mx <= 1.01:
+            frames_u8 = (frames * 255.0).clamp(0.0, 255.0).to(torch.uint8)
+        else:
+            frames_u8 = frames.clamp(0.0, 255.0).to(torch.uint8)
+
+        if frames_u8.shape[-1] == 1:
+            frames_u8 = frames_u8.repeat(1, 1, 1, 3)
+
+        os.makedirs(self._debug_video_dir, exist_ok=True)
+        out_path = os.path.join(
+            self._debug_video_dir,
+            f"forward_debug_{int(time.time())}_min{mn:.4f}_max{mx:.4f}_mean{mean:.4f}.mp4",
+        )
+        try:
+            import imageio.v2 as imageio
+
+            imageio.mimsave(out_path, frames_u8.numpy(), fps=4)
+            print(f"[MA-VLCM debug] saved forward input video: {out_path}")
+        except Exception as e:
+            print(f"[MA-VLCM debug] failed to save mp4 ({e}); path={out_path}")
+        finally:
+            self._debug_video_saved = True
 
     def _infer_vocab_size(self) -> int:
         # Prefer LM head/output embeddings shape, then fall back to config fields.
@@ -443,6 +517,7 @@ class MultimodalValueModel(nn.Module):
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
+        self._maybe_save_debug_video_from_inputs(inputs)
         input_ids = inputs["input_ids"]
         attn_mask = inputs.get("attention_mask")
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
