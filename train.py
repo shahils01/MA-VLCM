@@ -100,12 +100,19 @@ def parse_args():
     )
     p.add_argument("--batch_size", type=int, default=2)
     p.add_argument("--num_workers", type=int, default=2)
-    p.add_argument("--samples_per_epoch", type=int, default=50000,
-                   help="Approximate samples per epoch for LR schedule (970 shards × ~50 clips)")
+    p.add_argument(
+        "--samples_per_epoch",
+        type=int,
+        default=50000,
+        help="Approximate samples per epoch for LR schedule (970 shards × ~50 clips)",
+    )
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
     p.add_argument(
-        "--dataset_type", type=str, default="rware", choices=["default", "rware", "offroad"]
+        "--dataset_type",
+        type=str,
+        default="rware",
+        choices=["default", "rware", "offroad"],
     )
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
     p.add_argument(
@@ -114,10 +121,18 @@ def parse_args():
         default="",
         help="WebDataset shard directory for OFFROAD data (enables multi-dataset training)",
     )
-    p.add_argument("--offroad_num_robots", type=int, default=5,
-                   help="Number of agents in the OFFROAD environment")
-    p.add_argument("--val_split", type=float, default=0.2,
-                   help="Fraction of shards to hold out for validation")
+    p.add_argument(
+        "--offroad_num_robots",
+        type=int,
+        default=5,
+        help="Number of agents in the OFFROAD environment",
+    )
+    p.add_argument(
+        "--val_split",
+        type=float,
+        default=0.2,
+        help="Fraction of shards to hold out for validation",
+    )
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=10)
@@ -147,7 +162,9 @@ def parse_args():
 
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
-    p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep", "nsteps"])
+    p.add_argument(
+        "--return_mode", type=str, default="td", choices=["td", "nstep", "nsteps"]
+    )
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
         "--loss_type",
@@ -171,7 +188,10 @@ def parse_args():
 
     # Accelerate
     p.add_argument(
-        "--mixed_precision", type=str, default="no", choices=["no","int8", "fp16", "bf16"]
+        "--mixed_precision",
+        type=str,
+        default="no",
+        choices=["no", "int8", "fp16", "bf16"],
     )
     p.add_argument(
         "--fsdp",
@@ -766,17 +786,26 @@ class SequenceWebDataset(IterableDataset):
             raise RuntimeError("webdataset is not installed.")
 
         if self.vlm_processor is None and self.vl_model_name is not None:
-            if self.vl_backend == "llava_onevision" or "llava-onevision" in self.vl_model_name.lower():
+            if (
+                self.vl_backend == "llava_onevision"
+                or "llava-onevision" in self.vl_model_name.lower()
+            ):
                 from transformers import LlavaOnevisionProcessor
+
                 try:
-                    self.vlm_processor = LlavaOnevisionProcessor.from_pretrained(self.vl_model_name)
+                    self.vlm_processor = LlavaOnevisionProcessor.from_pretrained(
+                        self.vl_model_name
+                    )
                     tokenizer = getattr(self.vlm_processor, "tokenizer", None)
                     if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
-                        tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
+                        tokenizer.add_special_tokens(
+                            {"additional_special_tokens": ["<obs>"]}
+                        )
                 except Exception as e:
                     print(f"Warning: Failed to load LLaVA-OneVision processor: {e}")
             else:
                 from transformers import LlavaNextVideoProcessor
+
                 try:
                     self.vlm_processor = LlavaNextVideoProcessor.from_pretrained(
                         self.vl_model_name
@@ -892,7 +921,10 @@ class SequenceWebDataset(IterableDataset):
             # Calculate discounted return (n-step TD style)
             returns = 0.0
             for frame in reversed(clip):
-                returns = float(frame["reward"]) + self.gamma * (1.0 - float(frame["done"])) * returns
+                returns = (
+                    float(frame["reward"])
+                    + self.gamma * (1.0 - float(frame["done"])) * returns
+                )
             returns = torch.tensor(returns, dtype=torch.float32)
 
             out = {
@@ -1228,7 +1260,9 @@ class SequenceWebDataset(IterableDataset):
                     )
 
                 n_ag = len(agents)
-                step_idx = state_json.get("episode_meta", {}).get("step", episode_frame_count)
+                step_idx = state_json.get("episode_meta", {}).get(
+                    "step", episode_frame_count
+                )
 
                 if self.text_prompt_template is None:
                     header = (
@@ -1300,7 +1334,9 @@ class SequenceWebDataset(IterableDataset):
                 buffer.popleft()
 
 
-def webdataset_loader(args, shards, batch_size, num_workers, shuffle=False, dataset_type=None):
+def webdataset_loader(
+    args, shards, batch_size, num_workers, shuffle=False, dataset_type=None
+):
     # Support glob patterns if passed as shards string
     if isinstance(shards, str) and "*" in shards:
         import glob
@@ -1547,14 +1583,21 @@ def run_epoch(
                         "train/pred_mean": pred.detach().mean().item(),
                         "train/reward_mean": reward.detach().mean().item(),
                     }
+                    if "returns" in batch:
+                        log_dict["train/true_returns_mean"] = (
+                            batch["returns"].to(accelerator.device).mean().item()
+                        )
+
                     if args.loss_type in ("contrastive", "contrastive_mse"):
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
-                        if args.return_mode in ("nstep", "nsteps") and "returns" in batch:
-                            log_dict["train/true_returns_mean"] = batch["returns"].to(accelerator.device).mean().item()
-                    elif args.loss_type == "td" and use_td:
-                        log_dict["train/td_target_mean"] = target.detach().mean().item()
+                    elif args.loss_type == "td":
+                        log_dict["train/target_mean"] = target.detach().mean().item()
+                        if use_td:
+                            log_dict["train/td_target_mean"] = (
+                                target.detach().mean().item()
+                            )
                     wandb.log(log_dict)
             except ImportError:
                 pass
@@ -1565,6 +1608,7 @@ def run_epoch(
 
 def split_shards(shards_pattern, val_split=0.2, seed=42):
     import glob, random
+
     if not isinstance(shards_pattern, str):
         return shards_pattern, None
 
@@ -1579,16 +1623,17 @@ def split_shards(shards_pattern, val_split=0.2, seed=42):
     files = sorted(glob.glob(shards_pattern))
     if not files:
         return shards_pattern, None
-        
+
     random.Random(seed).shuffle(files)
     split_idx = int(len(files) * (1.0 - val_split))
     train_shards = files[:split_idx]
     val_shards = files[split_idx:]
-    
+
     if len(val_shards) == 0:
         val_shards = None
-        
+
     return train_shards, val_shards
+
 
 def main():
     args = parse_args()
@@ -1786,8 +1831,12 @@ def main():
     train_main_shards, val_main_shards = split_shards(args.train_shards, args.val_split)
 
     if args.offroad_shards:
-        accelerator.print(f"Multi-dataset training enabled. Interleaving {args.dataset_type} and offroad datasets.")
-        train_offroad_shards, val_offroad_shards = split_shards(args.offroad_shards, args.val_split)
+        accelerator.print(
+            f"Multi-dataset training enabled. Interleaving {args.dataset_type} and offroad datasets."
+        )
+        train_offroad_shards, val_offroad_shards = split_shards(
+            args.offroad_shards, args.val_split
+        )
 
         class InterleavedDataLoader:
             def __init__(self, loader1, loader2, main_shards, offroad_shards):
@@ -1795,7 +1844,7 @@ def main():
                 self.loader2 = loader2
                 self.main_shards_count = len(main_shards) if main_shards else 0
                 self.offroad_shards_count = len(offroad_shards) if offroad_shards else 0
-            
+
             def __iter__(self):
                 iter1 = iter(self.loader1)
                 iter2 = iter(self.loader2)
@@ -1807,7 +1856,7 @@ def main():
                             yield next(iter1)
                         except StopIteration:
                             exhausted1 = True
-                            
+
                     if not exhausted2:
                         try:
                             yield next(iter2)
@@ -1817,27 +1866,59 @@ def main():
             def __len__(self):
                 # Approximation of dataset length for progress bar and steps
                 # Assumes ~50 clips per shard (as stated in defaults)
-                total_samples = (self.main_shards_count + self.offroad_shards_count) * 100
+                total_samples = (
+                    self.main_shards_count + self.offroad_shards_count
+                ) * 100
                 # Scale correctly down based on batch size & world size
-                return max(1, total_samples // max(1, args.batch_size) // max(1, accelerator.num_processes))
+                return max(
+                    1,
+                    total_samples
+                    // max(1, args.batch_size)
+                    // max(1, accelerator.num_processes),
+                )
 
         # Train Loader
         main_train_loader = webdataset_loader(
-            args, train_main_shards, args.batch_size, args.num_workers, shuffle=True, dataset_type=args.dataset_type
+            args,
+            train_main_shards,
+            args.batch_size,
+            args.num_workers,
+            shuffle=True,
+            dataset_type=args.dataset_type,
         )
         offroad_train_loader = webdataset_loader(
-            args, train_offroad_shards, args.batch_size, args.num_workers, shuffle=True, dataset_type="offroad"
+            args,
+            train_offroad_shards,
+            args.batch_size,
+            args.num_workers,
+            shuffle=True,
+            dataset_type="offroad",
         )
-        train_loader = InterleavedDataLoader(main_train_loader, offroad_train_loader, train_main_shards, train_offroad_shards)
+        train_loader = InterleavedDataLoader(
+            main_train_loader,
+            offroad_train_loader,
+            train_main_shards,
+            train_offroad_shards,
+        )
 
         # Val Loader
         val_loader = None
         if val_main_shards and val_offroad_shards:
             main_val_loader = webdataset_loader(
-                args, val_main_shards, args.batch_size, args.num_workers, shuffle=False, dataset_type=args.dataset_type
+                args,
+                val_main_shards,
+                args.batch_size,
+                args.num_workers,
+                shuffle=False,
+                dataset_type=args.dataset_type,
             )
             offroad_val_loader = webdataset_loader(
-                args, val_offroad_shards, args.batch_size, args.num_workers, shuffle=False, dataset_type="offroad"
+                args,
+                val_offroad_shards,
+                args.batch_size,
+                args.num_workers,
+                shuffle=False,
+                dataset_type="offroad",
             )
             val_loader = InterleavedDataLoader(main_val_loader, offroad_val_loader)
 
@@ -1909,9 +1990,10 @@ def main():
 
         if accelerator.is_main_process:
             from datetime import datetime
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             ckpt_name = f"ckpt_epoch_{epoch}_{timestamp}"
-            
+
             ckpt = {
                 "model": accelerator.get_state_dict(model),
                 "optimizer": optimizer.state_dict(),
@@ -1919,16 +2001,20 @@ def main():
                 "args": vars(args),
             }
             torch.save(ckpt, os.path.join(args.save_dir, f"{ckpt_name}.pt"))
-            
+
             # Save accompanying JSON spec file
             info_dict = {
                 "dataset_type": args.dataset_type,
                 "config": vars(args),
-                "sample_text_prompt": args.text_prompt_template if args.text_prompt_template is not None else "(auto-generated depending on dataset_type)"
+                "sample_text_prompt": (
+                    args.text_prompt_template
+                    if args.text_prompt_template is not None
+                    else "(auto-generated depending on dataset_type)"
+                ),
             }
             with open(os.path.join(args.save_dir, f"{ckpt_name}_info.json"), "w") as f:
                 json.dump(info_dict, f, indent=4)
-                
+
         accelerator.wait_for_everyone()
 
     # Finish wandb run
