@@ -10,7 +10,12 @@ from train import _apply_peft, _resolve_vl_model_preset, build_model
 
 def parse_args():
     p = argparse.ArgumentParser(description="Evaluate MA-VLCM critic predictions against return targets.")
-    p.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint (.pt) saved by train.py")
+    p.add_argument("--checkpoint", type=str, default="", help="Optional path to checkpoint (.pt) saved by train.py")
+    p.add_argument(
+        "--skip_checkpoint_weights",
+        action="store_true",
+        help="If set, do NOT load model weights from checkpoint (uses random init with same checkpoint config).",
+    )
     p.add_argument("--eval_shards", type=str, default="", help="Shard pattern for general eval set")
     p.add_argument("--good_shards", type=str, default="", help="Optional shard pattern containing good trajectories")
     p.add_argument("--bad_shards", type=str, default="", help="Optional shard pattern containing bad trajectories")
@@ -19,6 +24,58 @@ def parse_args():
     p.add_argument("--max_samples", type=int, default=512, help="Max samples to evaluate per dataset stream")
     p.add_argument("--print_samples", type=int, default=40, help="How many random pred-vs-return rows to print")
     p.add_argument("--seed", type=int, default=0)
+    # Fallback config (used when --checkpoint is not provided).
+    p.add_argument("--clip_len", type=int, default=20)
+    p.add_argument("--clip_stride", type=int, default=20)
+    p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
+    p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
+    p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
+    p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
+    p.add_argument("--preprocess_in_loader", action="store_true", default=True)
+    p.add_argument("--vl_max_text_len", type=int, default=256)
+    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--return_mode", type=str, default="nstep", choices=["td", "nstep"])
+    p.add_argument("--return_horizon", type=str, default="clip", choices=["clip", "trajectory"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
+    p.add_argument("--n_step", type=int, default=50)
+    p.add_argument("--vl_backend", type=str, default="llava_video", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
+    p.add_argument("--vl_model_name", type=str, default="llava-hf/llava-onevision-qwen2-0.5b-ov-hf")
+    p.add_argument(
+        "--vl_model_preset",
+        type=str,
+        default="llava_onevision_0p5b",
+        choices=["custom", "llava_next_video_7b", "llava_onevision_0p5b"],
+    )
+    p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
+    p.add_argument("--freeze_vl", action="store_true")
+    p.add_argument("--value_pooling", type=str, default="last_token_logits", choices=["last_token_logits", "hidden_mean"])
+    p.add_argument("--vl_logits_to_keep", type=int, default=1)
+    p.add_argument("--video_channels", type=int, default=3)
+    p.add_argument("--video_height", type=int, default=224)
+    p.add_argument("--video_width", type=int, default=224)
+    p.add_argument("--video_frames", type=int, default=100)
+    p.add_argument("--video_preprocessed", action="store_true", default=True)
+    p.add_argument("--video_mean", type=float, nargs=3, default=(0.5, 0.5, 0.5))
+    p.add_argument("--video_std", type=float, nargs=3, default=(0.5, 0.5, 0.5))
+    p.add_argument("--num_robots", type=int, default=5)
+    p.add_argument("--robot_obs_dim", type=int, default=40)
+    p.add_argument("--text_dim", type=int, default=512)
+    p.add_argument("--d_model", type=int, default=256)
+    p.add_argument("--temporal_layers", type=int, default=2)
+    p.add_argument("--temporal_heads", type=int, default=4)
+    p.add_argument("--temporal_dropout", type=float, default=0.1)
+    p.add_argument("--gnn_layers", type=int, default=2)
+    p.add_argument("--fusion_hidden", type=int, default=512)
+    p.add_argument("--use_moe", action="store_true")
+    p.add_argument("--moe_experts", type=int, default=4)
+    p.add_argument("--moe_top_k", type=int, default=2)
+    p.add_argument("--debug_save_video", action="store_true", default=False)
+    p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
+    p.add_argument("--lora_r", type=int, default=16)
+    p.add_argument("--lora_alpha", type=int, default=32)
+    p.add_argument("--lora_dropout", type=float, default=0.05)
+    p.add_argument("--lora_target_modules", type=str, default="")
+    p.add_argument("--lora_bias", type=str, default="none", choices=["none", "all", "lora_only"])
     return p.parse_args()
 
 
@@ -60,6 +117,60 @@ def _load_train_args(ckpt):
     if "args" not in ckpt:
         raise KeyError("Checkpoint does not contain saved training args under key 'args'.")
     return SimpleNamespace(**ckpt["args"])
+
+
+def _args_from_cli(cli_args):
+    keys = [
+        "batch_size",
+        "num_workers",
+        "clip_len",
+        "clip_stride",
+        "text_mode",
+        "robot_source",
+        "reward_reduce",
+        "done_reduce",
+        "preprocess_in_loader",
+        "vl_max_text_len",
+        "gamma",
+        "return_mode",
+        "return_horizon",
+        "loss_type",
+        "n_step",
+        "vl_backend",
+        "vl_model_name",
+        "vl_model_preset",
+        "vl_dtype",
+        "freeze_vl",
+        "value_pooling",
+        "vl_logits_to_keep",
+        "video_channels",
+        "video_height",
+        "video_width",
+        "video_frames",
+        "video_preprocessed",
+        "video_mean",
+        "video_std",
+        "num_robots",
+        "robot_obs_dim",
+        "text_dim",
+        "d_model",
+        "temporal_layers",
+        "temporal_heads",
+        "temporal_dropout",
+        "gnn_layers",
+        "fusion_hidden",
+        "use_moe",
+        "moe_experts",
+        "moe_top_k",
+        "debug_save_video",
+        "peft",
+        "lora_r",
+        "lora_alpha",
+        "lora_dropout",
+        "lora_target_modules",
+        "lora_bias",
+    ]
+    return SimpleNamespace(**{k: getattr(cli_args, k) for k in keys})
 
 
 def _init_quant_config_if_needed(args):
@@ -181,8 +292,12 @@ def main():
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = torch.load(args.checkpoint, map_location="cpu")
-    train_args = _load_train_args(ckpt)
+    ckpt = None
+    if args.checkpoint:
+        ckpt = torch.load(args.checkpoint, map_location="cpu")
+        train_args = _load_train_args(ckpt)
+    else:
+        train_args = _args_from_cli(args)
 
     _resolve_vl_model_preset(train_args)
     _init_quant_config_if_needed(train_args)
@@ -193,7 +308,13 @@ def main():
 
     model = build_model(train_args, device=device)
     model = _apply_peft(model, train_args)
-    _load_checkpoint_state(model, ckpt["model"], getattr(train_args, "peft", "none"))
+    if ckpt is not None and not args.skip_checkpoint_weights:
+        _load_checkpoint_state(model, ckpt["model"], getattr(train_args, "peft", "none"))
+        print("Evaluation mode: checkpoint-loaded model weights.")
+    elif ckpt is not None and args.skip_checkpoint_weights:
+        print("Evaluation mode: random initialization using checkpoint architecture/config (weights NOT loaded).")
+    else:
+        print("Evaluation mode: random initialization from CLI-provided/default architecture.")
     model.eval()
     model.to(device)
 
