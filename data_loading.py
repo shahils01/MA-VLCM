@@ -99,6 +99,8 @@ class SequenceWebDataset(IterableDataset):
         vlm_max_text_len=256,
         vlm_truncation=False,
         vlm_padding="longest",
+        gamma=0.99,
+        return_horizon="clip",
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -113,6 +115,10 @@ class SequenceWebDataset(IterableDataset):
         self.vlm_max_text_len = vlm_max_text_len
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
+        self.gamma = float(gamma)
+        if return_horizon not in {"clip", "trajectory"}:
+            raise ValueError("return_horizon must be one of {'clip', 'trajectory'}")
+        self.return_horizon = return_horizon
 
     @staticmethod
     def _as_bool(x):
@@ -151,6 +157,21 @@ class SequenceWebDataset(IterableDataset):
         for _ in range(done_idx + 1, len(clip)):
             out.append(self._terminal_pad_from(terminal))
         return out
+
+    def _discounted_return(self, frames):
+        ret = None
+        discount = 1.0
+        for frame in frames:
+            reward = frame["reward"]
+            if ret is None:
+                ret = torch.zeros_like(reward)
+            ret = ret + discount * reward
+            if self._as_bool(frame["done"]):
+                break
+            discount *= self.gamma
+        if ret is None:
+            ret = torch.tensor(0.0, dtype=torch.float32)
+        return ret
 
     def __iter__(self):
         if wds is None:
@@ -240,7 +261,15 @@ class SequenceWebDataset(IterableDataset):
 
                 reward = clip[-1]["reward"]
                 done = clip[-1]["done"]
-                returns = torch.stack([f["reward"] for f in clip], dim=0).sum(dim=0)
+                if self.return_horizon == "trajectory":
+                    traj = []
+                    for j in range(i, len(buffer)):
+                        traj.append(buffer[j])
+                        if self._as_bool(buffer[j]["done"]):
+                            break
+                    returns = self._discounted_return(traj)
+                else:
+                    returns = self._discounted_return(clip)
 
                 out = {
                     "inputs": inputs,
@@ -355,6 +384,8 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=(args.vl_backend != "llava_video"),
         vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
+        gamma=getattr(args, "gamma", 0.99),
+        return_horizon=getattr(args, "return_horizon", "clip"),
     )
 
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate_sequence_batch)

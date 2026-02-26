@@ -64,6 +64,13 @@ def parse_args():
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
+    p.add_argument(
+        "--return_horizon",
+        type=str,
+        default="trajectory",
+        choices=["clip", "trajectory"],
+        help="For nstep-style targets: discounted return over clip or from clip start to terminal state in episode.",
+    )
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
     p.add_argument("--contrastive_margin", type=float, default=0.0)

@@ -53,7 +53,7 @@ class ModelConfig:
     moe_top_k: int = 2
 
     # Debug
-    debug_save_video: bool = False
+    debug_save_video: bool = True
     # Value head pooling strategy:
     # - hidden_mean: pool final hidden states over tokens (higher memory)
     # - last_token_logits: use last-token logits as VLM feature (lower memory)
