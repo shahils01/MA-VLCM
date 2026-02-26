@@ -1817,7 +1817,7 @@ def main():
             def __len__(self):
                 # Approximation of dataset length for progress bar and steps
                 # Assumes ~50 clips per shard (as stated in defaults)
-                total_samples = (self.main_shards_count + self.offroad_shards_count) * 50
+                total_samples = (self.main_shards_count + self.offroad_shards_count) * 100
                 # Scale correctly down based on batch size & world size
                 return max(1, total_samples // max(1, args.batch_size) // max(1, accelerator.num_processes))
 

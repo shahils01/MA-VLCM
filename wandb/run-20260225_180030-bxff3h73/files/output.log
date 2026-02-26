@@ -1,0 +1,15 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:23<00:00, 29.41it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                         
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 6,291,456 trainable / 309,798,912 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+Found 951 shards.
+Expanding shard directory: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/Varied_Traversability
+Found 1039 shards.
+train:   0%|          | 0/440 [00:00<?, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train: 1763it [4:45:53,  9.70s/it, loss=0.4425, lr=3.00e-04]                        

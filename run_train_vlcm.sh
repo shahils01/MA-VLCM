@@ -85,58 +85,22 @@ echo "Saving checkpoints to: $SAVE_DIR"
 
 # Run with Singularity
 # We bind the entire BASE_SCRATCH to ensure the container can access the tmp locations if needed
-# apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
-#   --env HF_TOKEN="$HF_TOKEN" \
-#   "$CONTAINER_PATH" accelerate launch --num_processes 4 train.py \
-#   --train_shards "$SHARD_PATTERN" \
-#   --offroad_shards "$OFFROAD_DATA_DIR" \
-#   --offroad_num_robots "$NUM_ROBOTS" \
-#   --dataset_type rware \
-#   --rware_config "$CONFIG_NAME" \
-#   --batch_size 8 \
-#   --grad_accum_steps 4 \
-#   --clip_len 24 \
-#   --num_robots "$NUM_ROBOTS" \
-#   --robot_obs_dim 8 \
-#   --epochs 10 \
-#   --vl_backend llava_onevision \
-#   --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
-#   --save_dir "$SAVE_DIR" \
-#   --num_workers 16 \
-#   --mixed_precision bf16 \
-#   --freeze_vl \
-#   --peft lora \
-#   --lora_r 32 \
-#   --lora_alpha 64 \
-#   --lora_dropout 0.05 \
-#   --vision_lr 1e-5 \
-#   --loss_type td \
-#   --return_mode td \
-#   --mse_loss_weight 0.5 \
-#   --max_grad_norm 1.0 \
-#   --samples_per_epoch 50000 \
-#   --vl_max_text_len 7000
-
-# Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
-##   --vl_backend llava_video \
-#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
-
 apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --env HF_TOKEN="$HF_TOKEN" \
-  "$CONTAINER_PATH" accelerate launch --num_processes 1 train.py \
+  "$CONTAINER_PATH" accelerate launch --num_processes 2 train.py \
   --train_shards "$SHARD_PATTERN" \
   --offroad_shards "$OFFROAD_DATA_DIR" \
   --offroad_num_robots "$NUM_ROBOTS" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 8 \
-  --grad_accum_steps 4 \
-  --clip_len 8 \
+  --batch_size 18 \
+  --grad_accum_steps 2 \
+  --clip_len 32 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 10 \
-##   --vl_backend llava_video \
-#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf
+  --vl_backend llava_video \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir "$SAVE_DIR" \
   --num_workers 16 \
   --mixed_precision bf16 \
@@ -147,8 +111,44 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
   --loss_type td \
-  --return_mode td \
+  --return_mode nstep \
   --mse_loss_weight 0.5 \
   --max_grad_norm 1.0 \
   --samples_per_epoch 50000 \
-  --vl_max_text_len 4000
+  --vl_max_text_len 4700
+
+# Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
+##   --vl_backend llava_video \
+#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
+
+# apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
+#   --env HF_TOKEN="$HF_TOKEN" \
+#   "$CONTAINER_PATH" accelerate launch --num_processes 1 train.py \
+#   --train_shards "$SHARD_PATTERN" \
+#   --offroad_shards "$OFFROAD_DATA_DIR" \
+#   --offroad_num_robots "$NUM_ROBOTS" \
+#   --dataset_type rware \
+#   --rware_config "$CONFIG_NAME" \
+#   --batch_size 8 \
+#   --grad_accum_steps 4 \
+#   --clip_len 16 \
+#   --num_robots "$NUM_ROBOTS" \
+#   --robot_obs_dim 8 \
+#   --epochs 10 \
+#   --vl_backend llava_onevision \
+#   --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+#   --save_dir "$SAVE_DIR" \
+#   --num_workers 16 \
+#   --mixed_precision bf16 \
+#   --freeze_vl \
+#   --peft lora \
+#   --lora_r 16 \
+#   --lora_alpha 32 \
+#   --lora_dropout 0.05 \
+#   --vision_lr 1e-5 \
+#   --loss_type td \
+#   --return_mode td \
+#   --mse_loss_weight 0.5 \
+#   --max_grad_norm 1.0 \
+#   --samples_per_epoch 50000 \
+#   --vl_max_text_len 7000
