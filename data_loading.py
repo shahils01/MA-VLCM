@@ -101,6 +101,8 @@ class SequenceWebDataset(IterableDataset):
         vlm_padding="longest",
         gamma=0.99,
         return_horizon="clip",
+        n_step=1,
+        include_nstep_bootstrap=False,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -116,6 +118,8 @@ class SequenceWebDataset(IterableDataset):
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
         self.gamma = float(gamma)
+        self.n_step = max(1, int(n_step))
+        self.include_nstep_bootstrap = include_nstep_bootstrap
         if return_horizon not in {"clip", "trajectory"}:
             raise ValueError("return_horizon must be one of {'clip', 'trajectory'}")
         self.return_horizon = return_horizon
@@ -173,6 +177,31 @@ class SequenceWebDataset(IterableDataset):
             ret = torch.tensor(0.0, dtype=torch.float32)
         return ret
 
+    def _nstep_discounted_return(self, buffer, clip_start):
+        reward_start = clip_start + self.clip_len - 1
+        ret = None
+        discount = 1.0
+        done_n = False
+        for j in range(self.n_step):
+            idx = reward_start + j
+            if idx >= len(buffer):
+                done_n = True
+                break
+            frame = buffer[idx]
+            reward = frame["reward"]
+            if ret is None:
+                ret = torch.zeros_like(reward)
+            ret = ret + discount * reward
+            if self._as_bool(frame["done"]):
+                done_n = True
+                break
+            discount *= self.gamma
+
+        if ret is None:
+            ret = torch.tensor(0.0, dtype=torch.float32)
+            done_n = True
+        return ret, done_n
+
     def __iter__(self):
         if wds is None:
             raise RuntimeError("webdataset is not installed.")
@@ -195,10 +224,15 @@ class SequenceWebDataset(IterableDataset):
         buffer = []
 
         def flush_buffer():
-            min_len = self.clip_len + (1 if self.include_next else 0)
+            extra = 0
+            if self.include_nstep_bootstrap:
+                extra = self.n_step
+            elif self.include_next:
+                extra = 1
+            min_len = self.clip_len + extra
             if len(buffer) < min_len:
                 return
-            max_i = len(buffer) - self.clip_len - (1 if self.include_next else 0)
+            max_i = len(buffer) - self.clip_len - extra
             start_idxs = list(range(0, max_i + 1, self.clip_stride))
             if len(start_idxs) > 1:
                 perm = torch.randperm(len(start_idxs)).tolist()
@@ -212,6 +246,10 @@ class SequenceWebDataset(IterableDataset):
                 if self.include_next:
                     next_clip = self._apply_done_termination(buffer[i + 1 : i + 1 + self.clip_len])
                     raw_next_video = [f["image"] for f in next_clip]
+                nstep_clip = None
+                if self.include_nstep_bootstrap:
+                    nstep_clip = self._apply_done_termination(buffer[i + self.n_step : i + self.n_step + self.clip_len])
+                    raw_nstep_video = [f["image"] for f in nstep_clip]
 
                 if self.vlm_processor is None:
                     raise RuntimeError("Dataloader processor not set.")
@@ -252,12 +290,16 @@ class SequenceWebDataset(IterableDataset):
                 text = clip[0]["text"]
                 inputs = _proc(raw_video, text)
                 next_inputs = _proc(raw_next_video, text) if self.include_next else None
+                nstep_inputs = _proc(raw_nstep_video, text) if self.include_nstep_bootstrap else None
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
                 adj = torch.stack([f["adj"] for f in clip], dim=0)
                 if self.include_next:
                     next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
                     next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
+                if self.include_nstep_bootstrap:
+                    nstep_robot_obs = torch.stack([f["robot_obs"] for f in nstep_clip], dim=0)
+                    nstep_adj = torch.stack([f["adj"] for f in nstep_clip], dim=0)
 
                 reward = clip[-1]["reward"]
                 done = clip[-1]["done"]
@@ -283,6 +325,13 @@ class SequenceWebDataset(IterableDataset):
                     out["next_inputs"] = next_inputs
                     out["next_robot_obs"] = next_robot_obs
                     out["next_adj"] = next_adj
+                if self.include_nstep_bootstrap:
+                    nstep_returns, nstep_done = self._nstep_discounted_return(buffer, i)
+                    out["td_nstep_return"] = nstep_returns.view(1)
+                    out["td_nstep_done"] = torch.tensor([float(nstep_done)], dtype=torch.float32)
+                    out["td_nstep_inputs"] = nstep_inputs
+                    out["td_nstep_robot_obs"] = nstep_robot_obs
+                    out["td_nstep_adj"] = nstep_adj
                 yield out
 
         for sample in dataset:
@@ -357,6 +406,12 @@ def _collate_sequence_batch(batch):
         out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
     if "returns" in batch[0]:
         out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
+    if "td_nstep_return" in batch[0]:
+        out["td_nstep_return"] = torch.stack([b["td_nstep_return"] for b in batch], dim=0).view(-1)
+        out["td_nstep_done"] = torch.stack([b["td_nstep_done"] for b in batch], dim=0).view(-1)
+        out["td_nstep_inputs"] = _stack_inputs([b["td_nstep_inputs"] for b in batch])
+        out["td_nstep_robot_obs"] = torch.stack([b["td_nstep_robot_obs"] for b in batch], dim=0)
+        out["td_nstep_adj"] = torch.stack([b["td_nstep_adj"] for b in batch], dim=0)
     return out
 
 
@@ -381,11 +436,13 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         vlm_processor=vlm_processor,
         text_prompt_template=args.text_prompt_template,
         include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
+        include_nstep_bootstrap=(args.loss_type != "contrastive" and args.return_mode == "nstep"),
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=(args.vl_backend != "llava_video"),
         vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
         gamma=getattr(args, "gamma", 0.99),
         return_horizon=getattr(args, "return_horizon", "clip"),
+        n_step=getattr(args, "n_step", 1),
     )
 
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate_sequence_batch)

@@ -337,6 +337,13 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
+        use_nstep_td = args.loss_type != "contrastive" and args.return_mode == "nstep"
+        if use_nstep_td:
+            nstep_inputs = _move_inputs(batch["td_nstep_inputs"])
+            nstep_robot_obs = batch["td_nstep_robot_obs"].to(accelerator.device)
+            nstep_adj = batch["td_nstep_adj"].to(accelerator.device)
+            nstep_returns = batch["td_nstep_return"].to(accelerator.device)
+            nstep_done = batch["td_nstep_done"].to(accelerator.device).float()
 
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
@@ -371,6 +378,11 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                         with torch.no_grad():
                             next_pred = model(next_inputs, next_robot_obs, next_adj)
                         target = reward + gamma * (1.0 - done) * next_pred
+                    elif args.return_mode == "nstep":
+                        with torch.no_grad():
+                            nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
+                        gamma_n = gamma ** int(args.n_step)
+                        target = nstep_returns + gamma_n * (1.0 - nstep_done) * nstep_bootstrap_pred
                     else:
                         target = batch["returns"].to(accelerator.device)
                     loss = loss_fn(pred, target)
