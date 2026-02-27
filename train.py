@@ -1960,6 +1960,8 @@ def main():
                 val_loader = InterleavedDataLoader(
                     val_loaders[0],
                     val_loaders[1],
+                    val_main_shards or [],
+                    val_offroad_shards or [],
                 )
             elif len(val_loaders) == 1:
                 val_loader = val_loaders[0]
