@@ -917,8 +917,8 @@ class SequenceWebDataset(IterableDataset):
                 next_robot_obs = torch.stack([f["robot_obs"] for f in next_clip], dim=0)
                 next_adj = torch.stack([f["adj"] for f in next_clip], dim=0)
 
-            reward = clip[-1]["reward"]
-            done = clip[-1]["done"]
+            reward = torch.tensor(float(clip[-1]["reward"]), dtype=torch.float32)
+            done = torch.tensor(float(clip[-1]["done"]), dtype=torch.float32)
 
             # Calculate discounted return (n-step TD style)
             returns = 0.0
