@@ -1672,13 +1672,17 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     loss_str = "ContrastiveMSE"
-    if args.loss_type == "td":
-        loss_str = "TD"
+    if args.loss_type == "mse":
+        loss_str = "MSE"
     elif args.loss_type == "contrastive":
         loss_str = "Contrastive"
+    elif args.loss_type == "td":
+        loss_str = "TD"
 
     ret_str = "LongHorizonReturn"
-    if args.return_mode == "td":
+    if args.return_mode in ("nstep", "nsteps"):
+        ret_str = f"{args.n_step}StepReturn"
+    elif args.return_mode == "td":
         ret_str = "TDReturn"
 
     args.run_name = f"{ret_str}_{loss_str}_{timestamp}"
