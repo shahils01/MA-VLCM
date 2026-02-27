@@ -103,11 +103,11 @@ def parse_args():
     p.add_argument(
         "--value_pooling",
         type=str,
-        default="hidden_mean",
+        default="last_token_logits",
         choices=["last_token_logits", "hidden_mean"],
         help="Feature pooling strategy for value head; last_token_logits is more memory efficient.",
     )
-    p.add_argument("--vl_logits_to_keep", type=int, default=1, help="If supported, keep logits for only last K tokens")
+    p.add_argument("--vl_logits_to_keep", type=int, default=0, help="If supported, keep logits for only last K tokens")
 
     # PEFT / LoRA
     p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])

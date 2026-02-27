@@ -263,7 +263,7 @@ class SequenceWebDataset(IterableDataset):
                 done = clip[-1]["done"]
                 if self.return_horizon == "trajectory":
                     traj = []
-                    for j in range(i, len(buffer)):
+                    for j in range(i + self.clip_len, len(buffer)):
                         traj.append(buffer[j])
                         if self._as_bool(buffer[j]["done"]):
                             break
