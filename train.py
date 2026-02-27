@@ -163,14 +163,14 @@ def parse_args():
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument(
-        "--return_mode", type=str, default="td", choices=["td", "nstep", "nsteps"]
+        "--return_mode", type=str, default="nstep", choices=["nstep", "nsteps"]
     )
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
         "--loss_type",
         type=str,
         default="contrastive_mse",
-        choices=["td", "contrastive", "contrastive_mse"],
+        choices=["mse", "contrastive", "contrastive_mse"],
     )
     p.add_argument("--contrastive_margin", type=float, default=0.0)
     p.add_argument(
@@ -691,7 +691,7 @@ class SequenceWebDataset(IterableDataset):
         max_num_robots=None,
         shuffle_shards=False,
         text_prompt_template=None,
-        return_mode="td",
+        return_mode="nstep",
         n_step=50,
         gamma=0.99,
         keep_raw_video=False,
@@ -1382,7 +1382,7 @@ def webdataset_loader(
         keep_raw_video=False,
         include_next=(
             args.loss_type != "contrastive"
-            and args.return_mode in ("td", "nstep", "nsteps")
+            and args.return_mode in ("td", "nstep", "nsteps", "mse")
         ),
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=True,
@@ -1509,12 +1509,13 @@ def run_epoch(
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        use_td = args.loss_type != "contrastive" and args.return_mode in (
+        use_next = args.loss_type != "contrastive" and args.return_mode in (
             "td",
             "nstep",
             "nsteps",
+            "mse",
         )
-        if use_td:
+        if use_next:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
@@ -1534,44 +1535,44 @@ def run_epoch(
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
                 pred = model(inputs, robot_obs, adj)
-                if args.loss_type in ("contrastive", "contrastive_mse"):
-                    # Use returns if available, otherwise use per-clip reward.
-                    if args.return_mode in ("nstep", "nsteps") and "returns" in batch:
-                        returns = batch["returns"].to(accelerator.device)
-                    else:
-                        returns = reward
-                    contrastive_loss = _contrastive_pairwise_loss(
-                        pred.view(-1), returns.view(-1), margin=args.contrastive_margin
-                    )
-                    if args.loss_type == "contrastive_mse":
-                        mse_loss = F.mse_loss(pred.view(-1), returns.view(-1))
-                        loss = contrastive_loss + args.mse_loss_weight * mse_loss
-                    else:
-                        mse_loss = None
-                        loss = contrastive_loss
-                else:
-                    if args.return_mode == "td":
+                if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
+                    # Calculate bootstrapped target
+                    if args.return_mode in ("nstep", "nsteps") and use_next:
                         with torch.no_grad():
                             next_pred = model(
                                 next_inputs,
                                 next_robot_obs,
                                 next_adj,
                             )
-                        target = reward + gamma * (1.0 - done) * next_pred
-                    elif args.return_mode in ("nstep", "nsteps"):
-                        with torch.no_grad():
-                            next_pred = model(
-                                next_inputs,
-                                next_robot_obs,
-                                next_adj,
-                            )
-                        # We use gamma ** clip_len for the n-step bootstrap
                         clip_gamma = gamma**args.clip_len
-                        nstep_returns = batch["returns"].to(accelerator.device)
-                        target = nstep_returns + clip_gamma * (1.0 - done) * next_pred
+                        if "returns" in batch:
+                            nstep_returns = batch["returns"].to(accelerator.device)
+                            target = (
+                                nstep_returns + clip_gamma * (1.0 - done) * next_pred
+                            )
+                        else:
+                            # Fallback if somehow returns are missing, but SequenceWebDataset provides it
+                            target = reward + clip_gamma * (1.0 - done) * next_pred
                     else:
-                        target = batch["returns"].to(accelerator.device)
-                    loss = loss_fn(pred, target)
+                        if "returns" in batch:
+                            target = batch["returns"].to(accelerator.device)
+                        else:
+                            target = reward
+
+                    if args.loss_type in ("contrastive", "contrastive_mse"):
+                        contrastive_loss = _contrastive_pairwise_loss(
+                            pred.view(-1),
+                            target.view(-1),
+                            margin=args.contrastive_margin,
+                        )
+                        if args.loss_type == "contrastive_mse":
+                            mse_loss = F.mse_loss(pred.view(-1), target.view(-1))
+                            loss = contrastive_loss + args.mse_loss_weight * mse_loss
+                        else:
+                            mse_loss = None
+                            loss = contrastive_loss
+                    elif args.loss_type == "mse":
+                        loss = loss_fn(pred, target)
                 if train:
                     accelerator.backward(loss)
                     if args.max_grad_norm > 0 and accelerator.sync_gradients:
@@ -1617,12 +1618,12 @@ def run_epoch(
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
-                    elif args.loss_type in ("td", "nstep", "nsteps") or getattr(
+                    elif args.loss_type in ("mse", "nstep", "nsteps") or getattr(
                         args, "return_mode", None
-                    ) in ("td", "nstep", "nsteps"):
+                    ) in ("mse", "nstep", "nsteps"):
                         log_dict["train/target_mean"] = target.detach().mean().item()
-                        if use_td:
-                            log_dict["train/td_target_mean"] = (
+                        if use_next:
+                            log_dict["train/nstep_target_mean"] = (
                                 target.detach().mean().item()
                             )
                     wandb.log(log_dict)
@@ -1665,6 +1666,22 @@ def split_shards(shards_pattern, val_split=0.2, seed=42):
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
+
+    from datetime import datetime
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    loss_str = "ContrastiveMSE"
+    if args.loss_type == "td":
+        loss_str = "TD"
+    elif args.loss_type == "contrastive":
+        loss_str = "Contrastive"
+
+    ret_str = "LongHorizonReturn"
+    if args.return_mode == "td":
+        ret_str = "TDReturn"
+
+    args.run_name = f"{ret_str}_{loss_str}_{timestamp}"
 
     # ── Performance: enable TF32 for H100 / Ampere+ GPUs ──
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -1753,15 +1770,10 @@ def main():
         try:
             import wandb
 
-            # Run name with timestamp
-            from datetime import datetime
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            run_name = f"rware_dense_loss_{timestamp}"
             wandb.init(
                 entity="i2rLAB",
                 project="VLCM_Training_RWARE",
-                name=run_name,
+                name=args.run_name,
                 config=vars(args),
             )
         except ImportError:
@@ -2018,10 +2030,7 @@ def main():
                 pass
 
         if accelerator.is_main_process:
-            from datetime import datetime
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ckpt_name = f"ckpt_epoch_{epoch}_{timestamp}"
+            ckpt_name = f"{args.run_name}_epoch_{epoch}"
 
             ckpt = {
                 "model": accelerator.get_state_dict(model),
