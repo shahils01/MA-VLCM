@@ -1372,7 +1372,7 @@ def webdataset_loader(
         max_num_robots=args.num_robots,
         shuffle_shards=shuffle,
         text_prompt_template=args.text_prompt_template,
-        dataset_type=args.dataset_type,
+        dataset_type=dataset_type,
         rware_config=args.rware_config,
         return_mode=args.return_mode,
         n_step=args.n_step,

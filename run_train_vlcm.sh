@@ -102,7 +102,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --vl_backend llava_onevision \
   --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
   --save_dir "$SAVE_DIR" \
-  --num_workers 16 \
+  --num_workers 4 \
   --mixed_precision bf16 \
   --freeze_vl \
   --peft none \
