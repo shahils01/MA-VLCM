@@ -1,0 +1,22 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 716/716 [00:03<00:00, 238.39it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.weight]                      
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 760 shards.
+Found 831 shards.
+Found 191 shards.
+Found 208 shards.
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2073, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1960, in main
+    val_loader = InterleavedDataLoader(
+TypeError: main.<locals>.InterleavedDataLoader.__init__() missing 2 required positional arguments: 'main_shards' and 'offroad_shards'
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2073, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1960, in main
+[rank0]:     val_loader = InterleavedDataLoader(
+[rank0]: TypeError: main.<locals>.InterleavedDataLoader.__init__() missing 2 required positional arguments: 'main_shards' and 'offroad_shards'
