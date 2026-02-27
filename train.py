@@ -1618,7 +1618,7 @@ def run_epoch(
     return total_loss / max(step, 1)
 
 
-def split_shards(shards_pattern, val_split=0.2, seed=42):
+def split_shards(shards_pattern, val_split=0.3, seed=42):
     import glob, random
 
     if not isinstance(shards_pattern, str):
@@ -1626,13 +1626,21 @@ def split_shards(shards_pattern, val_split=0.2, seed=42):
 
     # Handle remote URLs seamlessly
     if shards_pattern.startswith(("hf://", "http://", "https://", "pipe:")):
-        # Cannot glob remote URLs easily. Assume validation was handled earlier or use them entirely
         return shards_pattern, None
 
-    if "*" not in shards_pattern:
+    # If it's a directory, recursively find all .tar files
+    if os.path.isdir(shards_pattern):
+        files = sorted(
+            glob.glob(
+                os.path.join(shards_pattern, "**", "*.tar"),
+                recursive=True,
+            )
+        )
+    elif "*" in shards_pattern:
+        files = sorted(glob.glob(shards_pattern))
+    else:
         return shards_pattern, None
 
-    files = sorted(glob.glob(shards_pattern))
     if not files:
         return shards_pattern, None
 
@@ -1924,24 +1932,37 @@ def main():
 
         # Val Loader
         val_loader = None
-        if val_main_shards and val_offroad_shards:
-            main_val_loader = webdataset_loader(
-                args,
-                val_main_shards,
-                args.batch_size,
-                args.num_workers,
-                shuffle=False,
-                dataset_type=args.dataset_type,
-            )
-            offroad_val_loader = webdataset_loader(
-                args,
-                val_offroad_shards,
-                args.batch_size,
-                args.num_workers,
-                shuffle=False,
-                dataset_type="offroad",
-            )
-            val_loader = InterleavedDataLoader(main_val_loader, offroad_val_loader)
+        if val_main_shards or val_offroad_shards:
+            val_loaders = []
+            if val_main_shards:
+                val_loaders.append(
+                    webdataset_loader(
+                        args,
+                        val_main_shards,
+                        args.batch_size,
+                        args.num_workers,
+                        shuffle=False,
+                        dataset_type=args.dataset_type,
+                    )
+                )
+            if val_offroad_shards:
+                val_loaders.append(
+                    webdataset_loader(
+                        args,
+                        val_offroad_shards,
+                        args.batch_size,
+                        args.num_workers,
+                        shuffle=False,
+                        dataset_type="offroad",
+                    )
+                )
+            if len(val_loaders) == 2:
+                val_loader = InterleavedDataLoader(
+                    val_loaders[0],
+                    val_loaders[1],
+                )
+            elif len(val_loaders) == 1:
+                val_loader = val_loaders[0]
 
     else:
         # Standard single dataset loading
