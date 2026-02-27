@@ -162,9 +162,7 @@ def parse_args():
 
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
-    p.add_argument(
-        "--return_mode", type=str, default="nstep", choices=["nstep", "nsteps"]
-    )
+    p.add_argument("--return_mode", type=str, default="nstep", choices=["nstep"])
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
         "--loss_type",
@@ -1380,10 +1378,7 @@ def webdataset_loader(
         n_step=args.n_step,
         gamma=args.gamma,
         keep_raw_video=False,
-        include_next=(
-            args.loss_type != "contrastive"
-            and args.return_mode in ("td", "nstep", "nsteps", "mse")
-        ),
+        include_next=True,  # Always bootstrap with nstep returns
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=True,
         vlm_padding="max_length",
@@ -1509,12 +1504,7 @@ def run_epoch(
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        use_next = args.loss_type != "contrastive" and args.return_mode in (
-            "td",
-            "nstep",
-            "nsteps",
-            "mse",
-        )
+        use_next = True  # Always bootstrap with nstep returns
         if use_next:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
@@ -1537,7 +1527,7 @@ def run_epoch(
                 pred = model(inputs, robot_obs, adj)
                 if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
                     # Calculate bootstrapped target
-                    if args.return_mode in ("nstep", "nsteps") and use_next:
+                    if use_next:
                         with torch.no_grad():
                             next_pred = model(
                                 next_inputs,
@@ -1614,18 +1604,12 @@ def run_epoch(
                             batch["returns"].to(accelerator.device).mean().item()
                         )
 
+                    # Always log the bootstrapped target mean
+                    log_dict["train/target_mean"] = target.detach().mean().item()
                     if args.loss_type in ("contrastive", "contrastive_mse"):
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
-                    elif args.loss_type in ("mse", "nstep", "nsteps") or getattr(
-                        args, "return_mode", None
-                    ) in ("mse", "nstep", "nsteps"):
-                        log_dict["train/target_mean"] = target.detach().mean().item()
-                        if use_next:
-                            log_dict["train/nstep_target_mean"] = (
-                                target.detach().mean().item()
-                            )
                     wandb.log(log_dict)
             except ImportError:
                 pass
@@ -1676,14 +1660,8 @@ def main():
         loss_str = "MSE"
     elif args.loss_type == "contrastive":
         loss_str = "Contrastive"
-    elif args.loss_type == "td":
-        loss_str = "TD"
 
-    ret_str = "LongHorizonReturn"
-    if args.return_mode in ("nstep", "nsteps"):
-        ret_str = f"{args.n_step}StepReturn"
-    elif args.return_mode == "td":
-        ret_str = "TDReturn"
+    ret_str = f"{args.n_step}StepReturn"
 
     args.run_name = f"{ret_str}_{loss_str}_{timestamp}"
 

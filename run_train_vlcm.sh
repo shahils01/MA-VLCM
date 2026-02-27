@@ -110,7 +110,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --lora_alpha 64 \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
-  --loss_type td \
+  --loss_type contrastive_mse \
   --return_mode nstep \
   --mse_loss_weight 0.5 \
   --max_grad_norm 1.0 \
