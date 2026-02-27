@@ -1380,7 +1380,10 @@ def webdataset_loader(
         n_step=args.n_step,
         gamma=args.gamma,
         keep_raw_video=False,
-        include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
+        include_next=(
+            args.loss_type != "contrastive"
+            and args.return_mode in ("td", "nstep", "nsteps")
+        ),
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=True,
         vlm_padding="max_length",
@@ -1506,7 +1509,11 @@ def run_epoch(
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        use_td = args.loss_type != "contrastive" and args.return_mode == "td"
+        use_td = args.loss_type != "contrastive" and args.return_mode in (
+            "td",
+            "nstep",
+            "nsteps",
+        )
         if use_td:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
@@ -1551,6 +1558,17 @@ def run_epoch(
                                 next_adj,
                             )
                         target = reward + gamma * (1.0 - done) * next_pred
+                    elif args.return_mode in ("nstep", "nsteps"):
+                        with torch.no_grad():
+                            next_pred = model(
+                                next_inputs,
+                                next_robot_obs,
+                                next_adj,
+                            )
+                        # We use gamma ** clip_len for the n-step bootstrap
+                        clip_gamma = gamma**args.clip_len
+                        nstep_returns = batch["returns"].to(accelerator.device)
+                        target = nstep_returns + clip_gamma * (1.0 - done) * next_pred
                     else:
                         target = batch["returns"].to(accelerator.device)
                     loss = loss_fn(pred, target)
@@ -1599,7 +1617,9 @@ def run_epoch(
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
-                    elif args.loss_type == "td":
+                    elif args.loss_type in ("td", "nstep", "nsteps") or getattr(
+                        args, "return_mode", None
+                    ) in ("td", "nstep", "nsteps"):
                         log_dict["train/target_mean"] = target.detach().mean().item()
                         if use_td:
                             log_dict["train/td_target_mean"] = (
