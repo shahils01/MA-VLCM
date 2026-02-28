@@ -529,8 +529,7 @@ class MultimodalValueModel(nn.Module):
         # Avoid autograd versioning issues from in-place mutations on index/mask tensors.
         input_ids = inputs["input_ids"].clone()
         attn_mask = inputs.get("attention_mask")
-        if attn_mask is not None:
-            inputs["attention_mask"] = attn_mask.clone()
+        attn_for_pool = attn_mask.clone() if attn_mask is not None else None
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool team graph features to one token and inject at <obs>.
@@ -555,8 +554,11 @@ class MultimodalValueModel(nn.Module):
                     )
                 inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
-        inputs.pop("input_ids", None)
-        inputs["inputs_embeds"] = inputs_embeds
+        model_inputs = {k: v for k, v in inputs.items() if k != "input_ids"}
+        if attn_mask is not None:
+            # Keep model mask separate from the copy used for value pooling/debug text.
+            model_inputs["attention_mask"] = attn_mask.clone()
+        model_inputs["inputs_embeds"] = inputs_embeds
         forward_kwargs = {"return_dict": True}
         if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
             # KV cache is only useful for autoregressive generation, not value regression training.
@@ -570,7 +572,7 @@ class MultimodalValueModel(nn.Module):
             elif "num_logits_to_keep" in self._backbone_forward_params:
                 forward_kwargs["num_logits_to_keep"] = self.cfg.logits_to_keep
 
-        output = self.backbone.model(**inputs, **forward_kwargs)
+        output = self.backbone.model(**model_inputs, **forward_kwargs)
 
         final_hidden = None
         if self.cfg.value_pooling == "hidden_mean":
@@ -583,9 +585,9 @@ class MultimodalValueModel(nn.Module):
                 if lm_head is None:
                     raise RuntimeError("Unable to decode debug text: no LM logits or output embeddings available.")
                 logits = lm_head(final_hidden)
-            debug_text = self._decode_debug_text(logits, inputs.get("attention_mask"), max_tokens=debug_max_tokens)
+            debug_text = self._decode_debug_text(logits, attn_for_pool, max_tokens=debug_max_tokens)
 
-        attn = inputs.get("attention_mask")
+        attn = attn_for_pool
         if self.cfg.value_pooling == "hidden_mean":
             if final_hidden is None:
                 raise RuntimeError("hidden_mean value pooling requested but hidden states were not returned.")
