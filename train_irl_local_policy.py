@@ -517,6 +517,7 @@ def parse_args():
     p.add_argument("--critic_grad_clip", type=float, default=1.0)
     p.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     p.add_argument("--ddp_find_unused_parameters", action="store_true")
+    p.add_argument("--grad_accum_steps", type=int, default=1)
 
     # Critic model
     p.add_argument("--vl_backend", type=str, default="llava_video")
@@ -637,7 +638,11 @@ def main():
     ddp_kwargs = DistributedDataParallelKwargs(
         find_unused_parameters=bool(args.ddp_find_unused_parameters)
     )
-    accelerator = Accelerator(mixed_precision=args.mixed_precision, kwargs_handlers=[ddp_kwargs])
+    accelerator = Accelerator(
+        mixed_precision=args.mixed_precision,
+        kwargs_handlers=[ddp_kwargs],
+        gradient_accumulation_steps=max(1, args.grad_accum_steps),
+    )
     random.seed(args.seed + accelerator.process_index)
     np.random.seed(args.seed + accelerator.process_index)
     torch.manual_seed(args.seed + accelerator.process_index)
@@ -736,24 +741,25 @@ def main():
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
             policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
 
-            critic_opt.zero_grad(set_to_none=True)
+            with accelerator.accumulate(critic):
+                # Do separate backward passes to avoid cross-forward autograd version conflicts
+                # on integer mask/index tensors under DDP.
+                expert_scores_raw = critic(expert_inputs, expert_robot_obs, expert_adj)
+                expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
+                expert_term = -expert_scores.mean() + args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
+                accelerator.backward(expert_term)
 
-            # Do separate backward passes to avoid cross-forward autograd version conflicts
-            # on integer mask/index tensors under DDP.
-            expert_scores_raw = critic(expert_inputs, expert_robot_obs, expert_adj)
-            expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
-            expert_term = -expert_scores.mean() + args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
-            accelerator.backward(expert_term)
+                policy_scores_raw = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
+                policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
+                policy_term = policy_scores.mean() + args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
+                accelerator.backward(policy_term)
 
-            policy_scores_raw = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
-            policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
-            policy_term = policy_scores.mean() + args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
-            accelerator.backward(policy_term)
-
-            if args.critic_grad_clip > 0:
-                accelerator.clip_grad_norm_(critic.parameters(), args.critic_grad_clip)
-            critic_opt.step()
-            critic_loss = expert_term + policy_term
+                if accelerator.sync_gradients and args.critic_grad_clip > 0:
+                    accelerator.clip_grad_norm_(critic.parameters(), args.critic_grad_clip)
+                if accelerator.sync_gradients:
+                    critic_opt.step()
+                    critic_opt.zero_grad(set_to_none=True)
+                critic_loss = expert_term + policy_term
 
             critic_losses.append(float(critic_loss.item()))
             expert_scores_log.append(float(expert_scores.mean().item()))
@@ -765,25 +771,27 @@ def main():
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
             policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
 
-            with torch.no_grad():
-                score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
-                score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
+            with accelerator.accumulate(actors):
+                with torch.no_grad():
+                    score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
+                    score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
 
-            obs_seq = policy_batch["robot_obs"]   # [B, T, N, D]
-            act_seq = policy_batch["actions"]     # [B, T, N, A]
-            bsz, tlen = obs_seq.shape[0], obs_seq.shape[1]
-            obs_flat = obs_seq.reshape(bsz * tlen, obs_seq.shape[2], obs_seq.shape[3])
-            act_flat = act_seq.reshape(bsz * tlen, act_seq.shape[2], act_seq.shape[3])
-            logp_step, ent_step = actors.evaluate_actions(obs_flat, act_flat)  # [B*T, N]
-            logp = logp_step.sum(dim=1).view(bsz, tlen).sum(dim=1)  # [B]
-            entropy = ent_step.mean(dim=1).view(bsz, tlen).mean(dim=1)  # [B]
+                obs_seq = policy_batch["robot_obs"]   # [B, T, N, D]
+                act_seq = policy_batch["actions"]     # [B, T, N, A]
+                bsz, tlen = obs_seq.shape[0], obs_seq.shape[1]
+                obs_flat = obs_seq.reshape(bsz * tlen, obs_seq.shape[2], obs_seq.shape[3])
+                act_flat = act_seq.reshape(bsz * tlen, act_seq.shape[2], act_seq.shape[3])
+                logp_step, ent_step = actors.evaluate_actions(obs_flat, act_flat)  # [B*T, N]
+                logp = logp_step.sum(dim=1).view(bsz, tlen).sum(dim=1)  # [B]
+                entropy = ent_step.mean(dim=1).view(bsz, tlen).mean(dim=1)  # [B]
 
-            actor_loss = -(logp * score.detach()).mean() - args.entropy_coef * entropy.mean()
+                actor_loss = -(logp * score.detach()).mean() - args.entropy_coef * entropy.mean()
 
-            actor_opt.zero_grad(set_to_none=True)
-            accelerator.backward(actor_loss)
-            actor_opt.step()
-            actor_losses.append(float(actor_loss.item()))
+                accelerator.backward(actor_loss)
+                if accelerator.sync_gradients:
+                    actor_opt.step()
+                    actor_opt.zero_grad(set_to_none=True)
+                actor_losses.append(float(actor_loss.item()))
 
         if it % args.log_every == 0 and accelerator.is_main_process:
             rew_mean = float(torch.stack([s.reward_mean.mean() for s in rollout_buffer.steps]).mean().item())
