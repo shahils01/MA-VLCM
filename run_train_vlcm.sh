@@ -93,9 +93,9 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --offroad_num_robots "$NUM_ROBOTS" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 18 \
+  --batch_size 9 \
   --grad_accum_steps 2 \
-  --clip_len 32 \
+  --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 10 \
@@ -105,14 +105,14 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --num_workers 4 \
   --mixed_precision bf16 \
   --freeze_vl \
-  --peft none \
+  --peft lora \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
-  --loss_type mse \
+  --loss_type contrastive_mse \
   --return_mode nstep \
-  --mse_loss_weight 0.5 \
+  --mse_loss_weight 0.01 \
   --max_grad_norm 1.0 \
   --samples_per_epoch 50000 \
   --vl_max_text_len 4700

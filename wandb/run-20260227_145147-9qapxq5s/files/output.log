@@ -1,0 +1,111 @@
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights: 100%|██████████| 716/716 [00:00<00:00, 1839.46it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.weight]                      
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 760 shards.
+Found 831 shards.
+Found 191 shards.
+Found 208 shards.
+train:   0%|          | 0/4419 [00:18<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2075, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1990, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1527, in run_epoch
+    pred = model(inputs, robot_obs, adj)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+    else self._run_ddp_forward(*inputs, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+    return self.module(*inputs, **kwargs)  # type: ignore[index]
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+    return model_forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+  File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 433, in forward
+    output = self.backbone.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 783, in forward
+    outputs = self.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 548, in forward
+    _, special_video_mask = self.get_placeholder_mask(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 467, in get_placeholder_mask
+    torch_compilable_check(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/import_utils.py", line 1398, in torch_compilable_check
+    torch._check_with(error_type, cond, msg_callable)
+  File "/usr/local/lib/python3.10/dist-packages/torch/__init__.py", line 1546, in _check_with
+    raise error_type(message_evaluated)
+ValueError: Video features and video tokens do not match, tokens: 84600, features: 112914
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2075, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1990, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1527, in run_epoch
+[rank0]:     pred = model(inputs, robot_obs, adj)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+[rank0]:     return model_forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+[rank0]:     return convert_to_fp32(self.model_forward(*args, **kwargs))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+[rank0]:     return func(*args, **kwargs)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 433, in forward
+[rank0]:     output = self.backbone.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 783, in forward
+[rank0]:     outputs = self.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 548, in forward
+[rank0]:     _, special_video_mask = self.get_placeholder_mask(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_onevision/modeling_llava_onevision.py", line 467, in get_placeholder_mask
+[rank0]:     torch_compilable_check(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/import_utils.py", line 1398, in torch_compilable_check
+[rank0]:     torch._check_with(error_type, cond, msg_callable)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/__init__.py", line 1546, in _check_with
+[rank0]:     raise error_type(message_evaluated)
+[rank0]: ValueError: Video features and video tokens do not match, tokens: 84600, features: 112914

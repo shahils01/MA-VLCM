@@ -1,0 +1,72 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 716/716 [00:00<00:00, 1908.28it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.weight]                      
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 760 shards.
+Found 831 shards.
+Found 191 shards.
+Found 208 shards.
+train:   0%|          | 1/8838 [00:27<66:40:50, 27.16s/it, loss=1.4479, lr=0.00e+00]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2075, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1990, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1488, in run_epoch
+    for batch in pbar:
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1891, in __iter__
+    yield next(iter2)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+RuntimeError: Caught RuntimeError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1331, in __iter__
+    out_sample = _process_clip_data(clip, next_clip)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 912, in _process_clip_data
+    raise RuntimeError("Dataloader proprocessor not set.")
+RuntimeError: Dataloader proprocessor not set.
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2075, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1990, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1488, in run_epoch
+[rank0]:     for batch in pbar:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1891, in __iter__
+[rank0]:     yield next(iter2)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+[rank0]:     data = self._next_data()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+[rank0]:     return self._process_data(data)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+[rank0]:     data.reraise()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+[rank0]:     raise exception
+[rank0]: RuntimeError: Caught RuntimeError in DataLoader worker process 0.
+[rank0]: Original Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+[rank0]:     data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+[rank0]:     data.append(next(self.dataset_iter))
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1331, in __iter__
+[rank0]:     out_sample = _process_clip_data(clip, next_clip)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 912, in _process_clip_data
+[rank0]:     raise RuntimeError("Dataloader proprocessor not set.")
+[rank0]: RuntimeError: Dataloader proprocessor not set.

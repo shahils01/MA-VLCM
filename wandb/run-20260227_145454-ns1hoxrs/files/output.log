@@ -1,0 +1,38 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 716/716 [00:00<00:00, 1781.78it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.weight]                      
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 760 shards.
+Found 831 shards.
+Found 191 shards.
+Found 208 shards.
+train:  31%|███▏      | 2777/8838 [1:47:52<3:55:25,  2.33s/it, loss=126.5864, lr=2.98e-04]
+val:  31%|███▏      | 694/2216 [19:51<43:32,  1.72s/it, loss=221.3734]  
+epoch=1 train_loss=126.5864 val_loss=221.3733887926431
+train:  31%|███▏      | 2777/8838 [1:47:47<3:55:14,  2.33s/it, loss=137.9301, lr=2.82e-04]
+val:  31%|███▏      | 694/2216 [19:49<43:28,  1.71s/it, loss=158.5011]  
+epoch=2 train_loss=137.9301 val_loss=158.5010562197276
+train:  31%|███▏      | 2777/8838 [1:47:47<3:55:16,  2.33s/it, loss=145.8394, lr=2.52e-04]
+val:  31%|███▏      | 694/2216 [19:48<43:26,  1.71s/it, loss=146.9212]  
+epoch=3 train_loss=145.8394 val_loss=146.92115759694954
+train:  31%|███▏      | 2777/8838 [1:47:48<3:55:18,  2.33s/it, loss=146.8145, lr=2.10e-04]
+val:  31%|███▏      | 694/2216 [19:48<43:27,  1.71s/it, loss=162.4557]  
+epoch=4 train_loss=146.8145 val_loss=162.45574812071467
+train:  31%|███▏      | 2777/8838 [1:47:48<3:55:18,  2.33s/it, loss=146.5793, lr=1.62e-04]
+val:  31%|███▏      | 694/2216 [19:48<43:27,  1.71s/it, loss=124.0990]  
+epoch=5 train_loss=146.5793 val_loss=124.09903569923182
+train:  31%|███▏      | 2777/8838 [1:47:48<3:55:18,  2.33s/it, loss=156.1979, lr=1.13e-04]
+val:  31%|███▏      | 694/2216 [19:49<43:27,  1.71s/it, loss=117.7078]  
+epoch=6 train_loss=156.1979 val_loss=117.7078186571598
+train:  31%|███▏      | 2777/8838 [1:47:48<3:55:18,  2.33s/it, loss=150.9253, lr=6.80e-05]
+val:  31%|███▏      | 694/2216 [19:49<43:28,  1.71s/it, loss=136.4132]  
+epoch=7 train_loss=150.9253 val_loss=136.41316905987023
+train:  31%|███▏      | 2777/8838 [1:47:48<3:55:17,  2.33s/it, loss=152.9343, lr=3.16e-05]
+val:  31%|███▏      | 694/2216 [19:49<43:27,  1.71s/it, loss=141.0855]  
+epoch=8 train_loss=152.9343 val_loss=141.08547304600734
+train:  31%|███▏      | 2777/8838 [1:47:48<3:55:17,  2.33s/it, loss=137.8079, lr=8.13e-06]
+val:  31%|███▏      | 694/2216 [19:48<43:26,  1.71s/it, loss=143.3842]  
+epoch=9 train_loss=137.8079 val_loss=143.38423954753435
+train:  11%|█▏        | 1011/8838 [39:17<5:03:41,  2.33s/it, loss=136.2214, lr=3.30e-06]

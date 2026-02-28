@@ -1,0 +1,1 @@
+{"train/step_loss":1.4478758573532104,"train/target_mean":-6.520066738128662,"train/step":1,"_step":0,"train/true_returns_mean":-2.373432159423828,"train/pred_mean":-5.378472328186035,"_wandb":{"runtime":197},"_runtime":197,"_timestamp":1.7722217687252495e+09,"train/reward_mean":-0.16751594841480255}

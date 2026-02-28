@@ -1,0 +1,318 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            u5p7tri84m0jer265exnj3dvmiz6af01:
+                args:
+                    - --train_shards
+                    - /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+                    - --offroad_shards
+                    - /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/Varied_Traversability
+                    - --offroad_num_robots
+                    - "8"
+                    - --dataset_type
+                    - rware
+                    - --rware_config
+                    - mixed-rware
+                    - --batch_size
+                    - "9"
+                    - --grad_accum_steps
+                    - "4"
+                    - --clip_len
+                    - "24"
+                    - --num_robots
+                    - "8"
+                    - --robot_obs_dim
+                    - "8"
+                    - --epochs
+                    - "10"
+                    - --vl_backend
+                    - llava_onevision
+                    - --vl_model_name
+                    - llava-hf/llava-onevision-qwen2-0.5b-ov-hf
+                    - --save_dir
+                    - /scratch/aparame/Research/VLCM_checkpoints
+                    - --num_workers
+                    - "16"
+                    - --mixed_precision
+                    - bf16
+                    - --freeze_vl
+                    - --peft
+                    - none
+                    - --lora_r
+                    - "16"
+                    - --lora_alpha
+                    - "32"
+                    - --lora_dropout
+                    - "0.05"
+                    - --vision_lr
+                    - "1e-5"
+                    - --loss_type
+                    - mse
+                    - --return_mode
+                    - nstep
+                    - --mse_loss_weight
+                    - "0.5"
+                    - --max_grad_norm
+                    - "1.0"
+                    - --samples_per_epoch
+                    - "50000"
+                    - --vl_max_text_len
+                    - "7000"
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 120
+                cpu_count_logical: 120
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "67108864"
+                        used: "16384"
+                email: aparame@g.clemson.edu
+                executable: /usr/bin/python3
+                git:
+                    commit: c37d945945656d7a5e0dc6f3a85ef284911cf894
+                    remote: git@github.com:shahils01/MA-VLCM.git
+                gpu: NVIDIA H200
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-1266322c-436e-8238-f650-dfe6a9920fb3
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "150754820096"
+                      name: NVIDIA H200
+                      uuid: GPU-09179865-909c-5d92-5a6d-adf803bc3389
+                host: nodeai10.palmetto.clemson.edu
+                memory:
+                    total: "2163460128768"
+                os: Linux-4.18.0-553.50.1.el8_10.x86_64-x86_64-with-glibc2.35
+                program: /home/aparame/Research/MA-VLCM/train.py
+                python: CPython 3.10.12
+                root: /home/aparame/Research/MA-VLCM
+                slurm:
+                    cluster_name: palmetto2
+                    conf: /var/spool/slurm/d/conf-cache/slurm.conf
+                    cpus_on_node: "32"
+                    cpus_per_task: "32"
+                    gpus: h200:2
+                    gpus_on_node: "2"
+                    gtids: "0"
+                    job_account: cuuser_yue6_vae_verification
+                    job_cpus_per_node: "32"
+                    job_end_time: "1772480922"
+                    job_gid: "10000"
+                    job_gpus: 4,7
+                    job_id: "10089220"
+                    job_name: ma_vlcm_train
+                    job_nodelist: nodeai10
+                    job_num_nodes: "1"
+                    job_partition: work1
+                    job_qos: normal
+                    job_start_time: "1772221722"
+                    job_uid: "432600"
+                    job_user: aparame
+                    jobid: "10089220"
+                    localid: "0"
+                    mem_per_node: "262144"
+                    nnodes: "1"
+                    nodeid: "0"
+                    nodelist: nodeai10
+                    nprocs: "1"
+                    ntasks: "1"
+                    oom_kill_step: "0"
+                    prio_process: "0"
+                    procid: "0"
+                    script_context: prolog_task
+                    stepmgr: nodeai10
+                    submit_dir: /home/aparame/Research/MA-VLCM
+                    submit_host: vm-slurm-p-login02.palmetto.clemson.edu
+                    task_pid: "3827364"
+                    tasks_per_node: "1"
+                    topology_addr: ndrspine.aindrspine.aindrleaf3.nodeai10
+                    topology_addr_pattern: switch.switch.switch.node
+                    tres_per_task: cpu=32
+                startedAt: "2026-02-27T19:48:50.460654Z"
+                writerId: u5p7tri84m0jer265exnj3dvmiz6af01
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 49
+                - 71
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+                - 77
+            "3":
+                - 13
+                - 16
+            "4": 3.10.12
+            "5": 0.24.2
+            "8":
+                - 2
+            "12": 0.24.2
+            "13": linux-x86_64
+batch_size:
+    value: 9
+clip_len:
+    value: 24
+clip_stride:
+    value: 1
+compile:
+    value: false
+contrastive_margin:
+    value: 0
+d_model:
+    value: 256
+dataset_type:
+    value: rware
+ddp_find_unused_parameters:
+    value: false
+debug_out_dir:
+    value: debug_samples
+debug_save_video:
+    value: false
+done_reduce:
+    value: any
+epochs:
+    value: 10
+freeze_vision_tower:
+    value: false
+freeze_vl:
+    value: true
+fsdp:
+    value: false
+fsdp_cpu_offload:
+    value: false
+fsdp_min_num_params:
+    value: 1000000
+fsdp_use_orig_params:
+    value: false
+fusion_hidden:
+    value: 512
+gamma:
+    value: 0.99
+gnn_layers:
+    value: 2
+grad_accum_steps:
+    value: 4
+log_every:
+    value: 50
+lora_alpha:
+    value: 32
+lora_bias:
+    value: none
+lora_dropout:
+    value: 0.05
+lora_r:
+    value: 16
+lora_target_modules:
+    value: ""
+loss_type:
+    value: mse
+lr:
+    value: 0.0003
+max_grad_norm:
+    value: 1
+mixed_precision:
+    value: bf16
+moe_experts:
+    value: 4
+moe_top_k:
+    value: 2
+mse_loss_weight:
+    value: 0.5
+n_step:
+    value: 50
+num_robots:
+    value: 8
+num_workers:
+    value: 16
+offroad_num_robots:
+    value: 8
+offroad_shards:
+    value: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/Varied_Traversability
+peft:
+    value: none
+preprocess_in_loader:
+    value: true
+quantization_config:
+    value: null
+resize_height:
+    value: 336
+resize_width:
+    value: 672
+return_mode:
+    value: nstep
+reward_reduce:
+    value: mean
+robot_obs_dim:
+    value: 8
+robot_source:
+    value: obs
+run_name:
+    value: 50StepReturn_MSE_20260227_144848
+rware_config:
+    value: mixed-rware
+samples_per_epoch:
+    value: 50000
+save_dir:
+    value: /scratch/aparame/Research/VLCM_checkpoints
+temporal_dropout:
+    value: 0.1
+temporal_heads:
+    value: 4
+temporal_layers:
+    value: 2
+text_dim:
+    value: 512
+text_mode:
+    value: raw
+text_prompt_template:
+    value: null
+train_shards:
+    value: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+use_moe:
+    value: false
+val_shards:
+    value: ""
+val_split:
+    value: 0.2
+video_channels:
+    value: 3
+video_frames:
+    value: 8
+video_mean:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+video_preprocessed:
+    value: true
+video_std:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+vision_lr:
+    value: 1e-05
+vl_backend:
+    value: llava_onevision
+vl_dtype:
+    value: bfloat16
+vl_max_text_len:
+    value: 7000
+vl_model_name:
+    value: llava-hf/llava-onevision-qwen2-0.5b-ov-hf
+weight_decay:
+    value: 0.01
