@@ -1,4 +1,7 @@
 import math
+import inspect
+import os
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 from types import SimpleNamespace
@@ -50,7 +53,13 @@ class ModelConfig:
     moe_top_k: int = 2
 
     # Debug
-    debug_save_video: bool = False
+    debug_save_video: bool = True
+    # Value head pooling strategy:
+    # - hidden_mean: pool final hidden states over tokens (higher memory)
+    # - last_token_logits: use last-token logits as VLM feature (lower memory)
+    value_pooling: str = "hidden_mean"
+    # If the backend forward supports it, keep logits only for last K tokens.
+    logits_to_keep: int = 1
 
 
 
@@ -71,16 +80,27 @@ class LLaVAVideoBackbone(nn.Module):
             dtype = torch.bfloat16
 
         try:
-            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, LlavaNextVideoProcessor
-            from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
+            from transformers import AutoConfig, AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+            from transformers.utils import logging as hf_logging
             try:
                 from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
             except Exception:
                 AutoModelForVision2Seq = None
+            try:
+                from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
+            except Exception:
+                LlavaNextVideoForConditionalGeneration = None
+            try:
+                from transformers.models.llava_onevision import LlavaOnevisionForConditionalGeneration
+            except Exception:
+                LlavaOnevisionForConditionalGeneration = None
         except Exception as e:
-            raise ImportError("LLaVA-Video backend requires transformers installed.") from e
+            raise ImportError("LLaVA video backends require transformers installed.") from e
 
-        self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
+        cfg_hf = AutoConfig.from_pretrained(cfg.vl_model_name)
+        model_type = str(getattr(cfg_hf, "model_type", "")).lower()
+
+        self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
         self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
             cfg.vl_model_name
         )
@@ -90,11 +110,44 @@ class LLaVAVideoBackbone(nn.Module):
         model_kwargs = {"torch_dtype": dtype}
         if cfg.quantization_config is not None:
             model_kwargs["quantization_config"] = cfg.quantization_config
-        self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, **model_kwargs
-        )
+        load_info = None
+        if model_type == "llava_next_video":
+            if LlavaNextVideoForConditionalGeneration is None:
+                raise ImportError("This transformers build does not provide LlavaNextVideoForConditionalGeneration.")
+            self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+                cfg.vl_model_name, **model_kwargs
+            )
+        elif model_type == "llava_onevision":
+            if LlavaOnevisionForConditionalGeneration is None:
+                raise ImportError("This transformers build does not provide LlavaOnevisionForConditionalGeneration.")
+            # OneVision checkpoints can rely on tied LM head weights. Handle that case explicitly.
+            old_verbosity = hf_logging.get_verbosity()
+            try:
+                hf_logging.set_verbosity_error()
+                self.model, load_info = LlavaOnevisionForConditionalGeneration.from_pretrained(
+                    cfg.vl_model_name,
+                    output_loading_info=True,
+                    **model_kwargs,
+                )
+            finally:
+                hf_logging.set_verbosity(old_verbosity)
+        elif AutoModelForVision2Seq is not None:
+            self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, **model_kwargs)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(cfg.vl_model_name, **model_kwargs)
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
             self.model.resize_token_embeddings(len(self.tokenizer))
+        if hasattr(self.model, "tie_weights"):
+            try:
+                self.model.tie_weights()
+            except Exception:
+                pass
+        if load_info is not None:
+            missing = set(load_info.get("missing_keys", []))
+            if missing and missing != {"lm_head.weight"}:
+                raise RuntimeError(
+                    f"Unexpected missing checkpoint keys for {cfg.vl_model_name}: {sorted(missing)}"
+                )
 
         self.model.to(device)
         if cfg.freeze_vl:
@@ -226,7 +279,13 @@ class MultimodalValueModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
+        self._debug_video_saved = False
+        self._debug_video_dir = os.environ.get("MA_VLCM_DEBUG_VIDEO_DIR", "debug_samples/model_forward")
         self.backbone = LLaVAVideoBackbone(cfg, device=device)
+        try:
+            self._backbone_forward_params = set(inspect.signature(self.backbone.model.forward).parameters.keys())
+        except Exception:
+            self._backbone_forward_params = set()
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
@@ -260,7 +319,142 @@ class MultimodalValueModel(nn.Module):
         )
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
+        if cfg.value_pooling == "last_token_logits":
+            vl_feat_dim = self._infer_vocab_size()
+            if vl_feat_dim <= 0:
+                raise RuntimeError(
+                    "Unable to infer vocab size for logits-based value pooling. "
+                    "Use --value_pooling hidden_mean or check model output embeddings."
+                )
+        else:
+            vl_feat_dim = lm_hidden
+        self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
+
+    def _maybe_save_debug_video_from_inputs(self, inputs: dict):
+        if (not self.debug_save_video) or self._debug_video_saved:
+            return
+        if not isinstance(inputs, dict):
+            return
+
+        video = None
+        for key in ("pixel_values_videos", "pixel_values", "video_values", "videos"):
+            val = inputs.get(key, None)
+            if torch.is_tensor(val):
+                video = val
+                break
+        if video is None:
+            return
+
+        # Robustly reduce to [T,H,W,C] for a single sample.
+        x = video.detach().float().cpu()
+        while x.dim() > 5:
+            x = x[0]
+        if x.dim() == 5:
+            x = x[0]
+        if x.dim() == 4:
+            if x.shape[1] in (1, 3):  # [T,C,H,W]
+                frames = x.permute(0, 2, 3, 1).contiguous()
+            elif x.shape[-1] in (1, 3):  # [T,H,W,C]
+                frames = x
+            elif x.shape[0] in (1, 3):  # [C,T,H,W]
+                frames = x.permute(1, 2, 3, 0).contiguous()
+            else:
+                return
+        elif x.dim() == 3:
+            if x.shape[0] in (1, 3):  # [C,H,W]
+                frames = x.permute(1, 2, 0).unsqueeze(0).contiguous()
+            elif x.shape[-1] in (1, 3):  # [H,W,C]
+                frames = x.unsqueeze(0).contiguous()
+            else:
+                return
+        else:
+            return
+
+        mn = float(frames.min().item())
+        mx = float(frames.max().item())
+        mean = float(frames.mean().item())
+
+        # Convert common normalized ranges into uint8 for mp4 visualization.
+        if mn >= -1.01 and mx <= 1.01 and mn < 0.0:
+            frames_u8 = ((frames + 1.0) * 127.5).clamp(0.0, 255.0).to(torch.uint8)
+        elif mx <= 1.01:
+            frames_u8 = (frames * 255.0).clamp(0.0, 255.0).to(torch.uint8)
+        else:
+            frames_u8 = frames.clamp(0.0, 255.0).to(torch.uint8)
+
+        if frames_u8.shape[-1] == 1:
+            frames_u8 = frames_u8.repeat(1, 1, 1, 3)
+
+        os.makedirs(self._debug_video_dir, exist_ok=True)
+        out_path = os.path.join(
+            self._debug_video_dir,
+            f"forward_debug_{int(time.time())}_min{mn:.4f}_max{mx:.4f}_mean{mean:.4f}.mp4",
+        )
+        try:
+            import imageio.v2 as imageio
+
+            imageio.mimsave(out_path, frames_u8.numpy(), fps=4)
+            print(f"[MA-VLCM debug] saved forward input video: {out_path}")
+        except Exception as e:
+            print(f"[MA-VLCM debug] failed to save mp4 ({e}); path={out_path}")
+        finally:
+            self._debug_video_saved = True
+
+    def _infer_vocab_size(self) -> int:
+        # Prefer LM head/output embeddings shape, then fall back to config fields.
+        get_out = getattr(self.backbone.model, "get_output_embeddings", None)
+        if callable(get_out):
+            try:
+                out_emb = get_out()
+            except Exception:
+                out_emb = None
+            if out_emb is not None and hasattr(out_emb, "weight") and out_emb.weight is not None:
+                return int(out_emb.weight.shape[0])
+
+        cfg = getattr(self.backbone.model, "config", None)
+        candidates = []
+        if cfg is not None:
+            candidates.append(getattr(cfg, "vocab_size", 0))
+            text_cfg = getattr(cfg, "text_config", None)
+            if text_cfg is not None:
+                candidates.append(getattr(text_cfg, "vocab_size", 0))
+            lm_cfg = getattr(getattr(self.backbone.model, "language_model", None), "config", None)
+            if lm_cfg is not None:
+                candidates.append(getattr(lm_cfg, "vocab_size", 0))
+        for v in candidates:
+            try:
+                iv = int(v)
+            except Exception:
+                iv = 0
+            if iv > 0:
+                return iv
+        return 0
+
+    def _decode_debug_text(self, logits: torch.Tensor, attention_mask: Optional[torch.Tensor], max_tokens: int):
+        # Decode greedy token predictions from the LM head for quick introspection.
+        pred_ids = logits.argmax(dim=-1)
+        if max_tokens is not None and max_tokens > 0 and pred_ids.size(1) > max_tokens:
+            pred_ids = pred_ids[:, -max_tokens:]
+
+        if attention_mask is not None and attention_mask.shape[:2] == logits.shape[:2]:
+            trimmed_ids = []
+            for i in range(pred_ids.size(0)):
+                valid_len = int(attention_mask[i].sum().item())
+                if valid_len <= 0:
+                    sample_ids = pred_ids[i, -1:]
+                else:
+                    start = max(0, valid_len - max_tokens)
+                    sample_ids = logits[i, start:valid_len, :].argmax(dim=-1)
+                trimmed_ids.append(sample_ids)
+            text = [
+                self.backbone.tokenizer.decode(ids.detach().cpu().tolist(), skip_special_tokens=True)
+                for ids in trimmed_ids
+            ]
+            return text
+
+        return self.backbone.tokenizer.batch_decode(
+            pred_ids.detach().cpu(), skip_special_tokens=True
+        )
 
     def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
         # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
@@ -288,6 +482,8 @@ class MultimodalValueModel(nn.Module):
         text_ids=None,
         text_mask=None,
         image_sizes=None,
+        return_debug: bool = False,
+        debug_max_tokens: int = 32,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
@@ -321,10 +517,9 @@ class MultimodalValueModel(nn.Module):
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
-        input_ids = inputs["input_ids"].clone()
+        self._maybe_save_debug_video_from_inputs(inputs)
+        input_ids = inputs["input_ids"]
         attn_mask = inputs.get("attention_mask")
-        if attn_mask is not None:
-            inputs["attention_mask"] = attn_mask.clone()
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool team graph features to one token and inject at <obs>.
@@ -336,35 +531,70 @@ class MultimodalValueModel(nn.Module):
             obs_mask = input_ids.eq(obs_token_id)
 
             if obs_mask.any():
-                # Avoid in-place updates that can break autograd version tracking.
-                obs_mask = obs_mask.unsqueeze(-1)
+                # Avoid dense broadcast replacements over the full sequence.
+                inputs_embeds = inputs_embeds.clone()
                 if input_ids.shape[0] == bsz:
                     # input_ids: [B, S]
-                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
+                    b_idx, s_idx = obs_mask.nonzero(as_tuple=True)
+                    inputs_embeds[b_idx, s_idx, :] = obs_token[b_idx, 0, :]
                 elif input_ids.shape[1] == bsz:
                     # input_ids: [S, B]
-                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                    s_idx, b_idx = obs_mask.nonzero(as_tuple=True)
+                    inputs_embeds[s_idx, b_idx, :] = obs_token[b_idx, 0, :]
                 else:
                     raise RuntimeError(
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
                     )
-                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
-        output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
+        forward_kwargs = {"return_dict": True}
+        if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
+            # KV cache is only useful for autoregressive generation, not value regression training.
+            forward_kwargs["use_cache"] = False
+        if self.cfg.value_pooling == "hidden_mean":
+            forward_kwargs["output_hidden_states"] = True
+        if self.cfg.logits_to_keep > 0:
+            # Some transformers versions expose either logits_to_keep or num_logits_to_keep.
+            if "logits_to_keep" in self._backbone_forward_params:
+                forward_kwargs["logits_to_keep"] = self.cfg.logits_to_keep
+            elif "num_logits_to_keep" in self._backbone_forward_params:
+                forward_kwargs["num_logits_to_keep"] = self.cfg.logits_to_keep
 
-        final_hidden = output.hidden_states[-1]
+        output = self.backbone.model(**inputs, **forward_kwargs)
+
+        final_hidden = None
+        if self.cfg.value_pooling == "hidden_mean":
+            final_hidden = output.hidden_states[-1]
+        debug_text = None
+        if return_debug:
+            logits = getattr(output, "logits", None)
+            if logits is None:
+                lm_head = self.backbone.model.get_output_embeddings()
+                if lm_head is None:
+                    raise RuntimeError("Unable to decode debug text: no LM logits or output embeddings available.")
+                logits = lm_head(final_hidden)
+            debug_text = self._decode_debug_text(logits, inputs.get("attention_mask"), max_tokens=debug_max_tokens)
+
         attn = inputs.get("attention_mask")
-        if attn is not None:
-            mask = attn.unsqueeze(-1)
-            pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        if self.cfg.value_pooling == "hidden_mean":
+            if final_hidden is None:
+                raise RuntimeError("hidden_mean value pooling requested but hidden states were not returned.")
+            if attn is not None:
+                mask = attn.unsqueeze(-1)
+                pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+            else:
+                pooled = final_hidden[:, -1, :]
         else:
-            pooled = final_hidden[:, -1, :]
+            logits = getattr(output, "logits", None)
+            if logits is None:
+                raise RuntimeError("logits-based value pooling requested but model output has no logits.")
+            pooled = logits[:, -1, :]
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
-        # print('value shape = ', value.shape)
+        if return_debug:
+            return {"value": value, "debug_text": debug_text}
         return value

@@ -14,6 +14,11 @@ except Exception:
     DistributedDataParallelKwargs = None
 
 try:
+    from accelerate import DataLoaderConfiguration
+except Exception:
+    DataLoaderConfiguration = None
+
+try:
     from accelerate.utils import FullyShardedDataParallelPlugin
 except Exception:
     try:
@@ -57,13 +62,36 @@ def parse_args():
     p.add_argument("--preprocess_in_loader", default=True, action="store_true", help="Use VLM image processor in dataloader")
     p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
+    p.add_argument("--debug_decode_text", action="store_true", help="Decode VLM token predictions for debugging")
+    p.add_argument("--debug_decode_every", type=int, default=200, help="Decode/print debug text every N steps")
+    p.add_argument("--debug_decode_max_tokens", type=int, default=32, help="Max decoded tokens for debug text")
 
     # Value targets
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="td", choices=["td", "nstep"])
+    p.add_argument(
+        "--return_horizon",
+        type=str,
+        default="trajectory",
+        choices=["clip", "trajectory"],
+        help="For nstep-style targets: discounted return over clip or from clip start to terminal state in episode.",
+    )
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
     p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--lambda_td", type=float, default=1.0, help="Weight for TD loss when using td_contrastive")
+    p.add_argument("--lambda_c", type=float, default=1.0, help="Weight for contrastive loss when using td_contrastive")
+    p.add_argument(
+        "--shard_aware_batching",
+        action="store_true",
+        help="Build batches with at most one mini-trajectory per shard on each process.",
+    )
+    p.add_argument(
+        "--shard_batch_max_queue_per_shard",
+        type=int,
+        default=16,
+        help="Max queued samples per shard while waiting to form unique-shard batches.",
+    )
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
@@ -73,13 +101,31 @@ def parse_args():
     p.add_argument("--fsdp_use_orig_params", action="store_true", help="Use FSDP use_orig_params to allow mixed requires_grad")
     p.add_argument("--ddp_find_unused_parameters", action="store_true", help="Set DDP find_unused_parameters=True")
     p.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
+    p.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing on VLM backbone")
+    p.add_argument("--disable_vl_cache", action="store_true", help="Disable VLM KV cache during training for lower memory")
+    p.add_argument("--allow_tf32", action="store_true", help="Enable TF32 matmul/cuDNN kernels on Ampere+ GPUs")
 
     # VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
     p.add_argument("--vl_model_name", type=str, default="deepseek-community/deepseek-vl-1.3b-base")
+    p.add_argument(
+        "--vl_model_preset",
+        type=str,
+        default="custom",
+        choices=["custom", "llava_next_video_7b", "llava_onevision_0p5b"],
+        help="Convenience preset for known LLaVA video-capable checkpoints.",
+    )
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
     p.add_argument("--freeze_vl", action="store_true")
+    p.add_argument(
+        "--value_pooling",
+        type=str,
+        default="last_token_logits",
+        choices=["last_token_logits", "hidden_mean"],
+        help="Feature pooling strategy for value head; last_token_logits is more memory efficient.",
+    )
+    p.add_argument("--vl_logits_to_keep", type=int, default=0, help="If supported, keep logits for only last K tokens")
 
     # PEFT / LoRA
     p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
@@ -122,6 +168,8 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints")
+    p.add_argument("--resume_checkpoint", type=str, default="", help="Path to checkpoint .pt to resume training")
+    p.add_argument("--load_model_only", action="store_true", help="Load only model weights from checkpoint")
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging via Accelerate trackers")
     p.add_argument("--wandb_project", type=str, default="ma-vlcm", help="W&B project name")
     p.add_argument("--wandb_entity", type=str, default="", help="W&B entity/team (optional)")
@@ -159,8 +207,41 @@ def build_model(args, device):
         moe_experts=args.moe_experts,
         moe_top_k=args.moe_top_k,
         debug_save_video=args.debug_save_video,
+        value_pooling=args.value_pooling,
+        logits_to_keep=args.vl_logits_to_keep,
     )
     return MultimodalValueModel(cfg, device=device)
+
+
+def _configure_memory_optimizations(model, args):
+    if args.allow_tf32 and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    if args.disable_vl_cache and hasattr(model.backbone.model, "config") and hasattr(model.backbone.model.config, "use_cache"):
+        model.backbone.model.config.use_cache = False
+
+    if args.gradient_checkpointing:
+        fn = getattr(model.backbone.model, "gradient_checkpointing_enable", None)
+        if callable(fn):
+            try:
+                fn(gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:
+                fn()
+        if hasattr(model.backbone.model, "enable_input_require_grads"):
+            try:
+                model.backbone.model.enable_input_require_grads()
+            except Exception:
+                pass
+
+
+def _resolve_vl_model_preset(args):
+    if args.vl_model_preset == "llava_next_video_7b":
+        args.vl_backend = "llava_video"
+        args.vl_model_name = "llava-hf/LLaVA-NeXT-Video-7B-hf"
+    elif args.vl_model_preset == "llava_onevision_0p5b":
+        args.vl_backend = "llava_video"
+        args.vl_model_name = "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
 
 
 def _parse_lora_targets(args):
@@ -205,6 +286,35 @@ def _save_debug_video(batch, args, accelerator, tag="train"):
     os.makedirs(out_dir, exist_ok=True)
 
 
+def _load_checkpoint_state(model, ckpt_state, args, accelerator):
+    unwrapped = accelerator.unwrap_model(model)
+    try:
+        unwrapped.load_state_dict(ckpt_state)
+        return
+    except RuntimeError as e:
+        if args.peft not in {"lora", "qlora"}:
+            raise
+        accelerator.print(f"Strict checkpoint load failed under PEFT ({e}). Retrying with filtered non-strict load.")
+
+    # bitsandbytes quantized modules can expose version-dependent metadata keys.
+    quant_meta_tokens = ("absmax", "quant_map", "quant_state", "bitsandbytes__")
+    filtered_state = {k: v for k, v in ckpt_state.items() if not any(tok in k for tok in quant_meta_tokens)}
+
+    incompatible = unwrapped.load_state_dict(filtered_state, strict=False)
+    missing = list(getattr(incompatible, "missing_keys", []))
+    unexpected = list(getattr(incompatible, "unexpected_keys", []))
+
+    accelerator.print(
+        "Non-strict PEFT load complete: "
+        f"skipped_quant_meta={len(ckpt_state) - len(filtered_state)} "
+        f"missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
+    )
+    if missing:
+        accelerator.print(f"First missing keys: {missing[:10]}")
+    if unexpected:
+        accelerator.print(f"First unexpected keys: {unexpected[:10]}")
+
+
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     diff_r = rewards[:, None] - rewards[None, :]
     diff_s = scores[:, None] - scores[None, :]
@@ -240,11 +350,18 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        use_td = args.loss_type != "contrastive" and args.return_mode == "td"
+        use_td = args.loss_type in {"td", "td_contrastive"} and args.return_mode == "td"
         if use_td:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
+        use_nstep_td = args.loss_type in {"td", "td_contrastive"} and args.return_mode == "nstep"
+        if use_nstep_td:
+            nstep_inputs = _move_inputs(batch["td_nstep_inputs"])
+            nstep_robot_obs = batch["td_nstep_robot_obs"].to(accelerator.device)
+            nstep_adj = batch["td_nstep_adj"].to(accelerator.device)
+            nstep_returns = batch["td_nstep_return"].to(accelerator.device)
+            nstep_done = batch["td_nstep_done"].to(accelerator.device).float()
 
         if train and args.debug_save_video and not getattr(run_epoch, "_debug_saved", False):
             _save_debug_video(batch, args, accelerator, tag="train")
@@ -252,23 +369,66 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
-                pred = model(inputs, robot_obs, adj)
+                should_decode = (
+                    args.debug_decode_text
+                    and accelerator.is_main_process
+                    and (args.debug_decode_every > 0)
+                    and (step % args.debug_decode_every == 0)
+                )
+                model_out = model(
+                    inputs,
+                    robot_obs,
+                    adj,
+                    return_debug=should_decode,
+                    debug_max_tokens=args.debug_decode_max_tokens,
+                )
+                if isinstance(model_out, dict):
+                    pred = model_out["value"]
+                    debug_text = model_out.get("debug_text")
+                else:
+                    pred = model_out
+                    debug_text = None
+                contrastive_targets = (
+                    batch["returns"].to(accelerator.device)
+                    if args.return_mode == "nstep" and "returns" in batch
+                    else reward
+                )
+
                 if args.loss_type == "contrastive":
-                    returns = batch["returns"].to(accelerator.device) if args.return_mode == "nstep" and "returns" in batch else reward
-                    loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
+                    contrastive_loss = _contrastive_pairwise_loss(
+                        pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                    )
+                    loss = contrastive_loss
                 else:
                     if args.return_mode == "td":
                         with torch.no_grad():
                             next_pred = model(next_inputs, next_robot_obs, next_adj)
                         target = reward + gamma * (1.0 - done) * next_pred
+                    elif args.return_mode == "nstep":
+                        with torch.no_grad():
+                            nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
+                        gamma_n = gamma ** int(args.n_step)
+                        target = nstep_returns + gamma_n * (1.0 - nstep_done) * nstep_bootstrap_pred
                     else:
                         target = batch["returns"].to(accelerator.device)
-                    loss = loss_fn(pred, target)
+                    td_loss = loss_fn(pred, target)
+                    if args.loss_type == "td_contrastive":
+                        contrastive_loss = _contrastive_pairwise_loss(
+                            pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                        )
+                        loss = args.lambda_td * td_loss + args.lambda_c * contrastive_loss
+                    else:
+                        loss = td_loss
 
                 if train:
                     accelerator.backward(loss)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+
+        if debug_text:
+            text0 = debug_text[0].replace("\n", " ").strip()
+            phase = "train" if train else "val"
+            accelerator.print(f"{phase} step={step} debug_decode[0]: {text0}")
 
         total_loss += loss.item()
         if log_every > 0 and step % log_every == 0:
@@ -294,6 +454,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
 def main():
     args = parse_args()
+    _resolve_vl_model_preset(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
     if args.preprocess_in_loader:
@@ -351,7 +512,8 @@ def main():
 
     ddp_kwargs = None
     if not args.fsdp and DistributedDataParallelKwargs is not None:
-        find_unused = args.ddp_find_unused_parameters or (args.peft != "none") or args.freeze_vl
+        # Keep this explicit: default False for speed, enable only when needed.
+        find_unused = args.ddp_find_unused_parameters
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
     accelerator_kwargs = dict(
@@ -360,6 +522,15 @@ def main():
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
         kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
     )
+    # IterableDataset + variable-shaped samples across ranks can break with dispatch_batches=True.
+    if DataLoaderConfiguration is not None:
+        accelerator_kwargs["dataloader_config"] = DataLoaderConfiguration(dispatch_batches=False, split_batches=False)
+    else:
+        accel_params = inspect.signature(Accelerator).parameters
+        if "dispatch_batches" in accel_params:
+            accelerator_kwargs["dispatch_batches"] = False
+        if "split_batches" in accel_params:
+            accelerator_kwargs["split_batches"] = False
     if args.wandb:
         accelerator_kwargs["log_with"] = ["wandb"]
     accelerator = Accelerator(**accelerator_kwargs)
@@ -377,6 +548,7 @@ def main():
 
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
+    _configure_memory_optimizations(model, args)
 
     if args.fsdp:
         if args.mixed_precision == "bf16":
@@ -403,8 +575,30 @@ def main():
     else:
         model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
 
+    start_epoch = 1
     global_step = 0
-    for epoch in range(1, args.epochs + 1):
+
+    if args.resume_checkpoint:
+        ckpt_path = args.resume_checkpoint
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+
+        _load_checkpoint_state(model, ckpt["model"], args, accelerator)
+        if not args.load_model_only:
+            if "optimizer" not in ckpt:
+                raise KeyError("Checkpoint does not contain optimizer state. Use --load_model_only to ignore this.")
+            optimizer.load_state_dict(ckpt["optimizer"])
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+            global_step = int(ckpt.get("global_step", 0))
+
+        accelerator.print(
+            f"Resumed from {ckpt_path} (start_epoch={start_epoch}, global_step={global_step}, "
+            f"load_model_only={args.load_model_only})"
+        )
+        accelerator.wait_for_everyone()
+
+    for epoch in range(start_epoch, args.epochs + 1):
         train_loss, global_step = run_epoch(
             model, train_loader, optimizer, accelerator, args.log_every, args.gamma, args, train=True, global_step=global_step
         )
@@ -426,6 +620,7 @@ def main():
                 "model": accelerator.get_state_dict(model),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
+                "global_step": global_step,
                 "args": vars(args),
             }
             torch.save(ckpt, os.path.join(args.save_dir, f"ckpt_epoch_{epoch}.pt"))
