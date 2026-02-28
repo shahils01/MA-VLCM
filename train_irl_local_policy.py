@@ -331,12 +331,14 @@ class FixedRolloutBuffer:
             clip_rew = []
 
             terminal_obs = None
+            terminal_act = None
             terminal_adj = None
             done_triggered = False
             for t in range(clip_len):
                 s = self.steps[start + t]
                 if done_triggered:
                     clip_obs.append(terminal_obs)
+                    clip_act.append(terminal_act)
                     clip_adj.append(terminal_adj)
                     clip_logp.append(torch.zeros((), dtype=torch.float32))
                     clip_ent.append(torch.zeros((), dtype=torch.float32))
@@ -355,6 +357,7 @@ class FixedRolloutBuffer:
 
                 if bool(s.done_env[env_idx].item() > 0.5):
                     terminal_obs = o
+                    terminal_act = u
                     terminal_adj = a
                     done_triggered = True
 
