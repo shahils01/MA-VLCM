@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from PIL import Image
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
+import wandb
 
 try:
     import ManyAgent_GoTOGoal  # noqa: F401
@@ -547,6 +548,10 @@ def parse_args():
     p.add_argument("--eval_episodes", type=int, default=5)
     p.add_argument("--eval_max_episode_steps", type=int, default=500)
     p.add_argument("--eval_num_envs", type=int, default=1)
+    p.add_argument("--wandb", action="store_true")
+    p.add_argument("--wandb_project", type=str, default="ma-vlcm-irl")
+    p.add_argument("--wandb_entity", type=str, default="")
+    p.add_argument("--wandb_run_name", type=str, default="")
 
     return p.parse_args()
 
@@ -650,6 +655,13 @@ def main():
     device = accelerator.device
     accelerator.print(f"device={device}")
     accelerator.print(f"scenario={args.scenario}")
+    if args.wandb and accelerator.is_main_process:
+        wandb.init(
+            project=args.wandb_project,
+            entity=(args.wandb_entity if args.wandb_entity else None),
+            name=(args.wandb_run_name if args.wandb_run_name else None),
+            config=vars(args),
+        )
     if ManyAgent_GoTOGoal is None and accelerator.is_main_process:
         print("[WARN] Could not import ManyAgent_GoTOGoal package in this environment.")
 
@@ -795,16 +807,28 @@ def main():
 
         if it % args.log_every == 0 and accelerator.is_main_process:
             rew_mean = float(torch.stack([s.reward_mean.mean() for s in rollout_buffer.steps]).mean().item())
+            metrics = {
+                "iter": it,
+                "train/critic_loss": float(np.mean(critic_losses)),
+                "train/actor_loss": float(np.mean(actor_losses)),
+                "train/expert_score": float(np.mean(expert_scores_log)),
+                "train/policy_score": float(np.mean(policy_scores_log)),
+                "train/raw_expert_score": float(np.mean(expert_scores_raw_log)),
+                "train/raw_policy_score": float(np.mean(policy_scores_raw_log)),
+                "train/buffer_reward_mean": rew_mean,
+            }
             print(
                 f"iter={it} "
-                f"critic_loss={np.mean(critic_losses):.4f} "
-                f"actor_loss={np.mean(actor_losses):.4f} "
-                f"expert_score={np.mean(expert_scores_log):.4f} "
-                f"policy_score={np.mean(policy_scores_log):.4f} "
-                f"raw_expert_score={np.mean(expert_scores_raw_log):.4f} "
-                f"raw_policy_score={np.mean(policy_scores_raw_log):.4f} "
-                f"buffer_reward_mean={rew_mean:.4f}"
+                f"critic_loss={metrics['train/critic_loss']:.4f} "
+                f"actor_loss={metrics['train/actor_loss']:.4f} "
+                f"expert_score={metrics['train/expert_score']:.4f} "
+                f"policy_score={metrics['train/policy_score']:.4f} "
+                f"raw_expert_score={metrics['train/raw_expert_score']:.4f} "
+                f"raw_policy_score={metrics['train/raw_policy_score']:.4f} "
+                f"buffer_reward_mean={metrics['train/buffer_reward_mean']:.4f}"
             )
+            if args.wandb:
+                wandb.log(metrics, step=it)
 
         if (
             accelerator.is_main_process
@@ -824,6 +848,8 @@ def main():
                 f"eval_avg_traj_reward={eval_avg_traj_reward:.4f} "
                 f"(episodes={args.eval_episodes})"
             )
+            if args.wandb:
+                wandb.log({"eval/avg_traj_reward": eval_avg_traj_reward, "iter": it}, step=it)
 
         if it % args.save_every == 0 and accelerator.is_main_process:
             ckpt = {
@@ -839,6 +865,8 @@ def main():
     envs.close()
     if eval_envs is not None:
         eval_envs.close()
+    if args.wandb and accelerator.is_main_process:
+        wandb.finish()
 
 
 if __name__ == "__main__":

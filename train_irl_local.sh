@@ -7,6 +7,8 @@ SCENARIO="${SCENARIO:-ManyAgentGoToGoal-v0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints_irl_local}"
 NUM_PROCESSES="${NUM_PROCESSES:-2}"
 VL_MODEL_NAME="${VL_MODEL_NAME:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}"  # 0.5B default
+WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-irl}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-irl-local}"
 
 accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --scenario "${SCENARIO}" \
@@ -51,6 +53,9 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --eval_max_episode_steps 500 \
   --save_every 20 \
   --save_dir "${SAVE_DIR}" \
+  --wandb \
+  --wandb_project "${WANDB_PROJECT}" \
+  --wandb_run_name "${WANDB_RUN_NAME}" \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots \
   with heading denoted by an arrow) is: <video>, and the robot team observations over ten episodes is <obs>. \
   The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal \
