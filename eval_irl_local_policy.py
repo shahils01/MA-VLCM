@@ -98,7 +98,11 @@ def main():
         print("[WARN] Could not import ManyAgent_GoTOGoal in this env.")
 
     render_mode = "rgb_array" if args.save_video else (args.render_mode if args.render else None)
-    env = gym.make(scenario, disable_env_checker=True, render_mode=render_mode)
+    try:
+        env = gym.make(scenario, disable_env_checker=True, render_mode=render_mode)
+    except TypeError:
+        # ManyAgentGoToGoal builds may not support gymnasium render_mode constructor kwarg.
+        env = gym.make(scenario, disable_env_checker=True)
     if hasattr(env, "seed"):
         env.seed(args.seed)
 
@@ -165,12 +169,20 @@ def main():
 
             if args.render and not args.save_video:
                 try:
-                    env.render()
+                    env.render(mode=args.render_mode)
+                except TypeError:
+                    try:
+                        env.render()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
             if args.save_video:
-                frame = env.render()
+                try:
+                    frame = env.render(mode="rgb_array")
+                except TypeError:
+                    frame = env.render()
                 if isinstance(frame, np.ndarray):
                     frames.append(frame)
 
