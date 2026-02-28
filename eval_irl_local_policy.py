@@ -25,6 +25,21 @@ from train_irl_local_policy import (
 )
 
 
+def _extract_rgb_frame(render_out: Any):
+    if isinstance(render_out, np.ndarray):
+        if render_out.ndim == 3:
+            return render_out
+        if render_out.ndim == 4 and render_out.shape[0] > 0:
+            return render_out[0]
+        return None
+    if isinstance(render_out, (list, tuple)):
+        for x in render_out:
+            fr = _extract_rgb_frame(x)
+            if fr is not None:
+                return fr
+    return None
+
+
 def _flatten_info_dicts(obj: Any) -> List[Dict[str, Any]]:
     if obj is None:
         return []
@@ -183,7 +198,8 @@ def main():
                     frame = env.render(mode="rgb_array")
                 except TypeError:
                     frame = env.render()
-                if isinstance(frame, np.ndarray):
+                frame = _extract_rgb_frame(frame)
+                if frame is not None:
                     frames.append(frame)
 
             done_arr = np.asarray(done).reshape(-1)
@@ -205,7 +221,9 @@ def main():
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         imageio.mimsave(args.video_path, frames, fps=args.video_fps)
-        print(f"saved_video={args.video_path}")
+        print(f"saved_video={os.path.abspath(args.video_path)} frames={len(frames)}")
+    elif args.save_video and imageio is not None and len(frames) == 0:
+        print("[WARN] save_video was enabled but 0 frames were captured from env.render().")
     elif args.save_video and imageio is None:
         print("[WARN] imageio not available, video not saved.")
 
