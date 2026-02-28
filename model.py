@@ -494,6 +494,13 @@ class MultimodalValueModel(nn.Module):
         video_list = None
         if isinstance(video, dict):
             inputs = video
+
+        # Keep graph tensors on the same device as the robot GNN weights.
+        gnn_device = next(self.robot_gnn.parameters()).device
+        if robot_obs.device != gnn_device:
+            robot_obs = robot_obs.to(gnn_device)
+        if adj.device != gnn_device:
+            adj = adj.to(gnn_device)
         
         bsz = robot_obs.shape[0]
         # # print('robot_obs shape = ', robot_obs.shape)
@@ -512,6 +519,7 @@ class MultimodalValueModel(nn.Module):
         robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
         adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
         edge_index = self._adj_to_batched_edge_index(adj_last)
+        edge_index = edge_index.to(device=robot_last.device)
         robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
         robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
 
