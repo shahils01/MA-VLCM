@@ -645,10 +645,11 @@ def main():
         critic, actors, critic_opt, actor_opt, expert_loader
     )
     expert_iter = iter(expert_loader)
+    critic_raw = accelerator.unwrap_model(critic)
 
     rollout_buffer = FixedRolloutBuffer(args.rollout_buffer_steps)
     blank_input_builder = CachedBlankVideoInputs(
-        processor=critic.backbone.processor,
+        processor=critic_raw.backbone.processor,
         prompt=args.text_prompt_template,
         clip_len=args.clip_len,
         frame_size=args.video_size,
