@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 
 try:
     import ManyAgent_GoTOGoal  # noqa: F401
@@ -512,6 +513,7 @@ def parse_args():
     p.add_argument("--actor_lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
+    p.add_argument("--ddp_find_unused_parameters", action="store_true")
 
     # Critic model
     p.add_argument("--vl_backend", type=str, default="llava_video")
@@ -582,7 +584,10 @@ def collect_rollout(
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
-    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    ddp_kwargs = DistributedDataParallelKwargs(
+        find_unused_parameters=bool(args.ddp_find_unused_parameters)
+    )
+    accelerator = Accelerator(mixed_precision=args.mixed_precision, kwargs_handlers=[ddp_kwargs])
     random.seed(args.seed + accelerator.process_index)
     np.random.seed(args.seed + accelerator.process_index)
     torch.manual_seed(args.seed + accelerator.process_index)

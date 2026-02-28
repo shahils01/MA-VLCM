@@ -27,6 +27,7 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --critic_lr 3e-5 \
   --actor_lr 1e-4 \
   --mixed_precision bf16 \
+  --ddp_find_unused_parameters \
   --vl_backend llava_video \
   --vl_model_name "${VL_MODEL_NAME}" \
   --vl_dtype bfloat16 \
