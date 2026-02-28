@@ -1018,6 +1018,17 @@ class SequenceWebDataset(IterableDataset):
             if image is None:
                 continue
 
+            # Fallback: decode raw bytes if decoder missed it
+            if isinstance(image, bytes):
+                try:
+                    import io
+
+                    image = Image.open(io.BytesIO(image))
+                    image.load()
+                    image = image.convert("RGB")
+                except Exception:
+                    continue
+
             # Ensure consistent frame size for all frames in a clip.
             # In "both" mode, frames are 672x336 (overhead left, rware
             # right). Frames that haven't had rware applied yet get
