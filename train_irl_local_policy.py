@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
+from accelerate import Accelerator
 
 try:
     import ManyAgent_GoTOGoal  # noqa: F401
@@ -477,6 +478,7 @@ def parse_args():
     p.add_argument("--critic_lr", type=float, default=3e-5)
     p.add_argument("--actor_lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.0)
+    p.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
 
     # Critic model
     p.add_argument("--vl_backend", type=str, default="llava_video")
@@ -546,14 +548,15 @@ def collect_rollout(
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+    random.seed(args.seed + accelerator.process_index)
+    np.random.seed(args.seed + accelerator.process_index)
+    torch.manual_seed(args.seed + accelerator.process_index)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device={device}")
-    print(f"scenario={args.scenario}")
-    if ManyAgent_GoTOGoal is None:
+    device = accelerator.device
+    accelerator.print(f"device={device}")
+    accelerator.print(f"scenario={args.scenario}")
+    if ManyAgent_GoTOGoal is None and accelerator.is_main_process:
         print("[WARN] Could not import ManyAgent_GoTOGoal package in this environment.")
 
     envs = ManyAgentVecEnv(args.scenario, args.num_envs, args.seed)
@@ -563,7 +566,7 @@ def main():
     args.num_robots = num_agents
 
     is_continuous, action_dim, action_low, action_high = _space_info_with_overrides(envs, args, num_agents)
-    print(f"num_agents={num_agents} obs_dim={obs_dim} action_dim={action_dim} continuous={is_continuous}")
+    accelerator.print(f"num_agents={num_agents} obs_dim={obs_dim} action_dim={action_dim} continuous={is_continuous}")
 
     critic = build_critic(args, device)
     critic.train()
@@ -604,6 +607,9 @@ def main():
         vl_max_text_len=args.vl_max_text_len,
     )
     expert_loader = webdataset_loader(expert_loader_args, args.train_shards, args.expert_batch_size, args.num_workers)
+    critic, actors, critic_opt, actor_opt, expert_loader = accelerator.prepare(
+        critic, actors, critic_opt, actor_opt, expert_loader
+    )
     expert_iter = iter(expert_loader)
 
     rollout_buffer = FixedRolloutBuffer(args.rollout_buffer_steps)
@@ -638,7 +644,7 @@ def main():
 
             critic_loss = -(expert_scores.mean() - policy_scores.mean())
             critic_opt.zero_grad(set_to_none=True)
-            critic_loss.backward()
+            accelerator.backward(critic_loss)
             critic_opt.step()
 
             critic_losses.append(float(critic_loss.item()))
@@ -653,16 +659,16 @@ def main():
                 score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
                 score = torch.tanh(score * args.score_scale)
 
-            logp = policy_batch["log_prob_sum"]
-            entropy = policy_batch["entropy_mean"]
+            logp = policy_batch["log_prob_sum"].to(score.device)
+            entropy = policy_batch["entropy_mean"].to(score.device)
             actor_loss = -(logp * score).mean() - args.entropy_coef * entropy.mean()
 
             actor_opt.zero_grad(set_to_none=True)
-            actor_loss.backward()
+            accelerator.backward(actor_loss)
             actor_opt.step()
             actor_losses.append(float(actor_loss.item()))
 
-        if it % args.log_every == 0:
+        if it % args.log_every == 0 and accelerator.is_main_process:
             rew_mean = float(torch.stack([s.reward_mean.mean() for s in rollout_buffer.steps]).mean().item())
             print(
                 f"iter={it} "
@@ -673,11 +679,11 @@ def main():
                 f"buffer_reward_mean={rew_mean:.4f}"
             )
 
-        if it % args.save_every == 0:
+        if it % args.save_every == 0 and accelerator.is_main_process:
             ckpt = {
                 "iter": it,
-                "critic": critic.state_dict(),
-                "actors": actors.state_dict(),
+                "critic": accelerator.unwrap_model(critic).state_dict(),
+                "actors": accelerator.unwrap_model(actors).state_dict(),
                 "critic_opt": critic_opt.state_dict(),
                 "actor_opt": actor_opt.state_dict(),
                 "args": vars(args),
