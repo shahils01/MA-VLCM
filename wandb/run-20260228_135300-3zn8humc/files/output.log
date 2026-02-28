@@ -1,0 +1,132 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:02<00:00, 333.96it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 3,145,728 trainable / 306,653,184 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 768 shards.
+Found 831 shards.
+Found 192 shards.
+Found 208 shards.
+EMA target network enabled (decay=0.995)
+train:   0%|          | 0/7995 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2179, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2086, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1556, in run_epoch
+    for batch in pbar:
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1969, in __iter__
+    yield next(iter1)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+ValueError: Caught ValueError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1396, in __iter__
+    out_sample = _process_clip_data(clip, next_clip)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 941, in _process_clip_data
+    next_inputs = _proc(raw_next_video, text)
+  File "/home/aparame/Research/MA-VLCM/train.py", line 916, in _proc
+    inputs = self.vlm_processor(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/processing_llava_next_video.py", line 122, in __call__
+    videos_inputs = self.video_processor(videos, **output_kwargs["videos_kwargs"])
+  File "/usr/local/lib/python3.10/dist-packages/transformers/video_processing_utils.py", line 206, in __call__
+    return self.preprocess(videos, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/video_processing_utils.py", line 382, in preprocess
+    videos, video_metadata = self._decode_and_sample_videos(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/video_processing_utils.py", line 296, in _decode_and_sample_videos
+    videos = make_batched_videos(videos)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/video_utils.py", line 206, in make_batched_videos
+    return convert_pil_frames_to_video([videos])
+  File "/usr/local/lib/python3.10/dist-packages/transformers/video_utils.py", line 179, in convert_pil_frames_to_video
+    video = np.stack(video)
+  File "/usr/local/lib/python3.10/dist-packages/numpy/_core/shape_base.py", line 460, in stack
+    raise ValueError('all input arrays must have the same shape')
+ValueError: all input arrays must have the same shape
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2179, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2086, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1556, in run_epoch
+[rank0]:     for batch in pbar:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1969, in __iter__
+[rank0]:     yield next(iter1)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+[rank0]:     data = self._next_data()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+[rank0]:     return self._process_data(data)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+[rank0]:     data.reraise()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+[rank0]:     raise exception
+[rank0]: ValueError: Caught ValueError in DataLoader worker process 0.
+[rank0]: Original Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+[rank0]:     data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+[rank0]:     data.append(next(self.dataset_iter))
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1396, in __iter__
+[rank0]:     out_sample = _process_clip_data(clip, next_clip)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 941, in _process_clip_data
+[rank0]:     next_inputs = _proc(raw_next_video, text)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 916, in _proc
+[rank0]:     inputs = self.vlm_processor(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/processing_llava_next_video.py", line 122, in __call__
+[rank0]:     videos_inputs = self.video_processor(videos, **output_kwargs["videos_kwargs"])
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/video_processing_utils.py", line 206, in __call__
+[rank0]:     return self.preprocess(videos, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/video_processing_utils.py", line 382, in preprocess
+[rank0]:     videos, video_metadata = self._decode_and_sample_videos(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/video_processing_utils.py", line 296, in _decode_and_sample_videos
+[rank0]:     videos = make_batched_videos(videos)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/video_utils.py", line 206, in make_batched_videos
+[rank0]:     return convert_pil_frames_to_video([videos])
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/video_utils.py", line 179, in convert_pil_frames_to_video
+[rank0]:     video = np.stack(video)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/numpy/_core/shape_base.py", line 460, in stack
+[rank0]:     raise ValueError('all input arrays must have the same shape')
+[rank0]: ValueError: all input arrays must have the same shape
+
+Exception in thread Thread-6 (_pin_memory_loop):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.10/threading.py", line 953, in run
+    self._target(*self._args, **self._kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/pin_memory.py", line 59, in _pin_memory_loop
+    do_one_step()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/pin_memory.py", line 35, in do_one_step
+    r = in_queue.get(timeout=MP_STATUS_CHECK_INTERVAL)
+  File "/usr/lib/python3.10/multiprocessing/queues.py", line 122, in get
+    return _ForkingPickler.loads(res)
+  File "/usr/local/lib/python3.10/dist-packages/torch/multiprocessing/reductions.py", line 541, in rebuild_storage_fd
+    fd = df.detach()
+  File "/usr/lib/python3.10/multiprocessing/resource_sharer.py", line 57, in detach
+    with _resource_sharer.get_connection(self._id) as conn:
+  File "/usr/lib/python3.10/multiprocessing/resource_sharer.py", line 86, in get_connection
+    c = Client(address, authkey=process.current_process().authkey)
+  File "/usr/lib/python3.10/multiprocessing/connection.py", line 502, in Client
+    c = SocketClient(address)
+  File "/usr/lib/python3.10/multiprocessing/connection.py", line 630, in SocketClient
+    s.connect(address)
+ConnectionRefusedError: [Errno 111] Connection refused

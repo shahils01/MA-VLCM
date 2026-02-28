@@ -93,16 +93,16 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --offroad_num_robots "$NUM_ROBOTS" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 9 \
+  --batch_size 10 \
   --grad_accum_steps 2 \
   --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 10 \
-  --vl_backend llava_onevision \
-  --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  --vl_backend llava_video \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir "$SAVE_DIR" \
-  --num_workers 4 \
+  --num_workers 16 \
   --mixed_precision bf16 \
   --freeze_vl \
   --peft lora \
@@ -115,14 +115,14 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --mse_loss_weight 0.01 \
   --max_grad_norm 1.0 \
   --samples_per_epoch 50000 \
-  --rware_visual_mode both \
+  --rware_visual_mode rware_only \
   --gamma 0.95 \
   --max_return_horizon 64 \
   --ema_decay 0.995 \
   --vl_max_text_len 4700
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
-##   --vl_backend llava_video \
+#   --vl_backend llava_video \
 #   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
 
 # apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
