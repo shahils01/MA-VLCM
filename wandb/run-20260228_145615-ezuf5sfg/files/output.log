@@ -1,0 +1,86 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:23<00:00, 29.52it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                         
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 3,145,728 trainable / 306,653,184 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 768 shards.
+Found 814 shards.
+Found 192 shards.
+Found 204 shards.
+EMA target network enabled (decay=0.995)
+train:   0%|          | 0/6591 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2204, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2111, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1581, in run_epoch
+    for batch in pbar:
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1988, in __iter__
+    iter2 = iter(self.loader2)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 479, in __iter__
+    self._iterator = self._get_iterator()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 415, in _get_iterator
+    return _MultiProcessingDataLoaderIter(self)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1138, in __init__
+    w.start()
+  File "/usr/lib/python3.10/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+  File "/usr/lib/python3.10/multiprocessing/context.py", line 224, in _Popen
+    return _default_context.get_context().Process._Popen(process_obj)
+  File "/usr/lib/python3.10/multiprocessing/context.py", line 281, in _Popen
+    return Popen(process_obj)
+  File "/usr/lib/python3.10/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+  File "/usr/lib/python3.10/multiprocessing/popen_fork.py", line 66, in _launch
+    self.pid = os.fork()
+OSError: [Errno 12] Cannot allocate memory
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2204, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2111, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1581, in run_epoch
+[rank0]:     for batch in pbar:
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1988, in __iter__
+[rank0]:     iter2 = iter(self.loader2)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 479, in __iter__
+[rank0]:     self._iterator = self._get_iterator()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 415, in _get_iterator
+[rank0]:     return _MultiProcessingDataLoaderIter(self)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1138, in __init__
+[rank0]:     w.start()
+[rank0]:   File "/usr/lib/python3.10/multiprocessing/process.py", line 121, in start
+[rank0]:     self._popen = self._Popen(self)
+[rank0]:   File "/usr/lib/python3.10/multiprocessing/context.py", line 224, in _Popen
+[rank0]:     return _default_context.get_context().Process._Popen(process_obj)
+[rank0]:   File "/usr/lib/python3.10/multiprocessing/context.py", line 281, in _Popen
+[rank0]:     return Popen(process_obj)
+[rank0]:   File "/usr/lib/python3.10/multiprocessing/popen_fork.py", line 19, in __init__
+[rank0]:     self._launch(process_obj)
+[rank0]:   File "/usr/lib/python3.10/multiprocessing/popen_fork.py", line 66, in _launch
+[rank0]:     self.pid = os.fork()
+[rank0]: OSError: [Errno 12] Cannot allocate memory
+Exception ignored in atexit callback: <function _MultiProcessingDataLoaderIter._clean_up_worker at 0x7f9c42ca7490>
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1598, in _clean_up_worker
+    w.join(timeout=_utils.MP_STATUS_CHECK_INTERVAL)
+  File "/usr/lib/python3.10/multiprocessing/process.py", line 149, in join
+    res = self._popen.wait(timeout)
+  File "/usr/lib/python3.10/multiprocessing/popen_fork.py", line 40, in wait
+    if not wait([self.sentinel], timeout):
+  File "/usr/lib/python3.10/multiprocessing/connection.py", line 931, in wait
+    ready = selector.select(timeout)
+  File "/usr/lib/python3.10/selectors.py", line 416, in select
+    fd_event_list = self._selector.poll(timeout)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+    _error_if_any_worker_fails()
+RuntimeError: DataLoader worker (pid 316233) is killed by signal: Aborted.

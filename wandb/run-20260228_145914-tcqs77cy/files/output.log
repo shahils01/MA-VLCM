@@ -1,0 +1,180 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:01<00:00, 354.36it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 3,145,728 trainable / 306,653,184 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 768 shards.
+Found 814 shards.
+Found 192 shards.
+Found 204 shards.
+EMA target network enabled (decay=0.995)
+train:   0%|          | 0/9887 [00:00<?, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train:   1%|          | 115/9887 [24:37<34:52:31, 12.85s/it, loss=1.1350, lr=2.15e-05]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2204, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2111, in main
+    train_loss = run_epoch(
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1629, in run_epoch
+    next_pred = bootstrap_model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+    return model_forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+  File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+  File "/home/aparame/Research/MA-VLCM/model.py", line 433, in forward
+    output = self.backbone.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1923, in forward
+    return self.base_model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/tuners/tuners_utils.py", line 311, in forward
+    return self.model.forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 819, in forward
+    outputs = self.model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 583, in forward
+    outputs = self.language_model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 397, in forward
+    hidden_states = decoder_layer(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_layers.py", line 93, in __call__
+    return super().__call__(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 954, in wrapped_forward
+    output = orig_forward(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 230, in forward
+    hidden_states, _ = self.self_attn(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 182, in forward
+    attn_output = self.o_proj(attn_output)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/peft/tuners/lora/layer.py", line 807, in forward
+    result = result + lora_B(lora_A(dropout(x))) * scaling
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+    _error_if_any_worker_fails()
+RuntimeError: DataLoader worker (pid 320609) is killed by signal: Bus error. It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2204, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2111, in main
+[rank0]:     train_loss = run_epoch(
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1629, in run_epoch
+[rank0]:     next_pred = bootstrap_model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 819, in forward
+[rank0]:     return model_forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/accelerate/utils/operations.py", line 807, in __call__
+[rank0]:     return convert_to_fp32(self.model_forward(*args, **kwargs))
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+[rank0]:     return func(*args, **kwargs)
+[rank0]:   File "/home/aparame/Research/MA-VLCM/model.py", line 433, in forward
+[rank0]:     output = self.backbone.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/peft_model.py", line 1923, in forward
+[rank0]:     return self.base_model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/tuners/tuners_utils.py", line 311, in forward
+[rank0]:     return self.model.forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 819, in forward
+[rank0]:     outputs = self.model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/llava_next_video/modeling_llava_next_video.py", line 583, in forward
+[rank0]:     outputs = self.language_model(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 1001, in wrapper
+[rank0]:     outputs = func(self, *args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 397, in forward
+[rank0]:     hidden_states = decoder_layer(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_layers.py", line 93, in __call__
+[rank0]:     return super().__call__(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/utils/generic.py", line 954, in wrapped_forward
+[rank0]:     output = orig_forward(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 230, in forward
+[rank0]:     hidden_states, _ = self.self_attn(
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/transformers/models/mistral/modeling_mistral.py", line 182, in forward
+[rank0]:     attn_output = self.o_proj(attn_output)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/peft/tuners/lora/layer.py", line 807, in forward
+[rank0]:     result = result + lora_B(lora_A(dropout(x))) * scaling
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/linear.py", line 125, in forward
+[rank0]:     return F.linear(input, self.weight, self.bias)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+[rank0]:     _error_if_any_worker_fails()
+[rank0]: RuntimeError: DataLoader worker (pid 320609) is killed by signal: Bus error. It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.

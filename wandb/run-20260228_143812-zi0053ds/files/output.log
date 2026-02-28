@@ -1,0 +1,13 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 716/716 [00:02<00:00, 308.14it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.weight]                      
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 768 shards.
+Found 814 shards.
+Found 192 shards.
+Found 204 shards.
+EMA target network enabled (decay=0.995)
+train:  16%|█▌        | 1562/9887 [57:18<5:05:28,  2.20s/it, loss=1.6332, lr=3.00e-04]
+val:   0%|          | 1/2475 [00:28<19:40:30, 28.63s/it, loss=0.7536]

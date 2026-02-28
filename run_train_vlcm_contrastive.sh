@@ -99,20 +99,20 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 10 \
-  --vl_backend llava_onevision \
-  --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  --vl_backend llava_video \
+  --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
   --save_dir "$SAVE_DIR" \
   --num_workers 8 \
   --mixed_precision bf16 \
   --freeze_vl \
-  --peft lora \
+  --peft none \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
   --vision_lr 1e-5 \
   --loss_type contrastive_mse \
   --return_mode nstep \
-  --mse_loss_weight 0.01 \
+  --mse_loss_weight 0.05 \
   --max_grad_norm 1.0 \
   --samples_per_epoch 50000 \
   --rware_visual_mode rware_only \

@@ -1,0 +1,1 @@
+{"train/mse_loss":17.09124183654785,"_runtime":1649,"train/target_mean":-0.691985547542572,"train/step":115,"train/step_loss":2.3439719676971436,"train/reward_mean":-0.13938450813293457,"train/contrastive_loss":2.1730594635009766,"train/true_returns_mean":-1.1785318851470947,"train/pred_mean":-3.7119140625,"_timestamp":1.7723102455360348e+09,"_wandb":{"runtime":1649},"_step":114}

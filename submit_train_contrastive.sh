@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --time=72:00:00
 #SBATCH --gpus=h100:2
 
@@ -19,4 +19,4 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run the training script
-bash run_train_vlcm.sh 
+bash run_train_vlcm_contrastive.sh 
