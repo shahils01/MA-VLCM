@@ -115,6 +115,10 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --mse_loss_weight 0.01 \
   --max_grad_norm 1.0 \
   --samples_per_epoch 50000 \
+  --rware_visual_mode both \
+  --gamma 0.95 \
+  --max_return_horizon 64 \
+  --ema_decay 0.995 \
   --vl_max_text_len 4700
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)

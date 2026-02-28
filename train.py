@@ -116,6 +116,15 @@ def parse_args():
     )
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
     p.add_argument(
+        "--rware_visual_mode",
+        type=str,
+        default="both",
+        choices=["both", "rware_only"],
+        help="Visual input mode for RWARE: 'both' = Isaac Sim + RWARE "
+        "side-by-side (672x336), 'rware_only' = only RWARE 2D "
+        "top-down view (resized to training dims)",
+    )
+    p.add_argument(
         "--offroad_shards",
         type=str,
         default="",
@@ -161,9 +170,25 @@ def parse_args():
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
 
     # Value targets
-    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--gamma", type=float, default=0.95)
     p.add_argument("--return_mode", type=str, default="nstep", choices=["nstep"])
     p.add_argument("--n_step", type=int, default=50)
+    p.add_argument(
+        "--max_return_horizon",
+        type=int,
+        default=64,
+        help="Cap n-step return computation at this many steps "
+        "(0 = unlimited / full clip). Limits how far into "
+        "the future the ground-truth return looks, reducing "
+        "target variance for the critic.",
+    )
+    p.add_argument(
+        "--ema_decay",
+        type=float,
+        default=0.995,
+        help="EMA decay for target network (0 = disabled). "
+        "Stabilises bootstrapped value targets.",
+    )
     p.add_argument(
         "--loss_type",
         type=str,
@@ -702,6 +727,8 @@ class SequenceWebDataset(IterableDataset):
         resize_width=672,
         resize_height=336,
         vl_backend="llava_video",
+        rware_visual_mode="both",
+        max_return_horizon=0,
     ):
         if isinstance(shards, str):
             if shards.startswith(("hf://", "http://", "https://", "pipe:")):
@@ -753,22 +780,26 @@ class SequenceWebDataset(IterableDataset):
         self.shuffle_shards = shuffle_shards
         self.times_cache = {}
         self.vl_backend = vl_backend
+        self.rware_visual_mode = rware_visual_mode
+        self._max_return_horizon = max_return_horizon
 
     def _custom_decoder(self, key, data):
         # We only care about images here.
         extension = key.split(".")[-1].lower()
         if extension in ["png", "jpg", "jpeg"]:
-            # Check for specific keywords to identify "main" camera (overhead/image)
-            # This skips "front" camera or other images not used in training.
-            if "overhead" in key or "image" in key:
-                # Decode and resize
+            # Decode main camera images (overhead/image) and RWARE top-down
+            if "overhead" in key or "image" in key or "rware_topdown" in key:
                 try:
                     with io.BytesIO(data) as stream:
                         img = Image.open(stream)
                         img.load()
                         img = img.convert("RGB")
-                        if self.resize_width > 0 and self.resize_height > 0:
-                            img = img.resize((self.resize_width, self.resize_height))
+                        # Only resize overhead/image; rware_topdown is already 336x336
+                        if "rware_topdown" not in key:
+                            if self.resize_width > 0 and self.resize_height > 0:
+                                img = img.resize(
+                                    (self.resize_width, self.resize_height)
+                                )
                         return img
                 except Exception as e:
                     print(f"Warning: Broken image at {key}, skipping: {e}")
@@ -920,9 +951,12 @@ class SequenceWebDataset(IterableDataset):
             reward = torch.tensor(float(clip[-1]["reward"]), dtype=torch.float32)
             done = torch.tensor(float(clip[-1]["done"]), dtype=torch.float32)
 
-            # Calculate discounted return (n-step TD style)
+            # Calculate discounted return (n-step, capped by max_return_horizon)
+            horizon = len(clip)
+            if hasattr(self, "_max_return_horizon") and self._max_return_horizon > 0:
+                horizon = min(horizon, self._max_return_horizon)
             returns = 0.0
-            for frame in reversed(clip):
+            for frame in reversed(clip[:horizon]):
                 returns = (
                     float(frame["reward"])
                     + self.gamma * (1.0 - float(frame["done"])) * returns
@@ -965,18 +999,48 @@ class SequenceWebDataset(IterableDataset):
                 current_ep = ep_id
                 episode_frame_count = 0
 
-            # Image loading
+            # Image loading — handle RWARE topdown off-by-one:
+            # rware_topdown[N] matches overhead[N-1], so apply
+            # current rware to the PREVIOUS frame in the buffer.
+            rware_topdown = sample.get("rware_topdown.png", None)
+            has_rware = rware_topdown is not None and isinstance(
+                rware_topdown, Image.Image
+            )
+
+            # Load the overhead / primary image for THIS step
             if "image.png" in sample:
                 image = sample["image.png"]
             elif "overhead.png" in sample:
                 image = sample["overhead.png"]
             else:
-                # print(f"Warning: No image found for key {key}. Skipping.")
                 continue
 
-            # Skip broken images (decoded as None)
             if image is None:
                 continue
+
+            # Apply RWARE topdown to the PREVIOUS buffer frame
+            # (rware step N shows same scene as overhead step N-1)
+            if has_rware and self.dataset_type == "rware" and len(buffer) > 0:
+                th = self.resize_height if self.resize_height > 0 else 336
+                tw = th  # Square per-view
+                rw_w, rw_h = rware_topdown.size
+                if (rw_w, rw_h) != (tw, th):
+                    rware_topdown = rware_topdown.resize((tw, th), Image.LANCZOS)
+
+                prev_image = buffer[-1]["image"]
+
+                if self.rware_visual_mode == "rware_only":
+                    # Replace previous frame with RWARE only
+                    buffer[-1]["image"] = rware_topdown
+                else:
+                    # Composite: concat rware onto previous
+                    pw, ph = prev_image.size
+                    if (pw, ph) != (tw, th):
+                        prev_image = prev_image.resize((tw, th), Image.LANCZOS)
+                    composite = Image.new("RGB", (tw * 2, th))
+                    composite.paste(prev_image, (0, 0))
+                    composite.paste(rware_topdown, (tw, 0))
+                    buffer[-1]["image"] = composite
 
             # Robot Obs and Adj
             if self.dataset_type == "rware":
@@ -1190,8 +1254,9 @@ class SequenceWebDataset(IterableDataset):
                     header = (
                         "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
                         f"This is a robotic warehouse environment with {n_ag} agents ({difficulty} difficulty, config: {cfg}). "
-                        "The reward is the sum of the minimum euclidean distance between an agent and its closest box, plus if an agent successfully places a box in the goal location (+5), and a penalty if the agents come within 3m of one another (-1). "
-                        "Assess the quality of the current policy based on these observations: "
+                        "The visual input contains two perspectives side-by-side: the left half shows the Isaac Sim 3D overhead view and the right half shows the RWARE 2D top-down grid view where agents and shelves are clearly visible. Green cells in the 2D view indicate requested shelf locations. Once an agent picks them up, it turns black and then agent has to drop them to the bottom of the screen"
+                        "There are 2 goal locations to drop the box in the 2 middle cells on the bottom most row. The reward is the sum of the minimum euclidean distance between an agent and its closest box at every time step, plus if an agent successfully places a box in the goal location (+5), and a penalty if the agents come within 3m of one another (-1) at every time step. "
+                        "Predict the expected infinite horizon return of the current policy based on these observations: "
                     )
                     text = header + " ".join(obs_lines)
                 else:
@@ -1271,7 +1336,7 @@ class SequenceWebDataset(IterableDataset):
                         "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
                         f"This is an offroad navigation environment with {n_ag} agents traversing rough terrain. "
                         "The reward is based on the progress towards the goal, a heading alignment reward, minus penalties for the distance to goal, each step taken (which increases over time), idling, control effort, and a terrain traversability penalty equal to 2.0 * (1 - traversability)^2. "
-                        "Assess the quality of the current policy based on these observations: "
+                        "Predict the expected infinite horizon return of the current policy based on these observations: "
                         f"Timestep: {step_idx}. "
                     )
                     text = header + " ".join(obs_lines)
@@ -1385,6 +1450,8 @@ def webdataset_loader(
         resize_width=args.resize_width,
         resize_height=args.resize_height,
         vl_backend=args.vl_backend,
+        rware_visual_mode=getattr(args, "rware_visual_mode", "both"),
+        max_return_horizon=getattr(args, "max_return_horizon", 0),
     )
 
     def _collate(batch):
@@ -1466,6 +1533,7 @@ def run_epoch(
     train=True,
     scheduler=None,
     max_steps=None,
+    target_model=None,
 ):
     if train:
         model.train()
@@ -1528,8 +1596,12 @@ def run_epoch(
                 if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
                     # Calculate bootstrapped target
                     if use_next:
+                        # Use EMA target model if available
+                        bootstrap_model = (
+                            target_model if target_model is not None else model
+                        )
                         with torch.no_grad():
-                            next_pred = model(
+                            next_pred = bootstrap_model(
                                 next_inputs,
                                 next_robot_obs,
                                 next_adj,
@@ -1541,7 +1613,6 @@ def run_epoch(
                                 nstep_returns + clip_gamma * (1.0 - done) * next_pred
                             )
                         else:
-                            # Fallback if somehow returns are missing, but SequenceWebDataset provides it
                             target = reward + clip_gamma * (1.0 - done) * next_pred
                     else:
                         if "returns" in batch:
@@ -1567,12 +1638,25 @@ def run_epoch(
                     accelerator.backward(loss)
                     if args.max_grad_norm > 0 and accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(
-                            model.parameters(), max_norm=args.max_grad_norm
+                            model.parameters(),
+                            max_norm=args.max_grad_norm,
                         )
                     optimizer.step()
                     if scheduler is not None:
                         scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
+
+                    # Update EMA target model
+                    if target_model is not None:
+                        ema_decay = getattr(args, "ema_decay", 0.995)
+                        with torch.no_grad():
+                            for p_ema, p_online in zip(
+                                target_model.parameters(),
+                                model.parameters(),
+                            ):
+                                p_ema.data.mul_(ema_decay).add_(
+                                    p_online.data, alpha=1.0 - ema_decay
+                                )
 
         total_loss += loss.item()
         avg_loss = total_loss / step
@@ -1986,6 +2070,18 @@ def main():
             model, optimizer, train_loader, scheduler
         )
 
+    # Build EMA target model for stable bootstrapping
+    target_model = None
+    if args.ema_decay > 0:
+        import copy
+
+        target_model = copy.deepcopy(accelerator.unwrap_model(model))
+        target_model.eval()
+        for p in target_model.parameters():
+            p.requires_grad = False
+        target_model = target_model.to(accelerator.device)
+        accelerator.print(f"EMA target network enabled (decay={args.ema_decay})")
+
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(
             model,
@@ -1998,6 +2094,7 @@ def main():
             train=True,
             scheduler=scheduler,
             max_steps=estimated_steps_per_epoch,
+            target_model=target_model,
         )
         val_loss = None
         if val_loader is not None:
@@ -2043,7 +2140,14 @@ def main():
                 "epoch": epoch,
                 "args": vars(args),
             }
-            torch.save(ckpt, os.path.join(args.save_dir, f"{ckpt_name}.pt"))
+            if target_model is not None:
+                ckpt["target_model"] = {
+                    k: v.cpu() for k, v in target_model.state_dict().items()
+                }
+            torch.save(
+                ckpt,
+                os.path.join(args.save_dir, f"{ckpt_name}.pt"),
+            )
 
             # Save accompanying JSON spec file
             info_dict = {
