@@ -1,4 +1,6 @@
-TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000285}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000287}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000159}.tar::/scratch/shahils/data/gotogoal_pt_45/shard-{000000..000129}.tar::/scratch/shahils/data/gotogoal_pt_225/shard-{000000..000111}.tar"
+TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_0/shard-{000000..000040}.tar::/scratch/shahils/data/gotogoal_new_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_new_pt_30/shard-{000000..000290}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
+# TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/OFFROAD/dataset_2/shard-{000000..000030}.tar"
+# TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
 accelerate launch --num_processes 2 train.py \
@@ -18,6 +20,7 @@ accelerate launch --num_processes 2 train.py \
   --reward_reduce mean \
   --done_reduce any \
   --gamma 0.99 \
+  --loss_type td \
   --text_mode raw \
   --return_mode nstep \
   --n_step 20 \
