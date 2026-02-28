@@ -175,7 +175,11 @@ def main():
     ).to(device)
     actors.eval()
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    try:
+        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    except TypeError:
+        # Older torch versions do not support weights_only.
+        ckpt = torch.load(args.checkpoint, map_location=device)
     if "actors" in ckpt:
         actors.load_state_dict(ckpt["actors"], strict=False)
     else:
@@ -240,6 +244,13 @@ def main():
                 frame = _extract_rgb_frame(frame)
                 if frame is None:
                     frame = _extract_frame_from_env_canvas(env)
+                if frame is None and hasattr(env, "unwrapped"):
+                    # Some gym wrappers drop rgb_array output; call base env directly.
+                    try:
+                        frame = env.unwrapped.render(mode="rgb_array")
+                    except Exception:
+                        frame = None
+                    frame = _extract_rgb_frame(frame) if frame is not None else None
                 if frame is not None:
                     frames.append(frame)
 
