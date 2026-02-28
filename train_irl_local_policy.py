@@ -407,7 +407,7 @@ def build_critic(args, device: torch.device) -> MultimodalValueModel:
         vl_dtype=args.vl_dtype,
         vl_max_text_len=args.vl_max_text_len,
         freeze_vl=args.freeze_vl,
-        quantization_config=None,
+        quantization_config=getattr(args, "quantization_config", None),
         video_channels=3,
         video_height=args.video_size,
         video_width=args.video_size,
@@ -428,6 +428,38 @@ def build_critic(args, device: torch.device) -> MultimodalValueModel:
         debug_save_video=False,
     )
     model = MultimodalValueModel(cfg, device=device)
+    return model
+
+
+def _parse_lora_targets(args):
+    if args.lora_target_modules:
+        return [t.strip() for t in args.lora_target_modules.split(",") if t.strip()]
+    return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+
+def _apply_peft(model, args):
+    if args.peft == "none":
+        return model
+    try:
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    except Exception as e:
+        raise RuntimeError("PEFT requested but 'peft' is not installed. `pip install peft`.") from e
+
+    for p in model.backbone.model.parameters():
+        p.requires_grad = False
+
+    if args.peft == "qlora":
+        model.backbone.model = prepare_model_for_kbit_training(model.backbone.model)
+
+    lora_cfg = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias=args.lora_bias,
+        target_modules=_parse_lora_targets(args),
+        task_type="CAUSAL_LM",
+    )
+    model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
     return model
 
 
@@ -534,6 +566,12 @@ def parse_args():
     p.add_argument("--temporal_dropout", type=float, default=0.1)
     p.add_argument("--gnn_layers", type=int, default=2)
     p.add_argument("--fusion_hidden", type=int, default=512)
+    p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
+    p.add_argument("--lora_r", type=int, default=16)
+    p.add_argument("--lora_alpha", type=int, default=32)
+    p.add_argument("--lora_dropout", type=float, default=0.05)
+    p.add_argument("--lora_target_modules", type=str, default="")
+    p.add_argument("--lora_bias", type=str, default="none", choices=["none", "all", "lora_only"])
 
     # Policy
     p.add_argument("--policy_hidden_dim", type=int, default=256)
@@ -639,6 +677,26 @@ def evaluate_policy(
 
 def main():
     args = parse_args()
+    if args.peft == "qlora":
+        try:
+            from transformers import BitsAndBytesConfig
+        except Exception as e:
+            raise RuntimeError("QLoRA requested but bitsandbytes/transformers are not available.") from e
+        if args.vl_dtype == "float16":
+            compute_dtype = torch.float16
+        elif args.vl_dtype == "float32":
+            compute_dtype = torch.float32
+        else:
+            compute_dtype = torch.bfloat16
+        args.quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+        )
+    else:
+        args.quantization_config = None
+
     os.makedirs(args.save_dir, exist_ok=True)
     ddp_kwargs = DistributedDataParallelKwargs(
         find_unused_parameters=bool(args.ddp_find_unused_parameters)
@@ -678,6 +736,7 @@ def main():
     accelerator.print(f"num_agents={num_agents} obs_dim={obs_dim} action_dim={action_dim} continuous={is_continuous}")
 
     critic = build_critic(args, device)
+    critic = _apply_peft(critic, args)
     critic.train()
 
     tokenizer = getattr(critic.backbone.processor, "tokenizer", None)
@@ -697,7 +756,10 @@ def main():
     ).to(device)
     actors.train()
 
-    critic_opt = torch.optim.AdamW(critic.parameters(), lr=args.critic_lr, weight_decay=args.weight_decay)
+    critic_trainable = [p for p in critic.parameters() if p.requires_grad]
+    if len(critic_trainable) == 0:
+        raise RuntimeError("No trainable critic parameters found. Check PEFT configuration.")
+    critic_opt = torch.optim.AdamW(critic_trainable, lr=args.critic_lr, weight_decay=args.weight_decay)
     actor_opt = torch.optim.AdamW(actors.parameters(), lr=args.actor_lr, weight_decay=0.0)
 
     expert_loader_args = SimpleNamespace(

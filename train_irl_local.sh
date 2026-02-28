@@ -5,10 +5,11 @@ set -euo pipefail
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
 SCENARIO="${SCENARIO:-ManyAgentGoToGoal-v0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints_irl_local}"
-NUM_PROCESSES="${NUM_PROCESSES:-2}"
-VL_MODEL_NAME="${VL_MODEL_NAME:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}"  # 0.5B default
+NUM_PROCESSES="${NUM_PROCESSES:-1}"
+VL_MODEL_NAME="${VL_MODEL_NAME:-llava-hf/LLaVA-NeXT-Video-7B-hf}"  # llava-onevision-qwen2-0.5b-ov-hf or LLaVA-NeXT-Video-7B-hf
 WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-irl}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-irl-local}"
+PEFT_MODE="${PEFT_MODE:-none}" # none / lora / qlora
 
 accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --scenario "${SCENARIO}" \
@@ -44,6 +45,11 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --temporal_dropout 0.1 \
   --gnn_layers 2 \
   --fusion_hidden 512 \
+  --peft "${PEFT_MODE}" \
+  --lora_r 16 \
+  --lora_alpha 32 \
+  --lora_dropout 0.05 \
+  --lora_target_modules "q_proj,v_proj" \
   --policy_hidden_dim 256 \
   --action_type continuous \
   --action_dim 2 \
