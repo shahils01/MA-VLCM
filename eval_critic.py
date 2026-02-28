@@ -213,39 +213,70 @@ def _move_inputs_to_device(inputs, device):
 
 
 @torch.no_grad()
-def run_stream(model, loader, device, max_samples):
+def run_stream(model, loader, device, max_samples, train_args):
     preds = []
     rets = []
+    aligned_targets = []
     for batch in loader:
         inputs = _move_inputs_to_device(batch["inputs"], device)
         robot_obs = batch["robot_obs"].to(device)
         adj = batch["adj"].to(device)
         out = model(inputs, robot_obs, adj)
-        ret = batch["returns"].to(device)
+
+        ret = batch["returns"].to(device) if "returns" in batch else None
+        target = None
+        if getattr(train_args, "loss_type", "contrastive") != "contrastive":
+            gamma = float(getattr(train_args, "gamma", 0.99))
+            return_mode = getattr(train_args, "return_mode", "td")
+            if return_mode == "td" and all(k in batch for k in ("next_inputs", "next_robot_obs", "next_adj", "reward", "done")):
+                next_inputs = _move_inputs_to_device(batch["next_inputs"], device)
+                next_robot_obs = batch["next_robot_obs"].to(device)
+                next_adj = batch["next_adj"].to(device)
+                next_pred = model(next_inputs, next_robot_obs, next_adj)
+                reward = batch["reward"].to(device)
+                done = batch["done"].to(device).float()
+                target = reward + gamma * (1.0 - done) * next_pred
+            elif return_mode == "nstep" and all(
+                k in batch for k in ("td_nstep_inputs", "td_nstep_robot_obs", "td_nstep_adj", "td_nstep_return", "td_nstep_done")
+            ):
+                nstep_inputs = _move_inputs_to_device(batch["td_nstep_inputs"], device)
+                nstep_robot_obs = batch["td_nstep_robot_obs"].to(device)
+                nstep_adj = batch["td_nstep_adj"].to(device)
+                nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
+                nstep_returns = batch["td_nstep_return"].to(device)
+                nstep_done = batch["td_nstep_done"].to(device).float()
+                gamma_n = gamma ** int(getattr(train_args, "n_step", 1))
+                target = nstep_returns + gamma_n * (1.0 - nstep_done) * nstep_bootstrap_pred
+
         preds.append(out.detach().float().cpu())
-        rets.append(ret.detach().float().cpu())
+        if ret is not None:
+            rets.append(ret.detach().float().cpu())
+        if target is not None:
+            aligned_targets.append(target.detach().float().cpu())
         if sum(x.numel() for x in preds) >= max_samples:
             break
 
     if not preds:
-        return torch.empty(0), torch.empty(0)
+        return torch.empty(0), torch.empty(0), torch.empty(0)
     pred = torch.cat(preds, dim=0)[:max_samples]
-    ret = torch.cat(rets, dim=0)[:max_samples]
-    return pred, ret
+    ret = torch.cat(rets, dim=0)[:max_samples] if rets else torch.empty(0)
+    aligned = torch.cat(aligned_targets, dim=0)[:max_samples] if aligned_targets else torch.empty(0)
+    return pred, ret, aligned
 
 
-def _print_sample_table(pred: torch.Tensor, ret: torch.Tensor, k: int, seed: int):
-    if pred.numel() == 0:
+def _print_sample_table(pred: torch.Tensor, target: torch.Tensor, k: int, seed: int, target_name: str):
+    if pred.numel() == 0 or target.numel() == 0:
         print("No samples to print.")
         return
-    k = min(k, pred.numel())
+    n = min(pred.numel(), target.numel())
+    k = min(k, n)
     g = torch.Generator(device="cpu").manual_seed(seed)
-    idx = torch.randperm(pred.numel(), generator=g)[:k]
-    print("\nRandom sample comparison (predicted_value vs true_return):")
-    print("idx\tpred\ttrue\terror")
+    idx = torch.randperm(n, generator=g)[:k]
+    print(f"\nRandom sample comparison (predicted_value vs {target_name}):")
+    print(f"idx\tpred\t{target_name}\terror")
     for i in idx.tolist():
         p = float(pred[i])
-        t = float(ret[i])
+        t = float(target[i])
         print(f"{i}\t{p:.6f}\t{t:.6f}\t{(p - t):+.6f}")
 
 
@@ -320,17 +351,27 @@ def main():
 
     if args.eval_shards:
         eval_loader = webdataset_loader(train_args, args.eval_shards, args.batch_size, args.num_workers)
-        pred, ret = run_stream(model, eval_loader, device, args.max_samples)
-        _print_sample_table(pred, ret, args.print_samples, args.seed)
-        _print_core_metrics("eval_shards", pred, ret)
+        pred, ret, aligned = run_stream(model, eval_loader, device, args.max_samples, train_args)
+        if ret.numel() > 0:
+            _print_sample_table(pred, ret, args.print_samples, args.seed, "true_return")
+            _print_core_metrics("eval_shards/returns_target", pred, ret)
+        if aligned.numel() > 0:
+            _print_sample_table(pred, aligned, args.print_samples, args.seed + 1, "train_aligned_target")
+            _print_core_metrics("eval_shards/train_aligned_target", pred, aligned)
 
     if args.good_shards and args.bad_shards:
         good_loader = webdataset_loader(train_args, args.good_shards, args.batch_size, args.num_workers)
         bad_loader = webdataset_loader(train_args, args.bad_shards, args.batch_size, args.num_workers)
-        good_pred, good_ret = run_stream(model, good_loader, device, args.max_samples)
-        bad_pred, bad_ret = run_stream(model, bad_loader, device, args.max_samples)
-        _print_core_metrics("good_shards", good_pred, good_ret)
-        _print_core_metrics("bad_shards", bad_pred, bad_ret)
+        good_pred, good_ret, good_aligned = run_stream(model, good_loader, device, args.max_samples, train_args)
+        bad_pred, bad_ret, bad_aligned = run_stream(model, bad_loader, device, args.max_samples, train_args)
+        if good_ret.numel() > 0:
+            _print_core_metrics("good_shards/returns_target", good_pred, good_ret)
+        if bad_ret.numel() > 0:
+            _print_core_metrics("bad_shards/returns_target", bad_pred, bad_ret)
+        if good_aligned.numel() > 0:
+            _print_core_metrics("good_shards/train_aligned_target", good_pred, good_aligned)
+        if bad_aligned.numel() > 0:
+            _print_core_metrics("bad_shards/train_aligned_target", bad_pred, bad_aligned)
         gb_acc = _good_bad_pair_accuracy(good_pred, bad_pred)
         print("\n[good_vs_bad]")
         print(f"  PairwiseProb(score_good > score_bad)={gb_acc:.6f}")
