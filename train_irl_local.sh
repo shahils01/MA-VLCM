@@ -16,11 +16,11 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --rollout_steps 128 \
   --rollout_buffer_steps 4096 \
   --iters 2000 \
-  --clip_len 10 \
+  --clip_len 15 \
   --critic_updates 1 \
   --actor_updates 1 \
-  --policy_batch_size 8 \
-  --expert_batch_size 2 \
+  --policy_batch_size 4 \
+  --expert_batch_size 4 \
   --num_workers 2 \
   --entropy_coef 0.001 \
   --score_scale 1.0 \
@@ -44,8 +44,8 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --policy_hidden_dim 256 \
   --action_type continuous \
   --action_dim 2 \
-  --log_every 20 \
-  --save_every 200 \
+  --log_every 5 \
+  --save_every 20 \
   --save_dir "${SAVE_DIR}" \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots \
   with heading denoted by an arrow) is: <video>, and the robot team observations over ten episodes is <obs>. \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CHECKPOINT="${CHECKPOINT:-checkpoints_irl_local/irl_local_iter_600.pt}"
+CHECKPOINT="${CHECKPOINT:-checkpoints_irl_local/irl_local_iter_80.pt}"
 SCENARIO="${SCENARIO:-ManyAgentGoToGoal-v0}"
 
 python eval_irl_local_policy.py \
