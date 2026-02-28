@@ -263,12 +263,39 @@ class ManyAgentVecEnv:
         for env in self.envs:
             env.close()
 
+    def render_rgb_array(self) -> np.ndarray:
+        frames = []
+        for env in self.envs:
+            fr = None
+            try:
+                fr = env.render(mode="rgb_array")
+            except TypeError:
+                try:
+                    fr = env.render()
+                except Exception:
+                    fr = None
+            except Exception:
+                fr = None
+
+            if isinstance(fr, np.ndarray):
+                if fr.ndim == 3:
+                    frames.append(fr)
+                    continue
+                if fr.ndim == 4 and fr.shape[0] > 0:
+                    frames.append(fr[0])
+                    continue
+
+            # Fallback black frame if render output unavailable.
+            frames.append(np.zeros((84, 84, 3), dtype=np.uint8))
+        return np.stack(frames, axis=0)
+
 
 @dataclass
 class RolloutStep:
     obs: torch.Tensor  # [E, N, obs_dim]
     actions: torch.Tensor  # [E, N, act_dim or 1]
     adj: torch.Tensor  # [E, N, N]
+    frame: torch.Tensor  # [E, H, W, 3] uint8
     log_prob_sum: torch.Tensor  # [E]
     entropy_mean: torch.Tensor  # [E]
     reward_mean: torch.Tensor  # [E]
@@ -290,6 +317,7 @@ class FixedRolloutBuffer:
         obs: torch.Tensor,
         actions: torch.Tensor,
         adj: torch.Tensor,
+        frame: torch.Tensor,
         log_prob_sum: torch.Tensor,
         entropy_mean: torch.Tensor,
         reward_mean: torch.Tensor,
@@ -300,6 +328,7 @@ class FixedRolloutBuffer:
                 obs=obs.detach().cpu(),
                 actions=actions.detach().cpu(),
                 adj=adj.detach().cpu(),
+                frame=frame.detach().cpu(),
                 log_prob_sum=log_prob_sum.detach().cpu(),
                 entropy_mean=entropy_mean.detach().cpu(),
                 reward_mean=reward_mean.detach().cpu(),
@@ -318,6 +347,7 @@ class FixedRolloutBuffer:
         robot_obs = []
         actions = []
         adj = []
+        videos = []
         log_prob_sum = []
         entropy_mean = []
         reward_mean = []
@@ -328,6 +358,7 @@ class FixedRolloutBuffer:
             clip_obs = []
             clip_adj = []
             clip_act = []
+            clip_vid = []
             clip_logp = []
             clip_ent = []
             clip_rew = []
@@ -335,6 +366,7 @@ class FixedRolloutBuffer:
             terminal_obs = None
             terminal_act = None
             terminal_adj = None
+            terminal_vid = None
             done_triggered = False
             for t in range(clip_len):
                 s = self.steps[start + t]
@@ -342,6 +374,7 @@ class FixedRolloutBuffer:
                     clip_obs.append(terminal_obs)
                     clip_act.append(terminal_act)
                     clip_adj.append(terminal_adj)
+                    clip_vid.append(terminal_vid)
                     clip_logp.append(torch.zeros((), dtype=torch.float32))
                     clip_ent.append(torch.zeros((), dtype=torch.float32))
                     clip_rew.append(torch.zeros((), dtype=torch.float32))
@@ -350,9 +383,11 @@ class FixedRolloutBuffer:
                 o = s.obs[env_idx]
                 u = s.actions[env_idx]
                 a = s.adj[env_idx]
+                v = s.frame[env_idx]
                 clip_obs.append(o)
                 clip_act.append(u)
                 clip_adj.append(a)
+                clip_vid.append(v)
                 clip_logp.append(s.log_prob_sum[env_idx])
                 clip_ent.append(s.entropy_mean[env_idx])
                 clip_rew.append(s.reward_mean[env_idx])
@@ -361,11 +396,13 @@ class FixedRolloutBuffer:
                     terminal_obs = o
                     terminal_act = u
                     terminal_adj = a
+                    terminal_vid = v
                     done_triggered = True
 
             robot_obs.append(torch.stack(clip_obs, dim=0))
             actions.append(torch.stack(clip_act, dim=0))
             adj.append(torch.stack(clip_adj, dim=0))
+            videos.append(torch.stack(clip_vid, dim=0))
             log_prob_sum.append(torch.stack(clip_logp).sum())
             entropy_mean.append(torch.stack(clip_ent).mean())
             reward_mean.append(torch.stack(clip_rew).mean())
@@ -374,6 +411,7 @@ class FixedRolloutBuffer:
             "robot_obs": torch.stack(robot_obs, dim=0).to(device),  # [B, T, N, D]
             "actions": torch.stack(actions, dim=0).to(device),  # [B, T, N, A]
             "adj": torch.stack(adj, dim=0).to(device),  # [B, T, N, N]
+            "video": torch.stack(videos, dim=0),  # [B, T, H, W, 3] uint8 on CPU
             "log_prob_sum": torch.stack(log_prob_sum).to(device),  # [B]
             "entropy_mean": torch.stack(entropy_mean).to(device),  # [B]
             "reward_mean": torch.stack(reward_mean).to(device),  # [B]
@@ -398,6 +436,34 @@ class CachedBlankVideoInputs:
         inputs = self.processor(text=text, videos=videos, return_tensors="pt", padding="longest", truncation=False)
         self.cache[batch_size] = {k: v for k, v in dict(inputs).items()}
         return {k: v.clone() for k, v in self.cache[batch_size].items()}
+
+
+def _resize_frame_uint8(frame: np.ndarray, size: int) -> np.ndarray:
+    if frame.shape[0] == size and frame.shape[1] == size:
+        return frame
+    img = Image.fromarray(frame)
+    img = img.resize((size, size), resample=Image.BILINEAR)
+    return np.asarray(img, dtype=np.uint8)
+
+
+def build_video_inputs_from_batch(
+    processor,
+    prompt: str,
+    videos_uint8: torch.Tensor,
+    frame_size: int,
+) -> Dict[str, torch.Tensor]:
+    # videos_uint8: [B, T, H, W, 3] on CPU
+    v = videos_uint8.detach().cpu().numpy().astype(np.uint8)
+    batch_videos = []
+    for b in range(v.shape[0]):
+        frames = []
+        for t in range(v.shape[1]):
+            fr = _resize_frame_uint8(v[b, t], frame_size)
+            frames.append(Image.fromarray(fr))
+        batch_videos.append(frames)
+    text = [prompt for _ in range(v.shape[0])]
+    inputs = processor(text=text, videos=batch_videos, return_tensors="pt", padding="longest", truncation=False)
+    return dict(inputs)
 
 
 def build_critic(args, device: torch.device) -> MultimodalValueModel:
@@ -525,6 +591,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--rollout_steps", type=int, default=128)
     p.add_argument("--rollout_buffer_steps", type=int, default=4096)
+    p.add_argument("--policy_video_source", type=str, default="env", choices=["env", "blank"])
+    p.add_argument("--frame_store_size", type=int, default=84)
 
     # Expert data
     p.add_argument("--train_shards", type=str, required=True)
@@ -600,10 +668,18 @@ def collect_rollout(
     buffer: FixedRolloutBuffer,
     obs_np: np.ndarray,
     device: torch.device,
+    args,
     rollout_steps: int,
 ) -> np.ndarray:
     obs = obs_np
     for _ in range(rollout_steps):
+        frame_np = envs.render_rgb_array()  # [E,H,W,3]
+        if frame_np.shape[1] != args.frame_store_size or frame_np.shape[2] != args.frame_store_size:
+            resized = [
+                _resize_frame_uint8(frame_np[i], args.frame_store_size)
+                for i in range(frame_np.shape[0])
+            ]
+            frame_np = np.stack(resized, axis=0)
         adj = envs.get_adjacency()
         obs_t = torch.tensor(obs, dtype=torch.float32, device=device)
         with torch.no_grad():
@@ -623,6 +699,7 @@ def collect_rollout(
             obs=torch.tensor(obs, dtype=torch.float32),
             actions=act_t.detach().cpu(),
             adj=torch.tensor(adj, dtype=torch.float32),
+            frame=torch.tensor(frame_np, dtype=torch.uint8),
             log_prob_sum=logp_t.sum(dim=1).detach().cpu(),
             entropy_mean=ent_t.mean(dim=1).detach().cpu(),
             reward_mean=reward_mean,
@@ -794,10 +871,12 @@ def main():
         frame_size=args.video_size,
     )
 
-    obs = collect_rollout(envs, actors, rollout_buffer, obs, device, rollout_steps=max(args.rollout_steps, args.clip_len))
+    obs = collect_rollout(
+        envs, actors, rollout_buffer, obs, device, args, rollout_steps=max(args.rollout_steps, args.clip_len)
+    )
 
     for it in range(1, args.iters + 1):
-        obs = collect_rollout(envs, actors, rollout_buffer, obs, device, rollout_steps=args.rollout_steps)
+        obs = collect_rollout(envs, actors, rollout_buffer, obs, device, args, rollout_steps=args.rollout_steps)
 
         critic_losses = []
         actor_losses = []
@@ -813,7 +892,16 @@ def main():
             expert_adj = expert_batch["adj"].to(device)
 
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
-            policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
+            if args.policy_video_source == "env":
+                policy_inputs = build_video_inputs_from_batch(
+                    processor=critic_raw.backbone.processor,
+                    prompt=args.text_prompt_template,
+                    videos_uint8=policy_batch["video"],
+                    frame_size=args.video_size,
+                )
+                policy_inputs = _to_device_inputs(policy_inputs, device)
+            else:
+                policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
 
             with accelerator.accumulate(critic):
                 # Do separate backward passes to avoid cross-forward autograd version conflicts
@@ -843,7 +931,16 @@ def main():
 
         for _ in range(args.actor_updates):
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
-            policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
+            if args.policy_video_source == "env":
+                policy_inputs = build_video_inputs_from_batch(
+                    processor=critic_raw.backbone.processor,
+                    prompt=args.text_prompt_template,
+                    videos_uint8=policy_batch["video"],
+                    frame_size=args.video_size,
+                )
+                policy_inputs = _to_device_inputs(policy_inputs, device)
+            else:
+                policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
 
             with accelerator.accumulate(actors):
                 with torch.no_grad():

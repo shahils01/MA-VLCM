@@ -18,6 +18,8 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --seed 1 \
   --rollout_steps 128 \
   --rollout_buffer_steps 4096 \
+  --policy_video_source env \
+  --frame_store_size 84 \
   --iters 2000 \
   --clip_len 15 \
   --critic_updates 1 \
