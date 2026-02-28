@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Override these with environment variables if needed.
-TRAIN_SHARDS="${TRAIN_SHARDS:-/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar}"
+TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
 SCENARIO="${SCENARIO:-ManyAgentGoToGoal-v0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints_irl_local}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
