@@ -1,4 +1,6 @@
 import io
+import os
+from collections import defaultdict, deque
 
 import torch
 from torch.utils.data import DataLoader, IterableDataset
@@ -320,6 +322,7 @@ class SequenceWebDataset(IterableDataset):
                     "reward": reward.view(1),
                     "returns": returns.view(1),
                     "done": done.view(1),
+                    "shard_id": clip[0]["shard_id"],
                 }
                 if self.include_next:
                     out["next_inputs"] = next_inputs
@@ -338,6 +341,10 @@ class SequenceWebDataset(IterableDataset):
             key = sample.get("__key__", "")
             if isinstance(key, bytes):
                 key = key.decode("utf-8", errors="ignore")
+            shard_url = sample.get("__url__", "")
+            if isinstance(shard_url, bytes):
+                shard_url = shard_url.decode("utf-8", errors="ignore")
+            shard_id = os.path.basename(str(shard_url)) if shard_url else "unknown_shard"
             ep_id = _extract_episode_id(key)
 
             if current_ep is None:
@@ -375,6 +382,7 @@ class SequenceWebDataset(IterableDataset):
                     "text": text,
                     "reward": reward,
                     "done": done,
+                    "shard_id": shard_id,
                 }
             )
 
@@ -415,6 +423,59 @@ def _collate_sequence_batch(batch):
     return out
 
 
+class UniqueShardBatchDataset(IterableDataset):
+    def __init__(self, base_dataset, batch_size, max_queue_per_shard=16, drop_last=True):
+        self.base_dataset = base_dataset
+        self.batch_size = int(batch_size)
+        self.max_queue_per_shard = int(max_queue_per_shard)
+        self.drop_last = bool(drop_last)
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        if self.max_queue_per_shard <= 0:
+            raise ValueError("max_queue_per_shard must be > 0")
+
+    def __iter__(self):
+        per_shard = defaultdict(deque)
+
+        for sample in self.base_dataset:
+            shard_id = sample.get("shard_id", "unknown_shard")
+            q = per_shard[shard_id]
+            if len(q) >= self.max_queue_per_shard:
+                q.popleft()
+            q.append(sample)
+
+            while len(per_shard) >= self.batch_size:
+                shard_ids = list(per_shard.keys())
+                if len(shard_ids) > self.batch_size:
+                    perm = torch.randperm(len(shard_ids))[: self.batch_size].tolist()
+                    shard_ids = [shard_ids[i] for i in perm]
+                else:
+                    shard_ids = shard_ids[: self.batch_size]
+
+                batch = []
+                empty_keys = []
+                for sid in shard_ids:
+                    sq = per_shard[sid]
+                    batch.append(sq.popleft())
+                    if len(sq) == 0:
+                        empty_keys.append(sid)
+                for sid in empty_keys:
+                    del per_shard[sid]
+                yield batch
+
+        if not self.drop_last:
+            leftovers = []
+            for q in per_shard.values():
+                while len(q) > 0:
+                    leftovers.append(q.popleft())
+            if leftovers:
+                yield leftovers
+
+
+def _collate_prebatched_sequence_batch(batch):
+    return _collate_sequence_batch(batch)
+
+
 def webdataset_loader(args, shards, batch_size, num_workers):
     vlm_processor = None
     if args.preprocess_in_loader:
@@ -444,5 +505,13 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         return_horizon=getattr(args, "return_horizon", "clip"),
         n_step=getattr(args, "n_step", 1),
     )
+    if getattr(args, "shard_aware_batching", False):
+        dataset = UniqueShardBatchDataset(
+            base_dataset=dataset,
+            batch_size=batch_size,
+            max_queue_per_shard=getattr(args, "shard_batch_max_queue_per_shard", 16),
+            drop_last=True,
+        )
+        return DataLoader(dataset, batch_size=None, num_workers=num_workers, collate_fn=_collate_prebatched_sequence_batch)
 
     return DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=_collate_sequence_batch)

@@ -72,8 +72,21 @@ def parse_args():
         help="For nstep-style targets: discounted return over clip or from clip start to terminal state in episode.",
     )
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
     p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--lambda_td", type=float, default=1.0, help="Weight for TD loss when using td_contrastive")
+    p.add_argument("--lambda_c", type=float, default=1.0, help="Weight for contrastive loss when using td_contrastive")
+    p.add_argument(
+        "--shard_aware_batching",
+        action="store_true",
+        help="Build batches with at most one mini-trajectory per shard on each process.",
+    )
+    p.add_argument(
+        "--shard_batch_max_queue_per_shard",
+        type=int,
+        default=16,
+        help="Max queued samples per shard while waiting to form unique-shard batches.",
+    )
 
     # Accelerate
     p.add_argument("--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"])
@@ -332,12 +345,12 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        use_td = args.loss_type != "contrastive" and args.return_mode == "td"
+        use_td = args.loss_type in {"td", "td_contrastive"} and args.return_mode == "td"
         if use_td:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
-        use_nstep_td = args.loss_type != "contrastive" and args.return_mode == "nstep"
+        use_nstep_td = args.loss_type in {"td", "td_contrastive"} and args.return_mode == "nstep"
         if use_nstep_td:
             nstep_inputs = _move_inputs(batch["td_nstep_inputs"])
             nstep_robot_obs = batch["td_nstep_robot_obs"].to(accelerator.device)
@@ -370,9 +383,17 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 else:
                     pred = model_out
                     debug_text = None
+                contrastive_targets = (
+                    batch["returns"].to(accelerator.device)
+                    if args.return_mode == "nstep" and "returns" in batch
+                    else reward
+                )
+
                 if args.loss_type == "contrastive":
-                    returns = batch["returns"].to(accelerator.device) if args.return_mode == "nstep" and "returns" in batch else reward
-                    loss = _contrastive_pairwise_loss(pred.view(-1), returns.view(-1), margin=args.contrastive_margin)
+                    contrastive_loss = _contrastive_pairwise_loss(
+                        pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                    )
+                    loss = contrastive_loss
                 else:
                     if args.return_mode == "td":
                         with torch.no_grad():
@@ -385,7 +406,14 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                         target = nstep_returns + gamma_n * (1.0 - nstep_done) * nstep_bootstrap_pred
                     else:
                         target = batch["returns"].to(accelerator.device)
-                    loss = loss_fn(pred, target)
+                    td_loss = loss_fn(pred, target)
+                    if args.loss_type == "td_contrastive":
+                        contrastive_loss = _contrastive_pairwise_loss(
+                            pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                        )
+                        loss = args.lambda_td * td_loss + args.lambda_c * contrastive_loss
+                    else:
+                        loss = td_loss
 
                 if train:
                     accelerator.backward(loss)

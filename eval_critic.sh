@@ -5,7 +5,7 @@ python eval_critic.py \
   --max_samples 20 \
   --print_samples 20 \
   --value_pooling last_token_logits \
-  --checkpoint checkpoints/ckpt_epoch_3.pt \
+  --checkpoint checkpoints/ckpt_epoch_2.pt \
 
 
 
