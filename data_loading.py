@@ -1,5 +1,7 @@
 import io
 import os
+import fnmatch
+import re
 from collections import defaultdict, deque
 
 import torch
@@ -15,6 +17,73 @@ def _as_numpy(x):
         except Exception:
             return torch.load(io.BytesIO(x), map_location="cpu")
     return x
+
+
+def _is_glob_pattern(s):
+    return any(ch in s for ch in ("*", "?", "["))
+
+
+def _hf_list_dataset_files(repo_id, revision):
+    try:
+        from huggingface_hub import HfApi
+    except Exception as e:
+        raise RuntimeError(
+            "Hugging Face wildcard shard expansion requires `huggingface_hub`. "
+            "Install it with: pip install huggingface_hub"
+        ) from e
+    api = HfApi()
+    return api.list_repo_files(repo_id=repo_id, repo_type="dataset", revision=revision)
+
+
+def _expand_hf_uri_spec(spec):
+    # Format: hf://datasets/<org>/<repo>@<revision>/<path_or_glob>
+    m = re.match(r"^hf://datasets/([^/@]+/[^/@]+)(?:@([^/]+))?/(.+)$", spec)
+    if not m:
+        return [spec]
+    repo_id, revision, repo_path = m.group(1), (m.group(2) or "main"), m.group(3)
+    if not _is_glob_pattern(repo_path):
+        return [f"https://huggingface.co/datasets/{repo_id}/resolve/{revision}/{repo_path}"]
+
+    files = _hf_list_dataset_files(repo_id, revision)
+    matches = [f for f in files if fnmatch.fnmatch(f, repo_path)]
+    matches = sorted([f for f in matches if f.endswith(".tar")])
+    if not matches:
+        raise RuntimeError(f"No .tar files matched '{spec}'")
+    return [f"https://huggingface.co/datasets/{repo_id}/resolve/{revision}/{f}" for f in matches]
+
+
+def _expand_hf_http_spec(spec):
+    # Format: https://huggingface.co/datasets/<org>/<repo>/tree/<revision>/<path_or_glob>
+    # Also supports /resolve/<revision>/...
+    m = re.match(r"^https://huggingface\.co/datasets/([^/]+/[^/]+)/(tree|resolve)/([^/]+)/(.+)$", spec)
+    if not m:
+        return [spec]
+    repo_id, mode, revision, repo_path = m.group(1), m.group(2), m.group(3), m.group(4)
+
+    if not _is_glob_pattern(repo_path):
+        if mode == "tree":
+            return [f"https://huggingface.co/datasets/{repo_id}/resolve/{revision}/{repo_path}"]
+        return [spec]
+
+    files = _hf_list_dataset_files(repo_id, revision)
+    matches = [f for f in files if fnmatch.fnmatch(f, repo_path)]
+    matches = sorted([f for f in matches if f.endswith(".tar")])
+    if not matches:
+        raise RuntimeError(f"No .tar files matched '{spec}'")
+    return [f"https://huggingface.co/datasets/{repo_id}/resolve/{revision}/{f}" for f in matches]
+
+
+def resolve_shards_spec(shards):
+    parts = [p.strip() for p in str(shards).split("::") if p.strip()]
+    resolved = []
+    for p in parts:
+        if p.startswith("hf://datasets/"):
+            resolved.extend(_expand_hf_uri_spec(p))
+        elif p.startswith("https://huggingface.co/datasets/"):
+            resolved.extend(_expand_hf_http_spec(p))
+        else:
+            resolved.append(p)
+    return "::".join(resolved)
 
 
 def _edge_index_to_adj(edge_index, num_nodes):
@@ -477,6 +546,7 @@ def _collate_prebatched_sequence_batch(batch):
 
 
 def webdataset_loader(args, shards, batch_size, num_workers):
+    shards = resolve_shards_spec(shards)
     vlm_processor = None
     if args.preprocess_in_loader:
         from transformers import AutoProcessor
