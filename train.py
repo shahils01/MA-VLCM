@@ -1621,16 +1621,28 @@ def run_epoch(
                 if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
                     # Calculate bootstrapped target
                     if use_next:
-                        # Use EMA target model if available
-                        bootstrap_model = (
-                            target_model if target_model is not None else model
-                        )
                         with torch.no_grad():
-                            next_pred = bootstrap_model(
+                            # Swap in EMA weights for bootstrap
+                            if target_model is not None:
+                                saved = {}
+                                raw = accelerator.unwrap_model(model)
+                                for n, p in raw.named_parameters():
+                                    if n in target_model:
+                                        saved[n] = p.data.clone()
+                                        p.data.copy_(target_model[n].to(p.device))
+
+                            next_pred = model(
                                 next_inputs,
                                 next_robot_obs,
                                 next_adj,
                             )
+
+                            # Swap back online weights
+                            if target_model is not None:
+                                for n, p in raw.named_parameters():
+                                    if n in saved:
+                                        p.data.copy_(saved[n])
+                                del saved
                         clip_gamma = gamma**args.clip_len
                         if "returns" in batch:
                             nstep_returns = batch["returns"].to(accelerator.device)
@@ -1671,17 +1683,17 @@ def run_epoch(
                         scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
-                    # Update EMA target model
+                    # Update EMA shadow params (CPU, trainable only)
                     if target_model is not None:
                         ema_decay = getattr(args, "ema_decay", 0.995)
+                        shadow = target_model
                         with torch.no_grad():
-                            for p_ema, p_online in zip(
-                                target_model.parameters(),
-                                model.parameters(),
-                            ):
-                                p_ema.data.mul_(ema_decay).add_(
-                                    p_online.data, alpha=1.0 - ema_decay
-                                )
+                            for name, p in model.named_parameters():
+                                if p.requires_grad and name in shadow:
+                                    shadow[name].mul_(ema_decay).add_(
+                                        p.data.cpu(),
+                                        alpha=1.0 - ema_decay,
+                                    )
 
         total_loss += loss.item()
         avg_loss = total_loss / step
@@ -2095,17 +2107,18 @@ def main():
             model, optimizer, train_loader, scheduler
         )
 
-    # Build EMA target model for stable bootstrapping
+    # Build lightweight EMA: only trainable params, stored on CPU
     target_model = None
     if args.ema_decay > 0:
-        import copy
-
-        target_model = copy.deepcopy(accelerator.unwrap_model(model))
-        target_model.eval()
-        for p in target_model.parameters():
-            p.requires_grad = False
-        target_model = target_model.to(accelerator.device)
-        accelerator.print(f"EMA target network enabled (decay={args.ema_decay})")
+        target_model = {}
+        raw_model = accelerator.unwrap_model(model)
+        for name, p in raw_model.named_parameters():
+            if p.requires_grad:
+                target_model[name] = p.data.cpu().clone()
+        accelerator.print(
+            f"EMA enabled (decay={args.ema_decay}, "
+            f"{len(target_model)} params, CPU-only)"
+        )
 
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(
@@ -2166,9 +2179,7 @@ def main():
                 "args": vars(args),
             }
             if target_model is not None:
-                ckpt["target_model"] = {
-                    k: v.cpu() for k, v in target_model.state_dict().items()
-                }
+                ckpt["ema_shadow"] = target_model
             torch.save(
                 ckpt,
                 os.path.join(args.save_dir, f"{ckpt_name}.pt"),
