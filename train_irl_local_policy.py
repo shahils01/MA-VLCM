@@ -676,13 +676,20 @@ def main():
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
             policy_inputs = _to_device_inputs(blank_input_builder.get(args.policy_batch_size), device)
 
-            expert_scores = critic(expert_inputs, expert_robot_obs, expert_adj)
-            policy_scores = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
-
-            critic_loss = -(expert_scores.mean() - policy_scores.mean())
             critic_opt.zero_grad(set_to_none=True)
-            accelerator.backward(critic_loss)
+
+            # Do separate backward passes to avoid cross-forward autograd version conflicts
+            # on integer mask/index tensors under DDP.
+            expert_scores = critic(expert_inputs, expert_robot_obs, expert_adj)
+            expert_term = -expert_scores.mean()
+            accelerator.backward(expert_term)
+
+            policy_scores = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
+            policy_term = policy_scores.mean()
+            accelerator.backward(policy_term)
+
             critic_opt.step()
+            critic_loss = expert_term + policy_term
 
             critic_losses.append(float(critic_loss.item()))
             expert_scores_log.append(float(expert_scores.mean().item()))
