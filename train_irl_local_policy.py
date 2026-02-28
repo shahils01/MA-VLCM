@@ -507,11 +507,13 @@ def parse_args():
     p.add_argument("--policy_batch_size", type=int, default=8)
     p.add_argument("--entropy_coef", type=float, default=0.001)
     p.add_argument("--score_scale", type=float, default=1.0)
+    p.add_argument("--disc_tanh_temp", type=float, default=100.0)
 
     # Optim
     p.add_argument("--critic_lr", type=float, default=3e-5)
     p.add_argument("--actor_lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.0)
+    p.add_argument("--critic_grad_clip", type=float, default=1.0)
     p.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     p.add_argument("--ddp_find_unused_parameters", action="store_true")
 
@@ -685,14 +687,18 @@ def main():
 
             # Do separate backward passes to avoid cross-forward autograd version conflicts
             # on integer mask/index tensors under DDP.
-            expert_scores = critic(expert_inputs, expert_robot_obs, expert_adj)
+            expert_scores_raw = critic(expert_inputs, expert_robot_obs, expert_adj)
+            expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
             expert_term = -expert_scores.mean()
             accelerator.backward(expert_term)
 
-            policy_scores = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
+            policy_scores_raw = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
+            policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
             policy_term = policy_scores.mean()
             accelerator.backward(policy_term)
 
+            if args.critic_grad_clip > 0:
+                accelerator.clip_grad_norm_(critic.parameters(), args.critic_grad_clip)
             critic_opt.step()
             critic_loss = expert_term + policy_term
 
@@ -706,7 +712,7 @@ def main():
 
             with torch.no_grad():
                 score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
-                score = torch.tanh(score * args.score_scale)
+                score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
 
             obs_seq = policy_batch["robot_obs"]   # [B, T, N, D]
             act_seq = policy_batch["actions"]     # [B, T, N, A]

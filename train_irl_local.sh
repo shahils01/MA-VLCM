@@ -24,8 +24,10 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --num_workers 2 \
   --entropy_coef 0.001 \
   --score_scale 1.0 \
+  --disc_tanh_temp 100.0 \
   --critic_lr 3e-5 \
   --actor_lr 1e-4 \
+  --critic_grad_clip 1.0 \
   --mixed_precision bf16 \
   --ddp_find_unused_parameters \
   --vl_backend llava_video \
