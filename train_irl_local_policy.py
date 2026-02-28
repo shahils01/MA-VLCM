@@ -641,8 +641,10 @@ def main():
         vl_max_text_len=args.vl_max_text_len,
     )
     expert_loader = webdataset_loader(expert_loader_args, args.train_shards, args.expert_batch_size, args.num_workers)
-    critic, actors, critic_opt, actor_opt, expert_loader = accelerator.prepare(
-        critic, actors, critic_opt, actor_opt, expert_loader
+    # Keep actors unwrapped to call custom methods (act/evaluate_actions) directly.
+    # Critic is the heavy model and benefits most from DDP wrapping.
+    critic, critic_opt, expert_loader = accelerator.prepare(
+        critic, critic_opt, expert_loader
     )
     expert_iter = iter(expert_loader)
     critic_raw = accelerator.unwrap_model(critic)
