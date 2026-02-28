@@ -526,8 +526,11 @@ class MultimodalValueModel(nn.Module):
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
         self._maybe_save_debug_video_from_inputs(inputs)
-        input_ids = inputs["input_ids"]
+        # Avoid autograd versioning issues from in-place mutations on index/mask tensors.
+        input_ids = inputs["input_ids"].clone()
         attn_mask = inputs.get("attention_mask")
+        if attn_mask is not None:
+            inputs["attention_mask"] = attn_mask.clone()
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool team graph features to one token and inject at <obs>.
@@ -539,20 +542,18 @@ class MultimodalValueModel(nn.Module):
             obs_mask = input_ids.eq(obs_token_id)
 
             if obs_mask.any():
-                # Avoid dense broadcast replacements over the full sequence.
-                inputs_embeds = inputs_embeds.clone()
+                obs_mask = obs_mask.unsqueeze(-1)
                 if input_ids.shape[0] == bsz:
                     # input_ids: [B, S]
-                    b_idx, s_idx = obs_mask.nonzero(as_tuple=True)
-                    inputs_embeds[b_idx, s_idx, :] = obs_token[b_idx, 0, :]
+                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
                 elif input_ids.shape[1] == bsz:
                     # input_ids: [S, B]
-                    s_idx, b_idx = obs_mask.nonzero(as_tuple=True)
-                    inputs_embeds[s_idx, b_idx, :] = obs_token[b_idx, 0, :]
+                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
                 else:
                     raise RuntimeError(
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
                     )
+                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
