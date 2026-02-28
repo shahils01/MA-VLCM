@@ -37,6 +37,8 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --gnn_layers 2 \
   --fusion_hidden 512 \
   --policy_hidden_dim 256 \
+  --action_type continuous \
+  --action_dim 2 \
   --log_every 20 \
   --save_every 200 \
   --save_dir "${SAVE_DIR}" \

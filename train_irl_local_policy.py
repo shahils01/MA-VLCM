@@ -397,9 +397,14 @@ def build_critic(args, device: torch.device) -> MultimodalValueModel:
 
 def _space_info(action_space, num_agents: int):
     if isinstance(action_space, (list, tuple)):
-        space = action_space[0]
+        space = next((s for s in action_space if s is not None), None)
+    elif isinstance(action_space, dict):
+        space = next((v for v in action_space.values() if v is not None), None)
     else:
         space = action_space
+
+    if space is None:
+        raise RuntimeError("Could not infer action space from environment (got None).")
 
     if hasattr(space, "n"):
         return False, int(space.n), None, None
@@ -410,6 +415,23 @@ def _space_info(action_space, num_agents: int):
         return True, action_dim, low, high
 
     raise RuntimeError("Unsupported action space type.")
+
+
+def _space_info_with_overrides(envs: ManyAgentVecEnv, args, num_agents: int):
+    if args.action_type != "auto":
+        if args.action_type == "discrete":
+            return False, int(args.action_dim), None, None
+        return True, int(args.action_dim), None, None
+
+    try:
+        return _space_info(envs.action_space, num_agents)
+    except Exception:
+        if args.action_type == "auto":
+            # Fallback for envs that do not expose gym-compatible action_space.
+            if args.action_dim <= 0:
+                raise
+            return True, int(args.action_dim), None, None
+        raise
 
 
 def _to_device_inputs(inputs: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
@@ -473,6 +495,8 @@ def parse_args():
 
     # Policy
     p.add_argument("--policy_hidden_dim", type=int, default=256)
+    p.add_argument("--action_type", type=str, default="auto", choices=["auto", "continuous", "discrete"])
+    p.add_argument("--action_dim", type=int, default=2)
 
     # Logging / checkpoint
     p.add_argument("--log_every", type=int, default=20)
@@ -538,7 +562,7 @@ def main():
     obs_dim = int(obs.shape[-1])
     args.num_robots = num_agents
 
-    is_continuous, action_dim, action_low, action_high = _space_info(envs.action_space, num_agents)
+    is_continuous, action_dim, action_low, action_high = _space_info_with_overrides(envs, args, num_agents)
     print(f"num_agents={num_agents} obs_dim={obs_dim} action_dim={action_dim} continuous={is_continuous}")
 
     critic = build_critic(args, device)
