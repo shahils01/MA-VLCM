@@ -1018,29 +1018,54 @@ class SequenceWebDataset(IterableDataset):
             if image is None:
                 continue
 
+            # Ensure consistent frame size for all frames in a clip.
+            # In "both" mode, frames are 672x336 (overhead left, rware
+            # right). Frames that haven't had rware applied yet get
+            # black padding on the right.
+            th = self.resize_height if self.resize_height > 0 else 336
+            tw = th  # Square per single-view
+            iw, ih = image.size
+            if self.rware_visual_mode == "both" and self.dataset_type == "rware":
+                # Resize overhead to square, pad right half
+                if (iw, ih) != (tw, th):
+                    image = image.resize((tw, th), Image.LANCZOS)
+                padded = Image.new("RGB", (tw * 2, th))
+                padded.paste(image, (0, 0))
+                image = padded
+            else:
+                # rware_only or non-rware: resize to training dims
+                rw = self.resize_width if self.resize_width > 0 else tw
+                if (iw, ih) != (rw, th):
+                    image = image.resize((rw, th), Image.LANCZOS)
+
             # Apply RWARE topdown to the PREVIOUS buffer frame
             # (rware step N shows same scene as overhead step N-1)
             if has_rware and self.dataset_type == "rware" and len(buffer) > 0:
-                th = self.resize_height if self.resize_height > 0 else 336
-                tw = th  # Square per-view
                 rw_w, rw_h = rware_topdown.size
                 if (rw_w, rw_h) != (tw, th):
                     rware_topdown = rware_topdown.resize((tw, th), Image.LANCZOS)
 
-                prev_image = buffer[-1]["image"]
-
                 if self.rware_visual_mode == "rware_only":
-                    # Replace previous frame with RWARE only
+                    # Replace previous frame with RWARE only,
+                    # resized to match overhead dimensions
+                    prev_sz = buffer[-1]["image"].size
+                    if rware_topdown.size != prev_sz:
+                        rware_topdown = rware_topdown.resize(prev_sz, Image.LANCZOS)
                     buffer[-1]["image"] = rware_topdown
                 else:
-                    # Composite: concat rware onto previous
-                    pw, ph = prev_image.size
-                    if (pw, ph) != (tw, th):
-                        prev_image = prev_image.resize((tw, th), Image.LANCZOS)
-                    composite = Image.new("RGB", (tw * 2, th))
-                    composite.paste(prev_image, (0, 0))
-                    composite.paste(rware_topdown, (tw, 0))
-                    buffer[-1]["image"] = composite
+                    # Replace right half of previous composite
+                    prev_img = buffer[-1]["image"]
+                    # Ensure it's the right composite size
+                    pw, ph = prev_img.size
+                    if pw != tw * 2 or ph != th:
+                        new_prev = Image.new("RGB", (tw * 2, th))
+                        new_prev.paste(
+                            prev_img.resize((tw, th), Image.LANCZOS),
+                            (0, 0),
+                        )
+                        prev_img = new_prev
+                    prev_img.paste(rware_topdown, (tw, 0))
+                    buffer[-1]["image"] = prev_img
 
             # Robot Obs and Adj
             if self.dataset_type == "rware":
