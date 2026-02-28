@@ -17,15 +17,16 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --rollout_buffer_steps 4096 \
   --iters 2000 \
   --clip_len 10 \
-  --critic_updates 2 \
+  --critic_updates 1 \
   --actor_updates 1 \
   --policy_batch_size 8 \
   --expert_batch_size 2 \
   --num_workers 2 \
   --entropy_coef 0.001 \
   --score_scale 1.0 \
-  --disc_tanh_temp 100.0 \
-  --critic_lr 3e-5 \
+  --disc_tanh_temp 20.0 \
+  --raw_score_l2_coef 1e-4 \
+  --critic_lr 1e-5 \
   --actor_lr 1e-4 \
   --critic_grad_clip 1.0 \
   --mixed_precision bf16 \

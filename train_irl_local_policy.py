@@ -508,6 +508,7 @@ def parse_args():
     p.add_argument("--entropy_coef", type=float, default=0.001)
     p.add_argument("--score_scale", type=float, default=1.0)
     p.add_argument("--disc_tanh_temp", type=float, default=100.0)
+    p.add_argument("--raw_score_l2_coef", type=float, default=1e-4)
 
     # Optim
     p.add_argument("--critic_lr", type=float, default=3e-5)
@@ -689,12 +690,12 @@ def main():
             # on integer mask/index tensors under DDP.
             expert_scores_raw = critic(expert_inputs, expert_robot_obs, expert_adj)
             expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
-            expert_term = -expert_scores.mean()
+            expert_term = -expert_scores.mean() + args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
             accelerator.backward(expert_term)
 
             policy_scores_raw = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
             policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
-            policy_term = policy_scores.mean()
+            policy_term = policy_scores.mean() + args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
             accelerator.backward(policy_term)
 
             if args.critic_grad_clip > 0:
