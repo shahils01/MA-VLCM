@@ -45,6 +45,9 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --action_type continuous \
   --action_dim 2 \
   --log_every 5 \
+  --eval_interval 25 \
+  --eval_episodes 5 \
+  --eval_max_episode_steps 500 \
   --save_every 20 \
   --save_dir "${SAVE_DIR}" \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots \

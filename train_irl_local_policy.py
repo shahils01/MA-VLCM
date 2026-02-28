@@ -542,6 +542,10 @@ def parse_args():
     p.add_argument("--log_every", type=int, default=20)
     p.add_argument("--save_every", type=int, default=200)
     p.add_argument("--save_dir", type=str, default="checkpoints_irl_local")
+    p.add_argument("--eval_interval", type=int, default=25)
+    p.add_argument("--eval_episodes", type=int, default=5)
+    p.add_argument("--eval_max_episode_steps", type=int, default=500)
+    p.add_argument("--eval_num_envs", type=int, default=1)
 
     return p.parse_args()
 
@@ -584,6 +588,49 @@ def collect_rollout(
     return obs
 
 
+@torch.no_grad()
+def evaluate_policy(
+    envs: ManyAgentVecEnv,
+    actors: LocalAgentPolicies,
+    device: torch.device,
+    num_episodes: int,
+    max_episode_steps: int,
+) -> float:
+    """Deterministic eval: average trajectory reward over agents."""
+    was_training = actors.training
+    actors.eval()
+    ep_returns = []
+
+    for _ in range(num_episodes):
+        obs_all, _ = envs.reset()
+        obs = np.asarray(obs_all[0], dtype=np.float32)
+        ep_ret = 0.0
+
+        for _ in range(max_episode_steps):
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action_t, _, _ = actors.act(obs_t, deterministic=True)
+            action_np = action_t.squeeze(0).detach().cpu().numpy()
+            if action_np.shape[-1] == 1:
+                action_env = action_np.squeeze(-1).astype(np.int64)
+            else:
+                action_env = action_np
+
+            next_obs, _, rewards, dones, _ = envs.step(np.expand_dims(action_env, axis=0))
+            rew_vec = np.asarray(rewards[0]).reshape(-1)
+            ep_ret += float(rew_vec.mean() if rew_vec.size > 0 else 0.0)
+
+            obs = np.asarray(next_obs[0], dtype=np.float32)
+            done_env = bool(np.asarray(dones[0]).reshape(-1).mean() > 0.5)
+            if done_env:
+                break
+
+        ep_returns.append(ep_ret)
+
+    if was_training:
+        actors.train()
+    return float(np.mean(ep_returns)) if ep_returns else 0.0
+
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -602,6 +649,9 @@ def main():
         print("[WARN] Could not import ManyAgent_GoTOGoal package in this environment.")
 
     envs = ManyAgentVecEnv(args.scenario, args.num_envs, args.seed)
+    eval_envs = None
+    if accelerator.is_main_process and args.eval_interval > 0 and args.eval_episodes > 0:
+        eval_envs = ManyAgentVecEnv(args.scenario, args.eval_num_envs, args.seed + 100000)
     obs, _ = envs.reset()
     num_agents = envs.n_agents
     obs_dim = int(obs.shape[-1])
@@ -674,6 +724,8 @@ def main():
         actor_losses = []
         expert_scores_log = []
         policy_scores_log = []
+        expert_scores_raw_log = []
+        policy_scores_raw_log = []
 
         for _ in range(args.critic_updates):
             expert_batch, expert_iter = _get_expert_batch(expert_iter, expert_loader)
@@ -706,6 +758,8 @@ def main():
             critic_losses.append(float(critic_loss.item()))
             expert_scores_log.append(float(expert_scores.mean().item()))
             policy_scores_log.append(float(policy_scores.mean().item()))
+            expert_scores_raw_log.append(float(expert_scores_raw.mean().item()))
+            policy_scores_raw_log.append(float(policy_scores_raw.mean().item()))
 
         for _ in range(args.actor_updates):
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
@@ -739,7 +793,28 @@ def main():
                 f"actor_loss={np.mean(actor_losses):.4f} "
                 f"expert_score={np.mean(expert_scores_log):.4f} "
                 f"policy_score={np.mean(policy_scores_log):.4f} "
+                f"raw_expert_score={np.mean(expert_scores_raw_log):.4f} "
+                f"raw_policy_score={np.mean(policy_scores_raw_log):.4f} "
                 f"buffer_reward_mean={rew_mean:.4f}"
+            )
+
+        if (
+            accelerator.is_main_process
+            and eval_envs is not None
+            and args.eval_interval > 0
+            and (it % args.eval_interval == 0)
+        ):
+            eval_avg_traj_reward = evaluate_policy(
+                envs=eval_envs,
+                actors=actors,
+                device=device,
+                num_episodes=args.eval_episodes,
+                max_episode_steps=args.eval_max_episode_steps,
+            )
+            print(
+                f"iter={it} "
+                f"eval_avg_traj_reward={eval_avg_traj_reward:.4f} "
+                f"(episodes={args.eval_episodes})"
             )
 
         if it % args.save_every == 0 and accelerator.is_main_process:
@@ -754,6 +829,8 @@ def main():
             torch.save(ckpt, f"{args.save_dir}/irl_local_iter_{it}.pt")
 
     envs.close()
+    if eval_envs is not None:
+        eval_envs.close()
 
 
 if __name__ == "__main__":
