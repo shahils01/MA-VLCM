@@ -103,6 +103,27 @@ class LocalAgentPolicies(nn.Module):
         entropy = dist.entropy()  # [B, N]
         return action.unsqueeze(-1).float(), log_prob, entropy
 
+    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return per-agent log-prob/entropy for provided actions.
+        obs: [B, N, obs_dim], actions: [B, N, act_dim or 1]
+        """
+        logits = self._forward_logits(obs)
+        if self.continuous:
+            std = self.log_std.exp().view(1, 1, -1).expand_as(logits)
+            dist = torch.distributions.Normal(logits, std)
+            act = actions
+            if act.shape[-1] != logits.shape[-1]:
+                act = act[..., : logits.shape[-1]]
+            log_prob = dist.log_prob(act).sum(dim=-1)  # [B, N]
+            entropy = dist.entropy().sum(dim=-1)  # [B, N]
+            return log_prob, entropy
+
+        dist = torch.distributions.Categorical(logits=logits)
+        act_idx = actions.squeeze(-1).long()
+        log_prob = dist.log_prob(act_idx)  # [B, N]
+        entropy = dist.entropy()  # [B, N]
+        return log_prob, entropy
+
 
 def _normalize_scenario(scenario: str) -> str:
     aliases = {
@@ -244,6 +265,7 @@ class ManyAgentVecEnv:
 @dataclass
 class RolloutStep:
     obs: torch.Tensor  # [E, N, obs_dim]
+    actions: torch.Tensor  # [E, N, act_dim or 1]
     adj: torch.Tensor  # [E, N, N]
     log_prob_sum: torch.Tensor  # [E]
     entropy_mean: torch.Tensor  # [E]
@@ -264,6 +286,7 @@ class FixedRolloutBuffer:
     def push(
         self,
         obs: torch.Tensor,
+        actions: torch.Tensor,
         adj: torch.Tensor,
         log_prob_sum: torch.Tensor,
         entropy_mean: torch.Tensor,
@@ -273,6 +296,7 @@ class FixedRolloutBuffer:
         self.steps.append(
             RolloutStep(
                 obs=obs.detach().cpu(),
+                actions=actions.detach().cpu(),
                 adj=adj.detach().cpu(),
                 log_prob_sum=log_prob_sum.detach().cpu(),
                 entropy_mean=entropy_mean.detach().cpu(),
@@ -290,6 +314,7 @@ class FixedRolloutBuffer:
         num_envs = int(first.obs.shape[0])
 
         robot_obs = []
+        actions = []
         adj = []
         log_prob_sum = []
         entropy_mean = []
@@ -300,6 +325,7 @@ class FixedRolloutBuffer:
             env_idx = random.randint(0, num_envs - 1)
             clip_obs = []
             clip_adj = []
+            clip_act = []
             clip_logp = []
             clip_ent = []
             clip_rew = []
@@ -318,8 +344,10 @@ class FixedRolloutBuffer:
                     continue
 
                 o = s.obs[env_idx]
+                u = s.actions[env_idx]
                 a = s.adj[env_idx]
                 clip_obs.append(o)
+                clip_act.append(u)
                 clip_adj.append(a)
                 clip_logp.append(s.log_prob_sum[env_idx])
                 clip_ent.append(s.entropy_mean[env_idx])
@@ -331,6 +359,7 @@ class FixedRolloutBuffer:
                     done_triggered = True
 
             robot_obs.append(torch.stack(clip_obs, dim=0))
+            actions.append(torch.stack(clip_act, dim=0))
             adj.append(torch.stack(clip_adj, dim=0))
             log_prob_sum.append(torch.stack(clip_logp).sum())
             entropy_mean.append(torch.stack(clip_ent).mean())
@@ -338,6 +367,7 @@ class FixedRolloutBuffer:
 
         return {
             "robot_obs": torch.stack(robot_obs, dim=0).to(device),  # [B, T, N, D]
+            "actions": torch.stack(actions, dim=0).to(device),  # [B, T, N, A]
             "adj": torch.stack(adj, dim=0).to(device),  # [B, T, N, N]
             "log_prob_sum": torch.stack(log_prob_sum).to(device),  # [B]
             "entropy_mean": torch.stack(entropy_mean).to(device),  # [B]
@@ -535,6 +565,7 @@ def collect_rollout(
 
         buffer.push(
             obs=torch.tensor(obs, dtype=torch.float32),
+            actions=act_t.detach().cpu(),
             adj=torch.tensor(adj, dtype=torch.float32),
             log_prob_sum=logp_t.sum(dim=1).detach().cpu(),
             entropy_mean=ent_t.mean(dim=1).detach().cpu(),
@@ -659,9 +690,16 @@ def main():
                 score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
                 score = torch.tanh(score * args.score_scale)
 
-            logp = policy_batch["log_prob_sum"].to(score.device)
-            entropy = policy_batch["entropy_mean"].to(score.device)
-            actor_loss = -(logp * score).mean() - args.entropy_coef * entropy.mean()
+            obs_seq = policy_batch["robot_obs"]   # [B, T, N, D]
+            act_seq = policy_batch["actions"]     # [B, T, N, A]
+            bsz, tlen = obs_seq.shape[0], obs_seq.shape[1]
+            obs_flat = obs_seq.reshape(bsz * tlen, obs_seq.shape[2], obs_seq.shape[3])
+            act_flat = act_seq.reshape(bsz * tlen, act_seq.shape[2], act_seq.shape[3])
+            logp_step, ent_step = actors.evaluate_actions(obs_flat, act_flat)  # [B*T, N]
+            logp = logp_step.sum(dim=1).view(bsz, tlen).sum(dim=1)  # [B]
+            entropy = ent_step.mean(dim=1).view(bsz, tlen).mean(dim=1)  # [B]
+
+            actor_loss = -(logp * score.detach()).mean() - args.entropy_coef * entropy.mean()
 
             actor_opt.zero_grad(set_to_none=True)
             accelerator.backward(actor_loss)
