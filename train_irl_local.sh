@@ -5,7 +5,7 @@ set -euo pipefail
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
 SCENARIO="${SCENARIO:-ManyAgentGoToGoal-v0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints_irl_local}"
-NUM_PROCESSES="${NUM_PROCESSES:-2}"
+NUM_PROCESSES="${NUM_PROCESSES:-1}"
 VL_MODEL_NAME="${VL_MODEL_NAME:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}"  # 0.5B default
 
 accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
