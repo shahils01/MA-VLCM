@@ -174,6 +174,8 @@ class SequenceWebDataset(IterableDataset):
         return_horizon="clip",
         n_step=1,
         include_nstep_bootstrap=False,
+        num_robots=None,
+        robot_obs_dim=None,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -191,6 +193,8 @@ class SequenceWebDataset(IterableDataset):
         self.gamma = float(gamma)
         self.n_step = max(1, int(n_step))
         self.include_nstep_bootstrap = include_nstep_bootstrap
+        self.num_robots = int(num_robots) if num_robots is not None else None
+        self.robot_obs_dim = int(robot_obs_dim) if robot_obs_dim is not None else None
         if return_horizon not in {"clip", "trajectory"}:
             raise ValueError("return_horizon must be one of {'clip', 'trajectory'}")
         self.return_horizon = return_horizon
@@ -272,6 +276,28 @@ class SequenceWebDataset(IterableDataset):
             ret = torch.tensor(0.0, dtype=torch.float32)
             done_n = True
         return ret, done_n
+
+    def _normalize_robot_tensors(self, robot_obs, adj):
+        if self.num_robots is None and self.robot_obs_dim is None:
+            return robot_obs, adj
+
+        cur_n = int(robot_obs.shape[0])
+        cur_d = int(robot_obs.shape[1])
+        tgt_n = self.num_robots if self.num_robots is not None else cur_n
+        tgt_d = self.robot_obs_dim if self.robot_obs_dim is not None else cur_d
+
+        if cur_n == tgt_n and cur_d == tgt_d:
+            return robot_obs, adj
+
+        out_obs = torch.zeros((tgt_n, tgt_d), dtype=robot_obs.dtype)
+        copy_n = min(cur_n, tgt_n)
+        copy_d = min(cur_d, tgt_d)
+        out_obs[:copy_n, :copy_d] = robot_obs[:copy_n, :copy_d]
+
+        out_adj = torch.zeros((tgt_n, tgt_n), dtype=adj.dtype)
+        copy_adj_n = min(cur_n, tgt_n)
+        out_adj[:copy_adj_n, :copy_adj_n] = adj[:copy_adj_n, :copy_adj_n]
+        return out_obs, out_adj
 
     def __iter__(self):
         if wds is None:
@@ -431,6 +457,7 @@ class SequenceWebDataset(IterableDataset):
 
             num_nodes = robot_obs.shape[0]
             adj = _edge_index_to_adj(_as_numpy(sample["edge_index.npy"]), num_nodes)
+            robot_obs, adj = self._normalize_robot_tensors(robot_obs, adj)
 
             if self.text_mode == "raw":
                 text = self.text_prompt_template
@@ -574,6 +601,8 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         gamma=getattr(args, "gamma", 0.99),
         return_horizon=getattr(args, "return_horizon", "clip"),
         n_step=getattr(args, "n_step", 1),
+        num_robots=getattr(args, "num_robots", None),
+        robot_obs_dim=getattr(args, "robot_obs_dim", None),
     )
     if getattr(args, "shard_aware_batching", False):
         dataset = UniqueShardBatchDataset(
