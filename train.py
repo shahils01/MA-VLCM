@@ -14,6 +14,11 @@ except Exception:
     DistributedDataParallelKwargs = None
 
 try:
+    from accelerate import DataLoaderConfiguration
+except Exception:
+    DataLoaderConfiguration = None
+
+try:
     from accelerate.utils import FullyShardedDataParallelPlugin
 except Exception:
     try:
@@ -517,6 +522,15 @@ def main():
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
         kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
     )
+    # IterableDataset + variable-shaped samples across ranks can break with dispatch_batches=True.
+    if DataLoaderConfiguration is not None:
+        accelerator_kwargs["dataloader_config"] = DataLoaderConfiguration(dispatch_batches=False, split_batches=False)
+    else:
+        accel_params = inspect.signature(Accelerator).parameters
+        if "dispatch_batches" in accel_params:
+            accelerator_kwargs["dispatch_batches"] = False
+        if "split_batches" in accel_params:
+            accelerator_kwargs["split_batches"] = False
     if args.wandb:
         accelerator_kwargs["log_with"] = ["wandb"]
     accelerator = Accelerator(**accelerator_kwargs)
