@@ -40,6 +40,35 @@ def _extract_rgb_frame(render_out: Any):
     return None
 
 
+def _extract_frame_from_env_canvas(env: Any):
+    # Fallback for environments that render via matplotlib and return None.
+    cand = [env, getattr(env, "unwrapped", None)]
+    for obj in cand:
+        if obj is None:
+            continue
+        for name in ("fig", "figure", "_fig"):
+            fig = getattr(obj, name, None)
+            if fig is None:
+                continue
+            canvas = getattr(fig, "canvas", None)
+            if canvas is None:
+                continue
+            try:
+                canvas.draw()
+                w, h = canvas.get_width_height()
+                if hasattr(canvas, "tostring_rgb"):
+                    buf = canvas.tostring_rgb()
+                    arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3)
+                    return arr
+                if hasattr(canvas, "buffer_rgba"):
+                    buf = np.asarray(canvas.buffer_rgba(), dtype=np.uint8)
+                    if buf.ndim == 3 and buf.shape[-1] >= 3:
+                        return buf[..., :3].copy()
+            except Exception:
+                continue
+    return None
+
+
 def _flatten_info_dicts(obj: Any) -> List[Dict[str, Any]]:
     if obj is None:
         return []
@@ -133,7 +162,6 @@ def main():
     tmp = _Tmp()
     tmp.action_type = args.action_type
     tmp.action_dim = args.action_dim
-    tmp.vl_backend = "llava_video"
     is_continuous, action_dim, action_low, action_high = _space_info_with_overrides(env, tmp, num_agents)
 
     actors = LocalAgentPolicies(
@@ -161,6 +189,17 @@ def main():
     for ep in range(args.eval_episodes):
         obs, _ = _unpack_reset_out(env.reset(), num_agents)
         obs = np.asarray(obs, dtype=np.float32)
+
+        if args.save_video:
+            try:
+                frame0 = env.render(mode="rgb_array")
+            except TypeError:
+                frame0 = env.render()
+            frame0 = _extract_rgb_frame(frame0)
+            if frame0 is None:
+                frame0 = _extract_frame_from_env_canvas(env)
+            if frame0 is not None:
+                frames.append(frame0)
 
         ep_reward = 0.0
         reached_count = 0
@@ -199,6 +238,8 @@ def main():
                 except TypeError:
                     frame = env.render()
                 frame = _extract_rgb_frame(frame)
+                if frame is None:
+                    frame = _extract_frame_from_env_canvas(env)
                 if frame is not None:
                     frames.append(frame)
 
@@ -220,8 +261,16 @@ def main():
         out_dir = os.path.dirname(args.video_path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        imageio.mimsave(args.video_path, frames, fps=args.video_fps)
-        print(f"saved_video={os.path.abspath(args.video_path)} frames={len(frames)}")
+        abs_video = os.path.abspath(args.video_path)
+        try:
+            imageio.mimsave(abs_video, frames, fps=args.video_fps)
+            print(f"saved_video={abs_video} frames={len(frames)}")
+        except Exception as e:
+            # Common on clusters: ffmpeg plugin unavailable for mp4.
+            root, ext = os.path.splitext(abs_video)
+            gif_path = root + ".gif"
+            imageio.mimsave(gif_path, frames, fps=min(args.video_fps, 10))
+            print(f"[WARN] failed to save '{abs_video}' ({e}). Saved GIF instead: {gif_path} frames={len(frames)}")
     elif args.save_video and imageio is not None and len(frames) == 0:
         print("[WARN] save_video was enabled but 0 frames were captured from env.render().")
     elif args.save_video and imageio is None:

@@ -4,7 +4,7 @@ import random
 from collections import deque
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
