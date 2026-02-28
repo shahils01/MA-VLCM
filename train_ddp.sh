@@ -36,6 +36,7 @@ accelerate launch --num_processes 2 train.py \
   --wandb_project ma-vlcm \
   --wandb_run_name ma-vlcm-ddp \
   --peft qlora \
+  --resume_checkpoint checkpoints/ckpt_epoch_3.pt \
   # --disable_vl_cache \
   # --lora_r 16 \
   # --lora_alpha 32 \
