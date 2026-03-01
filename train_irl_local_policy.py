@@ -582,6 +582,30 @@ def _get_expert_batch(loader_iter, loader):
         return batch, loader_iter
 
 
+def _feature_compactness_loss(features: torch.Tensor) -> torch.Tensor:
+    # Encourage expert features to stay close in latent space.
+    if features.ndim != 2:
+        features = features.view(features.shape[0], -1)
+    if features.shape[0] < 2:
+        return features.sum() * 0.0
+    feats = F.normalize(features, dim=-1)
+    dists = torch.cdist(feats, feats, p=2)
+    mask = ~torch.eye(dists.shape[0], dtype=torch.bool, device=dists.device)
+    return dists[mask].mean()
+
+
+def _feature_separation_loss(policy_features: torch.Tensor, expert_center: torch.Tensor, margin: float) -> torch.Tensor:
+    # Encourage policy features to stay farther than a margin from expert center.
+    if policy_features.ndim != 2:
+        policy_features = policy_features.view(policy_features.shape[0], -1)
+    if policy_features.shape[0] == 0:
+        return policy_features.sum() * 0.0
+    pol = F.normalize(policy_features, dim=-1)
+    center = F.normalize(expert_center, dim=-1)
+    dists = torch.cdist(pol, center, p=2).squeeze(-1)
+    return F.softplus(margin - dists).mean()
+
+
 def parse_args():
     p = argparse.ArgumentParser()
 
@@ -610,6 +634,18 @@ def parse_args():
     p.add_argument("--score_scale", type=float, default=1.0)
     p.add_argument("--disc_tanh_temp", type=float, default=100.0)
     p.add_argument("--raw_score_l2_coef", type=float, default=1e-4)
+    p.add_argument(
+        "--lambda_feat_contrastive",
+        type=float,
+        default=0.1,
+        help="Weight for auxiliary critic feature-space contrastive shaping.",
+    )
+    p.add_argument(
+        "--feat_contrastive_margin",
+        type=float,
+        default=1.0,
+        help="Distance margin used by policy-vs-expert feature separation loss.",
+    )
 
     # Optim
     p.add_argument("--critic_lr", type=float, default=3e-5)
@@ -884,6 +920,8 @@ def main():
         policy_scores_log = []
         expert_scores_raw_log = []
         policy_scores_raw_log = []
+        expert_feat_loss_log = []
+        policy_feat_loss_log = []
 
         for _ in range(args.critic_updates):
             expert_batch, expert_iter = _get_expert_batch(expert_iter, expert_loader)
@@ -906,14 +944,49 @@ def main():
             with accelerator.accumulate(critic):
                 # Do separate backward passes to avoid cross-forward autograd version conflicts
                 # on integer mask/index tensors under DDP.
-                expert_scores_raw = critic(expert_inputs, expert_robot_obs, expert_adj)
+                use_feat_aux = args.lambda_feat_contrastive > 0.0
+                expert_out = critic(
+                    expert_inputs,
+                    expert_robot_obs,
+                    expert_adj,
+                    return_features=use_feat_aux,
+                )
+                if isinstance(expert_out, dict):
+                    expert_scores_raw = expert_out["value"]
+                    expert_features = expert_out["vlm_feature"]
+                else:
+                    expert_scores_raw = expert_out
+                    expert_features = None
                 expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
                 expert_term = -expert_scores.mean() + args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
+                expert_feat_loss = expert_scores_raw.sum() * 0.0
+                expert_center = None
+                if use_feat_aux and expert_features is not None:
+                    expert_feat_loss = _feature_compactness_loss(expert_features)
+                    expert_center = expert_features.detach().mean(dim=0, keepdim=True)
+                    expert_term = expert_term + args.lambda_feat_contrastive * expert_feat_loss
                 accelerator.backward(expert_term)
 
-                policy_scores_raw = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
+                policy_out = critic(
+                    policy_inputs,
+                    policy_batch["robot_obs"],
+                    policy_batch["adj"],
+                    return_features=use_feat_aux,
+                )
+                if isinstance(policy_out, dict):
+                    policy_scores_raw = policy_out["value"]
+                    policy_features = policy_out["vlm_feature"]
+                else:
+                    policy_scores_raw = policy_out
+                    policy_features = None
                 policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
                 policy_term = policy_scores.mean() + args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
+                policy_feat_loss = policy_scores_raw.sum() * 0.0
+                if use_feat_aux and policy_features is not None and expert_center is not None:
+                    policy_feat_loss = _feature_separation_loss(
+                        policy_features, expert_center, margin=args.feat_contrastive_margin
+                    )
+                    policy_term = policy_term + args.lambda_feat_contrastive * policy_feat_loss
                 accelerator.backward(policy_term)
 
                 if accelerator.sync_gradients and args.critic_grad_clip > 0:
@@ -928,6 +1001,8 @@ def main():
             policy_scores_log.append(float(policy_scores.mean().item()))
             expert_scores_raw_log.append(float(expert_scores_raw.mean().item()))
             policy_scores_raw_log.append(float(policy_scores_raw.mean().item()))
+            expert_feat_loss_log.append(float(expert_feat_loss.item()))
+            policy_feat_loss_log.append(float(policy_feat_loss.item()))
 
         for _ in range(args.actor_updates):
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
@@ -974,6 +1049,8 @@ def main():
                 "train/policy_score": float(np.mean(policy_scores_log)),
                 "train/raw_expert_score": float(np.mean(expert_scores_raw_log)),
                 "train/raw_policy_score": float(np.mean(policy_scores_raw_log)),
+                "train/expert_feat_loss": float(np.mean(expert_feat_loss_log)),
+                "train/policy_feat_loss": float(np.mean(policy_feat_loss_log)),
                 "train/buffer_reward_mean": rew_mean,
             }
             print(
@@ -984,6 +1061,8 @@ def main():
                 f"policy_score={metrics['train/policy_score']:.4f} "
                 f"raw_expert_score={metrics['train/raw_expert_score']:.4f} "
                 f"raw_policy_score={metrics['train/raw_policy_score']:.4f} "
+                f"expert_feat_loss={metrics['train/expert_feat_loss']:.4f} "
+                f"policy_feat_loss={metrics['train/policy_feat_loss']:.4f} "
                 f"buffer_reward_mean={metrics['train/buffer_reward_mean']:.4f}"
             )
             if args.wandb:

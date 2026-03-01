@@ -31,6 +31,8 @@ accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --score_scale 1.0 \
   --disc_tanh_temp 20.0 \
   --raw_score_l2_coef 1e-4 \
+  --lambda_feat_contrastive 0.1 \
+  --feat_contrastive_margin 1.0 \
   --critic_lr 1e-5 \
   --actor_lr 1e-4 \
   --critic_grad_clip 1.0 \
