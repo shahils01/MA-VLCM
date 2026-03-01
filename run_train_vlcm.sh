@@ -37,7 +37,13 @@ else
     SHARD_PATTERN="$DATA_DIR"
 fi
 
-# 4. Run Training
+# 4. Resume from checkpoint (optional, 2nd positional arg)
+RESUME_CHECKPOINT="${2:-}"
+if [ -n "$RESUME_CHECKPOINT" ]; then
+    echo "Will resume from checkpoint: $RESUME_CHECKPOINT"
+fi
+
+# 5. Run Training
 echo "Running Training..."
 
 CONFIG_NAME="mixed-rware"
@@ -93,7 +99,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --offroad_num_robots "$NUM_ROBOTS" \
   --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
-  --batch_size 6 \
+  --batch_size 8 \
   --grad_accum_steps 4 \
   --clip_len 16 \
   --num_robots "$NUM_ROBOTS" \
@@ -119,7 +125,8 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --gamma 0.95 \
   --max_return_horizon 64 \
   --ema_decay 0.995 \
-  --vl_max_text_len 4700
+  --vl_max_text_len 4700 \
+  ${RESUME_CHECKPOINT:+--resume_from "$RESUME_CHECKPOINT"}
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
 #   --vl_backend llava_video \

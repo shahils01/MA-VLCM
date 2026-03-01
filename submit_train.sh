@@ -19,4 +19,4 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run the training script
-bash run_train_vlcm.sh 
+bash run_train_vlcm.sh local /scratch/aparame/Research/VLCM_checkpoints/0.5B_LoRA_20260228_161429_epoch_3.pt

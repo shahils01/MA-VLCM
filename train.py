@@ -319,6 +319,12 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--save_dir", type=str, default="checkpoints_rware")
+    p.add_argument(
+        "--resume_from",
+        type=str,
+        default="",
+        help="Path to a .pt checkpoint file to resume training from",
+    )
 
     # Optimization
     p.add_argument("--compile", action="store_true", help="Use torch.compile")
@@ -2131,7 +2137,47 @@ def main():
             f"{len(target_model)} params, CPU-only)"
         )
 
-    for epoch in range(1, args.epochs + 1):
+    # ── Resume from checkpoint ──
+    start_epoch = 0
+    if args.resume_from:
+        ckpt_path = args.resume_from
+        accelerator.print(f"Resuming from checkpoint: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+
+        # Restore model weights
+        raw_model = accelerator.unwrap_model(model)
+        raw_model.load_state_dict(ckpt["model"], strict=False)
+        accelerator.print("  ✓ Model weights restored")
+
+        # Restore optimizer state
+        if "optimizer" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optimizer"])
+                accelerator.print("  ✓ Optimizer state restored")
+            except Exception as e:
+                accelerator.print(f"  ⚠ Could not restore optimizer state: {e}")
+
+        # Restore scheduler state
+        if "scheduler" in ckpt:
+            try:
+                scheduler.load_state_dict(ckpt["scheduler"])
+                accelerator.print("  ✓ Scheduler state restored")
+            except Exception as e:
+                accelerator.print(f"  ⚠ Could not restore scheduler state: {e}")
+
+        # Restore EMA shadow
+        if "ema_shadow" in ckpt and target_model is not None:
+            target_model.update(ckpt["ema_shadow"])
+            accelerator.print("  ✓ EMA shadow restored")
+
+        # Restore epoch
+        start_epoch = ckpt.get("epoch", 0)
+        accelerator.print(f"  ✓ Resuming from epoch {start_epoch + 1}")
+
+        del ckpt  # free memory
+        torch.cuda.empty_cache()
+
+    for epoch in range(start_epoch + 1, args.epochs + 1):
         train_loss = run_epoch(
             model,
             train_loader,
@@ -2186,6 +2232,7 @@ def main():
             ckpt = {
                 "model": accelerator.get_state_dict(model),
                 "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
                 "epoch": epoch,
                 "args": vars(args),
             }
