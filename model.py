@@ -483,6 +483,7 @@ class MultimodalValueModel(nn.Module):
         text_mask=None,
         image_sizes=None,
         return_debug: bool = False,
+        return_features: bool = False,
         debug_max_tokens: int = 32,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
@@ -606,6 +607,9 @@ class MultimodalValueModel(nn.Module):
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
-        if return_debug:
-            return {"value": value, "debug_text": debug_text}
+        if return_debug or return_features:
+            out = {"value": value, "vlm_feature": pooled}
+            if return_debug:
+                out["debug_text"] = debug_text
+            return out
         return value

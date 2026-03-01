@@ -329,6 +329,22 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     return loss[mask].mean()
 
 
+def _contrastive_point_to_set_loss(embeddings, rewards, margin=0.0):
+    if embeddings.ndim != 2:
+        embeddings = embeddings.view(embeddings.shape[0], -1)
+    if embeddings.shape[0] < 2:
+        return embeddings.sum() * 0.0
+
+    bsz = embeddings.shape[0]
+    k = max(1, bsz // 2)
+    topk_idx = torch.topk(rewards.view(-1), k=k, largest=True).indices
+    desirable_set = embeddings[topk_idx]
+
+    dists = torch.cdist(embeddings, desirable_set, p=2)
+    scores = -dists.min(dim=1).values
+    return _contrastive_pairwise_loss(scores, rewards.view(-1), margin=margin)
+
+
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
     model.train() if train else model.eval()
 
@@ -380,13 +396,16 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     robot_obs,
                     adj,
                     return_debug=should_decode,
+                    return_features=args.loss_type in {"contrastive", "td_contrastive"},
                     debug_max_tokens=args.debug_decode_max_tokens,
                 )
                 if isinstance(model_out, dict):
                     pred = model_out["value"]
+                    vlm_feature = model_out.get("vlm_feature")
                     debug_text = model_out.get("debug_text")
                 else:
                     pred = model_out
+                    vlm_feature = None
                     debug_text = None
                 contrastive_targets = (
                     batch["returns"].to(accelerator.device)
@@ -395,8 +414,10 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 )
 
                 if args.loss_type == "contrastive":
-                    contrastive_loss = _contrastive_pairwise_loss(
-                        pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                    if vlm_feature is None:
+                        raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
+                    contrastive_loss = _contrastive_point_to_set_loss(
+                        vlm_feature, contrastive_targets.view(-1), margin=args.contrastive_margin
                     )
                     loss = contrastive_loss
                 else:
@@ -413,8 +434,10 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                         target = batch["returns"].to(accelerator.device)
                     td_loss = loss_fn(pred, target)
                     if args.loss_type == "td_contrastive":
-                        contrastive_loss = _contrastive_pairwise_loss(
-                            pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                        if vlm_feature is None:
+                            raise RuntimeError("td_contrastive loss requires model features; got None from model forward.")
+                        contrastive_loss = _contrastive_point_to_set_loss(
+                            vlm_feature, contrastive_targets.view(-1), margin=args.contrastive_margin
                         )
                         loss = args.lambda_td * td_loss + args.lambda_c * contrastive_loss
                     else:
