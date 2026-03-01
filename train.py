@@ -855,7 +855,20 @@ class SequenceWebDataset(IterableDataset):
                     print(f"Warning: Failed to load VLM processor: {e}")
 
         # Error handler: skip broken samples instead of crashing
-        _handler = getattr(wds, "warn_and_continue", None)
+        def custom_wds_handler(exn):
+            if isinstance(exn, ValueError) and "duplicate file name in tar file" in str(
+                exn
+            ):
+                return True
+            import warnings
+
+            try:
+                warnings.warn(repr(exn))
+            except Exception:
+                pass
+            return True
+
+        _handler = custom_wds_handler
 
         # Prefer explicit node/worker splitters for multi-GPU setups
         try:
