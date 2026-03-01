@@ -1163,10 +1163,34 @@ class SequenceWebDataset(IterableDataset):
                     step_idx = int(step_val) - 1
 
                     if traj_id not in self.times_cache:
-                        # Base directory for times files as provided by user
-                        times_dir = "/home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_test"
-                        times_path = os.path.join(times_dir, f"{traj_id}_times.npy")
-                        if os.path.exists(times_path):
+                        times_path = None
+                        
+                        # Dynamically find the dataset directory from self.shards to avoid hardcoded paths
+                        dataset_root = "data_scratch" # Fallback
+                        if isinstance(self.shards, str):
+                            dataset_root = self.shards.split('/*')[0] if '/*' in self.shards else os.path.dirname(self.shards)
+                        elif isinstance(self.shards, list) and len(self.shards) > 0:
+                            # Assume the root is at most 3 levels up from a shard (e.g. data_test/config/date/shard.tar)
+                            parts = self.shards[0].split(os.sep)
+                            if len(parts) >= 4:
+                                dataset_root = os.sep.join(parts[:-3])
+                            else:
+                                dataset_root = os.path.dirname(self.shards[0])
+
+                        # We try to find the _times.npy recursively or in the derived root
+                        # But typically it's saved in the base dataset_root directory
+                        candidate_path = os.path.join(dataset_root, f"{traj_id}_times.npy")
+                        if os.path.exists(candidate_path):
+                            times_path = candidate_path
+                        else:
+                            # Fallback: search recursively if not found immediately
+                            import glob
+                            search_pattern = os.path.join(dataset_root, "**", f"{traj_id}_times.npy")
+                            found = glob.glob(search_pattern, recursive=True)
+                            if found:
+                                times_path = found[0]
+
+                        if times_path is not None:
                             self.times_cache[traj_id] = np.load(times_path)
                         else:
                             self.times_cache[traj_id] = None
