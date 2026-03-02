@@ -113,6 +113,12 @@ def parse_args():
     p.add_argument("--lambda_td", type=float, default=1.0, help="Weight for TD loss when using td_contrastive")
     p.add_argument("--lambda_c", type=float, default=1.0, help="Weight for contrastive loss when using td_contrastive")
     p.add_argument(
+        "--lambda_value_c",
+        type=float,
+        default=1.0,
+        help="Weight for value-head pairwise contrastive loss when loss_type=contrastive.",
+    )
+    p.add_argument(
         "--shard_aware_batching",
         action="store_true",
         help="Build batches with at most one mini-trajectory per shard on each process.",
@@ -579,10 +585,13 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 if args.loss_type == "contrastive":
                     if vlm_feature is None:
                         raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
-                    contrastive_loss = _compute_multidepth_contrastive_loss(
+                    vlm_contrastive_loss = _compute_multidepth_contrastive_loss(
                         vlm_feature, vlm_multidepth_features, contrastive_targets.view(-1), args
                     )
-                    loss = contrastive_loss
+                    value_contrastive_loss = _contrastive_pairwise_loss(
+                        pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                    )
+                    loss = args.lambda_c * vlm_contrastive_loss + args.lambda_value_c * value_contrastive_loss
                 else:
                     if args.return_mode == "td":
                         with torch.no_grad():
