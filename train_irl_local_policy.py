@@ -798,7 +798,7 @@ def parse_args():
     p.add_argument("--critic_updates", type=int, default=2)
     p.add_argument("--actor_updates", type=int, default=1)
     p.add_argument("--policy_batch_size", type=int, default=8)
-    p.add_argument("--entropy_coef", type=float, default=0.001)
+    p.add_argument("--entropy_coef", type=float, default=0.0)
     p.add_argument("--score_scale", type=float, default=1.0)
     p.add_argument("--disc_tanh_temp", type=float, default=100.0)
     p.add_argument("--raw_score_l2_coef", type=float, default=1e-4)
@@ -1207,7 +1207,8 @@ def main():
             with accelerator.accumulate(actors):
                 with torch.no_grad():
                     score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
-                    score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
+                    # score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
+                    score = score * args.score_scale
 
                 obs_seq = policy_batch["robot_obs"]   # [B, T, N, D]
                 act_seq = policy_batch["actions"]     # [B, T, N, A]
