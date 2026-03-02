@@ -876,6 +876,7 @@ def collect_rollout(
     rollout_steps: int,
 ) -> np.ndarray:
     obs = obs_np
+    total_reward = 0.0
     for _ in range(rollout_steps):
         frame_np = envs.render_rgb_array()  # [E,H,W,3]
         if frame_np.shape[1] != args.frame_store_size or frame_np.shape[2] != args.frame_store_size:
@@ -897,6 +898,7 @@ def collect_rollout(
 
         next_obs, _, rewards, dones, _ = envs.step(act_env)
         reward_mean = torch.tensor(rewards.mean(axis=1), dtype=torch.float32)
+        total_reward += reward_mean.sum().item()
         done_env = torch.tensor((dones.mean(axis=1) > 0.5).astype(np.float32), dtype=torch.float32)
 
         buffer.push(
@@ -910,6 +912,8 @@ def collect_rollout(
             done_env=done_env,
         )
         obs = next_obs
+    
+    print(f"Collected rollout with total reward {total_reward:.2f}")
     return obs
 
 
