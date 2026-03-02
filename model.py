@@ -485,6 +485,7 @@ class MultimodalValueModel(nn.Module):
         return_debug: bool = False,
         return_features: bool = False,
         debug_max_tokens: int = 32,
+        debug_video=False,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
@@ -526,7 +527,8 @@ class MultimodalValueModel(nn.Module):
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
-        self._maybe_save_debug_video_from_inputs(inputs)
+        if debug_video:
+            self._maybe_save_debug_video_from_inputs(inputs)
         # Avoid autograd versioning issues from in-place mutations on index/mask tensors.
         input_ids = inputs["input_ids"].clone()
         attn_mask = inputs.get("attention_mask")

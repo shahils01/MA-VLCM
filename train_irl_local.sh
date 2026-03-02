@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Override these with environment variables if needed.
-TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
+TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_225/shard-{000000..000111}.tar"
 SCENARIO="${SCENARIO:-ManyAgentGoToGoal-v0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints_irl_local}"
-NUM_PROCESSES="${NUM_PROCESSES:-1}"
+NUM_PROCESSES="${NUM_PROCESSES:-4}"
 VL_MODEL_NAME="${VL_MODEL_NAME:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}"  # llava-onevision-qwen2-0.5b-ov-hf or LLaVA-NeXT-Video-7B-hf
 WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-irl}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-irl-local}"
@@ -21,7 +21,7 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --policy_video_source env \
   --frame_store_size 660 \
   --iters 2000 \
-  --clip_len 10 \
+  --clip_len 15 \
   --critic_updates 1 \
   --actor_updates 1 \
   --policy_batch_size 2 \
@@ -35,7 +35,7 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --raw_score_l2_coef 1e-4 \
   --lambda_feat_contrastive 0.1 \
   --feat_contrastive_margin 1.0 \
-  --critic_lr 1e-5 \
+  --critic_lr 1e-4 \
   --actor_lr 1e-4 \
   --critic_grad_clip 1.0 \
   --mixed_precision bf16 \

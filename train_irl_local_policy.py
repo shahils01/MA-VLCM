@@ -1127,6 +1127,7 @@ def main():
                     expert_robot_obs,
                     expert_adj,
                     return_features=use_feat_aux,
+                    debug_video=False,
                 )
                 if isinstance(expert_out, dict):
                     expert_scores_raw = expert_out["value"]
@@ -1134,14 +1135,15 @@ def main():
                 else:
                     expert_scores_raw = expert_out
                     expert_features = None
-                expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
-                expert_term = -expert_scores.mean() + args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
-                expert_feat_loss = expert_scores_raw.sum() * 0.0
-                expert_center = None
-                if use_feat_aux and expert_features is not None:
-                    expert_feat_loss = _feature_compactness_loss(expert_features)
-                    expert_center = expert_features.detach().mean(dim=0, keepdim=True)
-                    expert_term = expert_term + args.lambda_feat_contrastive * expert_feat_loss
+                # expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
+                expert_scores = expert_scores_raw
+                expert_term = -expert_scores.mean() #+ args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
+                # expert_feat_loss = expert_scores_raw.sum() * 0.0
+                # expert_center = None
+                # if use_feat_aux and expert_features is not None:
+                #     expert_feat_loss = _feature_compactness_loss(expert_features)
+                #     expert_center = expert_features.detach().mean(dim=0, keepdim=True)
+                    # expert_term = expert_term + args.lambda_feat_contrastive * expert_feat_loss
                 accelerator.backward(expert_term)
 
                 policy_out = critic(
@@ -1156,14 +1158,15 @@ def main():
                 else:
                     policy_scores_raw = policy_out
                     policy_features = None
-                policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
-                policy_term = policy_scores.mean() + args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
-                policy_feat_loss = policy_scores_raw.sum() * 0.0
-                if use_feat_aux and policy_features is not None and expert_center is not None:
-                    policy_feat_loss = _feature_separation_loss(
-                        policy_features, expert_center, margin=args.feat_contrastive_margin
-                    )
-                    policy_term = policy_term + args.lambda_feat_contrastive * policy_feat_loss
+                # policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
+                policy_scores = policy_scores_raw
+                policy_term = policy_scores.mean() #+ args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
+                # policy_feat_loss = policy_scores_raw.sum() * 0.0
+                # if use_feat_aux and policy_features is not None and expert_center is not None:
+                #     policy_feat_loss = _feature_separation_loss(
+                #         policy_features, expert_center, margin=args.feat_contrastive_margin
+                #     )
+                #     policy_term = policy_term + args.lambda_feat_contrastive * policy_feat_loss
                 accelerator.backward(policy_term)
 
                 if accelerator.sync_gradients and args.critic_grad_clip > 0:
@@ -1178,8 +1181,8 @@ def main():
             policy_scores_log.append(float(policy_scores.mean().item()))
             expert_scores_raw_log.append(float(expert_scores_raw.mean().item()))
             policy_scores_raw_log.append(float(policy_scores_raw.mean().item()))
-            expert_feat_loss_log.append(float(expert_feat_loss.item()))
-            policy_feat_loss_log.append(float(policy_feat_loss.item()))
+            # expert_feat_loss_log.append(float(expert_feat_loss.item()))
+            # policy_feat_loss_log.append(float(policy_feat_loss.item()))
 
         for _ in range(args.actor_updates):
             policy_batch = rollout_buffer.sample_clips(args.policy_batch_size, args.clip_len, device=device)
