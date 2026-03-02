@@ -19,7 +19,7 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --rollout_steps 128 \
   --rollout_buffer_steps 4096 \
   --policy_video_source env \
-  --frame_store_size 84 \
+  --frame_store_size 1024 \
   --iters 2000 \
   --clip_len 10 \
   --critic_updates 1 \
