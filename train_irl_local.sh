@@ -14,18 +14,18 @@ PEFT_MODE="${PEFT_MODE:-none}" # none / lora / qlora
 MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --scenario "${SCENARIO}" \
   --train_shards "${TRAIN_SHARDS}" \
-  --num_envs 4 \
+  --num_envs 1 \
   --seed 1 \
   --rollout_steps 128 \
   --rollout_buffer_steps 4096 \
   --policy_video_source env \
   --frame_store_size 84 \
   --iters 2000 \
-  --clip_len 15 \
+  --clip_len 10 \
   --critic_updates 1 \
   --actor_updates 1 \
-  --policy_batch_size 4 \
-  --expert_batch_size 4 \
+  --policy_batch_size 2 \
+  --expert_batch_size 2 \
   --num_workers 2 \
   --entropy_coef 0.001 \
   --score_scale 1.0 \

@@ -331,8 +331,8 @@ class MultimodalValueModel(nn.Module):
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
 
     def _maybe_save_debug_video_from_inputs(self, inputs: dict):
-        if (not self.debug_save_video) or self._debug_video_saved:
-            return
+        # if (not self.debug_save_video) or self._debug_video_saved:
+        #     return
         if not isinstance(inputs, dict):
             return
 
