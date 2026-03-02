@@ -24,7 +24,7 @@ try:
 except Exception:
     ManyAgent_GoTOGoal = None
 
-from data_loading import webdataset_loader
+from data_loading import preprocess_vlm_video_inputs, webdataset_loader
 from model import ModelConfig, MultimodalValueModel
 
 
@@ -470,11 +470,23 @@ class FixedRolloutBuffer:
 
 
 class CachedBlankVideoInputs:
-    def __init__(self, processor, prompt: str, clip_len: int, frame_size: int = 224):
+    def __init__(
+        self,
+        processor,
+        prompt: str,
+        clip_len: int,
+        frame_size: int = 224,
+        vlm_max_text_len: int = 256,
+        vlm_truncation: bool = False,
+        vlm_padding: str = "longest",
+    ):
         self.processor = processor
         self.prompt = prompt
         self.clip_len = clip_len
         self.frame_size = frame_size
+        self.vlm_max_text_len = vlm_max_text_len
+        self.vlm_truncation = vlm_truncation
+        self.vlm_padding = vlm_padding
         self.cache = {}
 
     def get(self, batch_size: int) -> Dict[str, torch.Tensor]:
@@ -483,9 +495,17 @@ class CachedBlankVideoInputs:
 
         black = Image.fromarray(np.zeros((self.frame_size, self.frame_size, 3), dtype=np.uint8))
         videos = [[black for _ in range(self.clip_len)] for _ in range(batch_size)]
-        text = [self.prompt for _ in range(batch_size)]
-        inputs = self.processor(text=text, videos=videos, return_tensors="pt", padding="longest", truncation=False)
-        self.cache[batch_size] = {k: v for k, v in dict(inputs).items()}
+        inputs = preprocess_vlm_video_inputs(
+            vlm_processor=self.processor,
+            frames=videos,
+            text=self.prompt,
+            text_prompt_template=self.prompt,
+            vlm_max_text_len=self.vlm_max_text_len,
+            vlm_truncation=self.vlm_truncation,
+            vlm_padding=self.vlm_padding,
+            squeeze_batch_dim=False,
+        )
+        self.cache[batch_size] = {k: v for k, v in inputs.items()}
         return {k: v.clone() for k, v in self.cache[batch_size].items()}
 
 
@@ -502,6 +522,9 @@ def build_video_inputs_from_batch(
     prompt: str,
     videos_uint8: torch.Tensor,
     frame_size: int,
+    vlm_max_text_len: int,
+    vlm_truncation: bool,
+    vlm_padding: str,
 ) -> Dict[str, torch.Tensor]:
     # videos_uint8: [B, T, H, W, 3] on CPU
     v = videos_uint8.detach().cpu().numpy().astype(np.uint8)
@@ -509,12 +532,19 @@ def build_video_inputs_from_batch(
     for b in range(v.shape[0]):
         frames = []
         for t in range(v.shape[1]):
-            fr = _resize_frame_uint8(v[b, t], frame_size)
-            frames.append(Image.fromarray(fr))
+            frames.append(Image.fromarray(v[b, t]))
         batch_videos.append(frames)
-    text = [prompt for _ in range(v.shape[0])]
-    inputs = processor(text=text, videos=batch_videos, return_tensors="pt", padding="longest", truncation=False)
-    return dict(inputs)
+    _ = frame_size
+    return preprocess_vlm_video_inputs(
+        vlm_processor=processor,
+        frames=batch_videos,
+        text=prompt,
+        text_prompt_template=prompt,
+        vlm_max_text_len=vlm_max_text_len,
+        vlm_truncation=vlm_truncation,
+        vlm_padding=vlm_padding,
+        squeeze_batch_dim=False,
+    )
 
 
 def build_critic(args, device: torch.device) -> MultimodalValueModel:
@@ -949,6 +979,8 @@ def main():
     )
     expert_iter = iter(expert_loader)
     critic_raw = accelerator.unwrap_model(critic)
+    vlm_truncation = args.vl_backend != "llava_video"
+    vlm_padding = "longest" if args.vl_backend == "llava_video" else "max_length"
 
     rollout_buffer = FixedRolloutBuffer(args.rollout_buffer_steps)
     blank_input_builder = CachedBlankVideoInputs(
@@ -956,6 +988,9 @@ def main():
         prompt=args.text_prompt_template,
         clip_len=args.clip_len,
         frame_size=args.video_size,
+        vlm_max_text_len=args.vl_max_text_len,
+        vlm_truncation=vlm_truncation,
+        vlm_padding=vlm_padding,
     )
 
     obs = collect_rollout(
@@ -987,6 +1022,9 @@ def main():
                     prompt=args.text_prompt_template,
                     videos_uint8=policy_batch["video"],
                     frame_size=args.video_size,
+                    vlm_max_text_len=args.vl_max_text_len,
+                    vlm_truncation=vlm_truncation,
+                    vlm_padding=vlm_padding,
                 )
                 policy_inputs = _to_device_inputs(policy_inputs, device)
             else:
@@ -1063,6 +1101,9 @@ def main():
                     prompt=args.text_prompt_template,
                     videos_uint8=policy_batch["video"],
                     frame_size=args.video_size,
+                    vlm_max_text_len=args.vl_max_text_len,
+                    vlm_truncation=vlm_truncation,
+                    vlm_padding=vlm_padding,
                 )
                 policy_inputs = _to_device_inputs(policy_inputs, device)
             else:

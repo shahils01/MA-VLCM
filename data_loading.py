@@ -154,6 +154,55 @@ def _extract_episode_id(key):
     return key
 
 
+def preprocess_vlm_video_inputs(
+    vlm_processor,
+    frames,
+    text,
+    text_prompt_template=None,
+    vlm_max_text_len=256,
+    vlm_truncation=False,
+    vlm_padding="longest",
+    squeeze_batch_dim=True,
+):
+    if vlm_processor is None:
+        raise RuntimeError("Dataloader processor not set.")
+    if not isinstance(text, str):
+        text = text_prompt_template
+    if not isinstance(text, str):
+        text = ""
+
+    tokenizer = getattr(vlm_processor, "tokenizer", None)
+    if tokenizer is not None:
+        vocab = tokenizer.get_vocab()
+        if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
+            text = f"<video>\n{text}"
+        if "<obs>" in vocab and "<obs>" not in text:
+            if "<video>" in text:
+                text = text.replace("<video>\n", "<video><obs>\n", 1)
+            else:
+                text = f"<obs>\n{text}"
+
+    try:
+        max_len = vlm_max_text_len if vlm_truncation else None
+        inputs = vlm_processor(
+            text=text,
+            videos=frames,
+            return_tensors="pt",
+            padding=vlm_padding,
+            truncation=vlm_truncation,
+            max_length=max_len,
+        )
+    except TypeError:
+        inputs = vlm_processor(images=frames, return_tensors="pt")
+
+    packed = {}
+    for k, v in dict(inputs).items():
+        if squeeze_batch_dim and torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
+            v = v.squeeze(0)
+        packed[k] = v
+    return packed
+
+
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -348,46 +397,45 @@ class SequenceWebDataset(IterableDataset):
                     nstep_clip = self._apply_done_termination(buffer[i + self.n_step : i + self.n_step + self.clip_len])
                     raw_nstep_video = [f["image"] for f in nstep_clip]
 
-                if self.vlm_processor is None:
-                    raise RuntimeError("Dataloader processor not set.")
-
-                def _proc(frames, text):
-                    if not isinstance(text, str):
-                        text = self.text_prompt_template
-                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                    if tokenizer is not None:
-                        vocab = tokenizer.get_vocab()
-                        if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
-                            text = f"<video>\\n{text}"
-                        if "<obs>" in vocab and "<obs>" not in text:
-                            if "<video>" in text:
-                                text = text.replace("<video>\\n", "<video><obs>\\n", 1)
-                            else:
-                                text = f"<obs>\\n{text}"
-                    try:
-                        max_len = self.vlm_max_text_len if self.vlm_truncation else None
-                        inputs = self.vlm_processor(
-                            text=text,
-                            videos=frames,
-                            return_tensors="pt",
-                            padding=self.vlm_padding,
-                            truncation=self.vlm_truncation,
-                            max_length=max_len,
-                        )
-                    except TypeError:
-                        inputs = self.vlm_processor(images=frames, return_tensors="pt")
-
-                    packed = {}
-                    for k, v in dict(inputs).items():
-                        if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
-                            v = v.squeeze(0)
-                        packed[k] = v
-                    return packed
-
                 text = clip[0]["text"]
-                inputs = _proc(raw_video, text)
-                next_inputs = _proc(raw_next_video, text) if self.include_next else None
-                nstep_inputs = _proc(raw_nstep_video, text) if self.include_nstep_bootstrap else None
+                inputs = preprocess_vlm_video_inputs(
+                    vlm_processor=self.vlm_processor,
+                    frames=raw_video,
+                    text=text,
+                    text_prompt_template=self.text_prompt_template,
+                    vlm_max_text_len=self.vlm_max_text_len,
+                    vlm_truncation=self.vlm_truncation,
+                    vlm_padding=self.vlm_padding,
+                    squeeze_batch_dim=True,
+                )
+                next_inputs = (
+                    preprocess_vlm_video_inputs(
+                        vlm_processor=self.vlm_processor,
+                        frames=raw_next_video,
+                        text=text,
+                        text_prompt_template=self.text_prompt_template,
+                        vlm_max_text_len=self.vlm_max_text_len,
+                        vlm_truncation=self.vlm_truncation,
+                        vlm_padding=self.vlm_padding,
+                        squeeze_batch_dim=True,
+                    )
+                    if self.include_next
+                    else None
+                )
+                nstep_inputs = (
+                    preprocess_vlm_video_inputs(
+                        vlm_processor=self.vlm_processor,
+                        frames=raw_nstep_video,
+                        text=text,
+                        text_prompt_template=self.text_prompt_template,
+                        vlm_max_text_len=self.vlm_max_text_len,
+                        vlm_truncation=self.vlm_truncation,
+                        vlm_padding=self.vlm_padding,
+                        squeeze_batch_dim=True,
+                    )
+                    if self.include_nstep_bootstrap
+                    else None
+                )
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
                 adj = torch.stack([f["adj"] for f in clip], dim=0)
