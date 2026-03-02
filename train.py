@@ -78,7 +78,21 @@ def parse_args():
     )
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
+    p.add_argument(
+        "--contrastive_objective",
+        type=str,
+        default="point_to_set",
+        choices=["point_to_set", "infonce"],
+        help="Contrastive objective used when loss_type includes contrastive.",
+    )
     p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--infonce_temperature", type=float, default=0.1, help="Temperature for InfoNCE contrastive loss.")
+    p.add_argument(
+        "--infonce_topk_pos",
+        type=int,
+        default=0,
+        help="Top-K high-reward samples used as positive pool for InfoNCE (0 => B//2).",
+    )
     p.add_argument("--lambda_td", type=float, default=1.0, help="Weight for TD loss when using td_contrastive")
     p.add_argument("--lambda_c", type=float, default=1.0, help="Weight for contrastive loss when using td_contrastive")
     p.add_argument(
@@ -345,6 +359,69 @@ def _contrastive_point_to_set_loss(embeddings, rewards, margin=0.0):
     return _contrastive_pairwise_loss(scores, rewards.view(-1), margin=margin)
 
 
+def _contrastive_infonce_loss(embeddings, rewards, temperature=0.1, topk_pos=0):
+    if embeddings.ndim != 2:
+        embeddings = embeddings.view(embeddings.shape[0], -1)
+    bsz = int(embeddings.shape[0])
+    if bsz < 3:
+        return embeddings.sum() * 0.0
+
+    if temperature <= 0:
+        raise ValueError("infonce_temperature must be > 0")
+
+    rewards = rewards.view(-1)
+    k = int(topk_pos) if int(topk_pos) > 0 else max(1, bsz // 2)
+    k = min(max(1, k), bsz)
+
+    # Reward-defined desirable pool.
+    topk_idx = torch.topk(rewards, k=k, largest=True).indices
+    desirable_mask = torch.zeros(bsz, dtype=torch.bool, device=embeddings.device)
+    desirable_mask[topk_idx] = True
+
+    z = F.normalize(embeddings, dim=-1)
+    sim = torch.matmul(z, z.t()) / float(temperature)  # [B, B]
+
+    losses = []
+    for i in range(bsz):
+        valid_neg_mask = torch.ones(bsz, dtype=torch.bool, device=embeddings.device)
+        valid_neg_mask[i] = False  # remove self from denominator
+        if valid_neg_mask.sum() == 0:
+            continue
+
+        pos_mask = desirable_mask.clone()
+        pos_mask[i] = False  # avoid trivial self-positive
+        if pos_mask.sum() == 0:
+            continue
+
+        # Select one positive from desirable pool: most similar desirable sample.
+        pos_candidates = pos_mask.nonzero(as_tuple=False).view(-1)
+        pos_sim = sim[i, pos_candidates]
+        pos_idx = pos_candidates[pos_sim.argmax()]
+
+        denom_idx = valid_neg_mask.nonzero(as_tuple=False).view(-1)
+        logits = sim[i, denom_idx]
+        target = (denom_idx == pos_idx).nonzero(as_tuple=False)
+        if target.numel() == 0:
+            continue
+        target = target.view(-1)[0]
+        losses.append(F.cross_entropy(logits.unsqueeze(0), target.unsqueeze(0)))
+
+    if not losses:
+        return embeddings.sum() * 0.0
+    return torch.stack(losses).mean()
+
+
+def _compute_contrastive_loss(embeddings, rewards, args):
+    if args.contrastive_objective == "infonce":
+        return _contrastive_infonce_loss(
+            embeddings,
+            rewards,
+            temperature=args.infonce_temperature,
+            topk_pos=args.infonce_topk_pos,
+        )
+    return _contrastive_point_to_set_loss(embeddings, rewards, margin=args.contrastive_margin)
+
+
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
     model.train() if train else model.eval()
 
@@ -416,9 +493,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 if args.loss_type == "contrastive":
                     if vlm_feature is None:
                         raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
-                    contrastive_loss = _contrastive_point_to_set_loss(
-                        vlm_feature, contrastive_targets.view(-1), margin=args.contrastive_margin
-                    )
+                    contrastive_loss = _compute_contrastive_loss(vlm_feature, contrastive_targets.view(-1), args)
                     loss = contrastive_loss
                 else:
                     if args.return_mode == "td":
@@ -436,9 +511,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     if args.loss_type == "td_contrastive":
                         if vlm_feature is None:
                             raise RuntimeError("td_contrastive loss requires model features; got None from model forward.")
-                        contrastive_loss = _contrastive_point_to_set_loss(
-                            vlm_feature, contrastive_targets.view(-1), margin=args.contrastive_margin
-                        )
+                        contrastive_loss = _compute_contrastive_loss(vlm_feature, contrastive_targets.view(-1), args)
                         loss = args.lambda_td * td_loss + args.lambda_c * contrastive_loss
                     else:
                         loss = td_loss
