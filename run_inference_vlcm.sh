@@ -12,12 +12,9 @@ echo "Starting Inference on $(hostname)"
 echo "Date: $(date)"
 
 # ── Paths (edit these) ──────────────────────────────────────────────────────
-CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/0.5B_Final.pt"
+CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/7B_qlora_20260301_201410_epoch_1.pt"
 TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_test"
 OUTPUT_FILE="inference_results.csv"
-
-# ── Model / data config (should match training) ────────────────────────────
-NUM_ROBOTS=4
 
 # ── Environment ─────────────────────────────────────────────────────────────
 export HF_TOKEN=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
@@ -45,9 +42,8 @@ if [ -n "$CONTAINER_PATH" ] && [ -f "$CONTAINER_PATH" ]; then
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \
         --num_workers 8 \
-        --output_file "$OUTPUT_FILE" \
         --max_samples 100\
-        --baseline
+        --dataset_type rware
 else
     echo "Running natively (no container)"
     python3 inference.py \

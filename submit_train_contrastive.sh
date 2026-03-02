@@ -19,4 +19,4 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export PYTHONUNBUFFERED=1
 
 # Run the training script
-bash run_train_vlcm_contrastive.sh 
+bash run_train_vlcm_contrastive.sh local /scratch/aparame/Research/VLCM_checkpoints/7B_qlora_20260301_201410_epoch_1.pt

@@ -37,6 +37,12 @@ else
     SHARD_PATTERN="$DATA_DIR"
 fi
 
+# 4. Resume from checkpoint (optional, 2nd positional arg)
+RESUME_CHECKPOINT="${2:-}"
+if [ -n "$RESUME_CHECKPOINT" ]; then
+    echo "Will resume from checkpoint: $RESUME_CHECKPOINT"
+fi
+
 # 4. Run Training
 echo "Running Training..."
 

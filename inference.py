@@ -680,8 +680,9 @@ def main():
         model = build_model(args, device=device)
         model = _apply_peft(model, args)  # no-op since peft="none"
         args.peft = saved_peft  # restore for logging
+
     else:
-        print("Building model (with LoRA)...")
+        print(f"Building model (with",args.peft,")...")
         model = build_model(args, device=device)
         model = _apply_peft(model, args)
 
