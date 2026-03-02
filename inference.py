@@ -634,7 +634,27 @@ def main():
     args.preprocess_in_loader = getattr(args, "preprocess_in_loader", True)
     args.video_preprocessed = getattr(args, "video_preprocessed", True)
     args.compile = getattr(args, "compile", False)
-    args.quantization_config = None  # No quantisation for inference
+    # Re-apply quantization config if the model was trained with qlora
+    if getattr(args, "peft", None) == "qlora":
+        try:
+            from transformers import BitsAndBytesConfig
+        except Exception as e:
+            raise RuntimeError("QLoRA requested but bitsandbytes not available.") from e
+        if getattr(args, "vl_dtype", "bfloat16") == "float16":
+            compute_dtype = torch.float16
+        elif getattr(args, "vl_dtype", "bfloat16") == "float32":
+            compute_dtype = torch.float32
+        else:
+            compute_dtype = torch.bfloat16
+        args.quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+        )
+    else:
+        args.quantization_config = None
+
     args.text_prompt_template = getattr(args, "text_prompt_template", None)
 
     # ── 2. Determine device ─────────────────────────────────────────────────
