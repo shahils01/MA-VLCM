@@ -69,7 +69,7 @@ def parse_inference_args():
     p.add_argument(
         "--max_samples",
         type=int,
-        default=None,
+        default=100,
         help="Cap on the number of test samples to evaluate.",
     )
     p.add_argument(
@@ -115,20 +115,15 @@ def parse_inference_args():
         help="Label for the current run in comparison plots "
         "(default: auto-detected from --baseline flag).",
     )
+    p.add_argument(
+        "--dataset_type",
+        type=str,
+        default=None,
+        choices=["rware", "offroad"],
+        help="Override the dataset_type saved in the checkpoint. Necessary if the model was trained on mixed datasets and you want to evaluate on a specific one.",
+    )
 
     return p.parse_args()
-
-
-# ─────────────────────── Metric Helpers ─────────────────────────────────────
-def _pearson_corr(x, y):
-    """Pearson correlation between two 1-D numpy arrays."""
-    if len(x) < 2:
-        return float("nan")
-    xm, ym = x - x.mean(), y - y.mean()
-    denom = np.sqrt((xm**2).sum() * (ym**2).sum())
-    if denom == 0:
-        return float("nan")
-    return float((xm * ym).sum() / denom)
 
 
 def _spearman_corr(x, y):
@@ -142,22 +137,18 @@ def _spearman_corr(x, y):
 
 
 # ────────────────────────── Plotting ────────────────────────────────────────
-def _generate_plots(preds, rewards, targets, plot_dir, epoch, target_label=None):
+def _generate_plots(preds, targets, plot_dir, epoch, target_label="Return"):
     """Generate comparison plots of predicted vs true values.
 
     Args:
-        targets: TD targets, returns, or None — whatever the model was trained on.
-        target_label: Label for the target values in plots (auto-detected if None).
+        targets: Returns — whatever the model was trained on.
+        target_label: Label for the target values in plots.
     """
     os.makedirs(plot_dir, exist_ok=True)
     print(f"\nGenerating plots in: {plot_dir}")
 
-    has_targets = targets is not None
-    if target_label is None:
-        true_label = "TD Target" if has_targets else "Reward"
-    else:
-        true_label = target_label
-    true_vals = targets if has_targets else rewards
+    true_label = target_label
+    true_vals = targets
 
     # ── 1. Scatter plot: Predicted vs True ───────────────────────────────
     fig, ax = plt.subplots(figsize=(8, 7))
@@ -186,11 +177,11 @@ def _generate_plots(preds, rewards, targets, plot_dir, epoch, target_label=None)
             linewidth=1.5,
             label=f"Linear fit (slope={coeffs[0]:.3f})",
         )
-    pearson = _pearson_corr(preds, true_vals)
+    spearman = _spearman_corr(preds, true_vals)
     ax.set_xlabel(f"True {true_label}", fontsize=13)
     ax.set_ylabel("Predicted Value", fontsize=13)
     ax.set_title(
-        f"Predicted vs True {true_label}  (epoch {epoch}, r={pearson:.3f})",
+        f"Predicted vs True {true_label}  (epoch {epoch}, \u03c1={spearman:.3f})",
         fontsize=14,
         fontweight="bold",
     )
@@ -202,36 +193,7 @@ def _generate_plots(preds, rewards, targets, plot_dir, epoch, target_label=None)
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 2. Residual histogram ────────────────────────────────────────────
-    residuals = preds - true_vals
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(
-        residuals,
-        bins=min(80, max(20, len(residuals) // 50)),
-        color="#4C72B0",
-        edgecolor="white",
-        alpha=0.85,
-    )
-    ax.axvline(0, color="#C44E52", linestyle="--", linewidth=1.5)
-    ax.axvline(
-        residuals.mean(),
-        color="#55A868",
-        linestyle="-",
-        linewidth=1.5,
-        label=f"Mean = {residuals.mean():.4f}",
-    )
-    ax.set_xlabel(f"Residual  (Predicted − True {true_label})", fontsize=13)
-    ax.set_ylabel("Count", fontsize=13)
-    ax.set_title("Residual Distribution", fontsize=14, fontweight="bold")
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    path = os.path.join(plot_dir, "residual_histogram.png")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved: {path}")
-
-    # ── 3. Per-sample comparison (first 500 samples) ─────────────────────
+    # ── 2. Per-sample comparison (first 500 samples) ─────────────────────
     show_n = min(500, len(preds))
     fig, ax = plt.subplots(figsize=(14, 5))
     idx = np.arange(show_n)
@@ -268,51 +230,25 @@ def _generate_plots(preds, rewards, targets, plot_dir, epoch, target_label=None)
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 4. If targets AND rewards are different, plot both ─────────────────
-    if has_targets:
-        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-        for ax_i, (vals, label) in enumerate(
-            [(rewards, "Reward"), (targets, true_label)]
-        ):
-            ax = axes[ax_i]
-            ax.scatter(vals, preds, alpha=0.35, s=12, c="#4C72B0", edgecolors="none")
-            lo_i = min(vals.min(), preds.min())
-            hi_i = max(vals.max(), preds.max())
-            m_i = (hi_i - lo_i) * 0.05
-            ax.plot(
-                [lo_i - m_i, hi_i + m_i],
-                [lo_i - m_i, hi_i + m_i],
-                "--",
-                color="#C44E52",
-                linewidth=1.5,
-            )
-            r_i = _pearson_corr(preds, vals)
-            ax.set_xlabel(f"True {label}", fontsize=12)
-            ax.set_ylabel("Predicted", fontsize=12)
-            ax.set_title(
-                f"Predicted vs {label}  (r={r_i:.3f})", fontsize=13, fontweight="bold"
-            )
-            ax.grid(True, alpha=0.3)
-        fig.suptitle(f"Epoch {epoch}", fontsize=14)
-        fig.tight_layout()
-        path = os.path.join(plot_dir, "scatter_reward_and_return.png")
-        fig.savefig(path, dpi=150)
-        plt.close(fig)
-        print(f"  Saved: {path}")
 
-
-def _generate_overlay_plots(preds, targets, compare_csv, plot_dir, epoch):
+def _generate_overlay_plots(
+    preds, targets, compare_csv, plot_dir, epoch, target_label="Target"
+):
     """Overlay current run predictions with a previous run's CSV for comparison."""
     import pandas as pd
 
     os.makedirs(plot_dir, exist_ok=True)
     df = pd.read_csv(compare_csv)
     comp_preds = df["prediction"].values
-    # Use td_target if available, else reward as the ground truth
-    if "td_target" in df.columns:
+    # Use return if available, else td_target as the ground truth
+    if "return" in df.columns:
+        comp_targets = df["return"].values
+        target_col = "return"
+    elif "td_target" in df.columns:
         comp_targets = df["td_target"].values
         target_col = "td_target"
     else:
+        # Fallback only
         comp_targets = df["reward"].values
         target_col = "reward"
 
@@ -326,7 +262,7 @@ def _generate_overlay_plots(preds, targets, compare_csv, plot_dir, epoch):
         comp_label = "Baseline (no LoRA)"
 
     true_vals = targets if targets is not None else comp_targets
-    true_label = "TD Target"
+    true_label = target_label
     n = min(len(preds), len(comp_preds))
 
     print(f"\nGenerating overlay comparison plots in: {plot_dir}")
@@ -367,12 +303,12 @@ def _generate_overlay_plots(preds, targets, compare_csv, plot_dir, epoch):
         alpha=0.6,
         label="y = x",
     )
-    r_curr = _pearson_corr(preds[:n], true_vals[:n])
-    r_comp = _pearson_corr(comp_preds[:n], true_vals[:n])
+    spearman_curr = _spearman_corr(preds[:n], true_vals[:n])
+    spearman_comp = _spearman_corr(comp_preds[:n], true_vals[:n])
     ax.set_xlabel(f"True {true_label}", fontsize=13)
     ax.set_ylabel("Predicted Value", fontsize=13)
     ax.set_title(
-        f"Scatter Overlay  (r: {curr_label}={r_curr:.3f}, {comp_label}={r_comp:.3f})",
+        f"Scatter Overlay  (\u03c1: {curr_label}={spearman_curr:.3f}, {comp_label}={spearman_comp:.3f})",
         fontsize=13,
         fontweight="bold",
     )
@@ -384,42 +320,7 @@ def _generate_overlay_plots(preds, targets, compare_csv, plot_dir, epoch):
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 2. Overlay residual histograms ───────────────────────────────────
-    res_curr = preds[:n] - true_vals[:n]
-    res_comp = comp_preds[:n] - true_vals[:n]
-    fig, ax = plt.subplots(figsize=(9, 5))
-    bins = min(60, max(20, n // 50))
-    ax.hist(
-        res_comp,
-        bins=bins,
-        color="#8DA0CB",
-        alpha=0.6,
-        edgecolor="white",
-        label=f"{comp_label} (μ={res_comp.mean():.3f})",
-    )
-    ax.hist(
-        res_curr,
-        bins=bins,
-        color="#E78AC3",
-        alpha=0.6,
-        edgecolor="white",
-        label=f"{curr_label} (μ={res_curr.mean():.3f})",
-    )
-    ax.axvline(0, color="#333333", linestyle="--", linewidth=1.5, alpha=0.6)
-    ax.set_xlabel(f"Residual  (Predicted − True {true_label})", fontsize=13)
-    ax.set_ylabel("Count", fontsize=13)
-    ax.set_title(
-        "Residual Distribution: Baseline vs Fine-tuned", fontsize=13, fontweight="bold"
-    )
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    path = os.path.join(plot_dir, "overlay_residuals.png")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved: {path}")
-
-    # ── 3. Overlay per-sample comparison ─────────────────────────────────
+    # ── 2. Overlay per-sample comparison ─────────────────────────────────
     show_n = min(300, n)
     idx = np.arange(show_n)
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -465,7 +366,7 @@ def _generate_overlay_plots(preds, targets, compare_csv, plot_dir, epoch):
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 4. MSE bar chart ────────────────────────────────────────────────
+    # ── 3. MSE bar chart ────────────────────────────────────────────────
     mse_curr = float(np.mean((preds[:n] - true_vals[:n]) ** 2))
     mse_comp = float(np.mean((comp_preds[:n] - true_vals[:n]) ** 2))
     mae_curr = float(np.mean(np.abs(preds[:n] - true_vals[:n])))
@@ -512,6 +413,7 @@ def _generate_multi_comparison_plots(
     compare_csvs,
     plot_dir,
     epoch,
+    target_label="Target",
 ):
     """Generate plots comparing True Returns vs multiple model runs.
 
@@ -522,6 +424,7 @@ def _generate_multi_comparison_plots(
         compare_csvs: list of (label, csv_path) tuples.
         plot_dir: directory to save plots.
         epoch: epoch number for titles.
+        target_label: The label for the target axis.
     """
     import pandas as pd
 
@@ -544,7 +447,7 @@ def _generate_multi_comparison_plots(
     n = min(len(r[1]) for r in runs)
     # Use the first run's targets as ground truth
     true_vals = runs[0][2][:n]
-    true_label = "True Returns"
+    true_label = target_label
 
     # Color palette for up to 6 runs
     colors = [
@@ -567,7 +470,7 @@ def _generate_multi_comparison_plots(
         pi = preds_i[:n]
         lo = min(lo, pi.min())
         hi = max(hi, pi.max())
-        r_i = _pearson_corr(pi, true_vals)
+        spearman_i = _spearman_corr(pi, true_vals)
         ax.scatter(
             true_vals,
             pi,
@@ -575,7 +478,7 @@ def _generate_multi_comparison_plots(
             s=12,
             c=colors[i % len(colors)],
             edgecolors="none",
-            label=f"{lbl} (r={r_i:.3f})",
+            label=f"{lbl} (\u03bc={spearman_i:.3f})",
             zorder=2 + i,
         )
     m = (hi - lo) * 0.05
@@ -603,45 +506,7 @@ def _generate_multi_comparison_plots(
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 2. Residual histograms ──────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bins = min(60, max(20, n // 50))
-    for i, (lbl, preds_i, _) in enumerate(runs):
-        res = preds_i[:n] - true_vals
-        ax.hist(
-            res,
-            bins=bins,
-            color=colors[i % len(colors)],
-            alpha=0.5,
-            edgecolor="white",
-            label=f"{lbl} (\u03bc={res.mean():.3f})",
-        )
-    ax.axvline(
-        0,
-        color="#333333",
-        linestyle="--",
-        linewidth=1.5,
-        alpha=0.6,
-    )
-    ax.set_xlabel(
-        f"Residual (Predicted \u2212 {true_label})",
-        fontsize=13,
-    )
-    ax.set_ylabel("Count", fontsize=13)
-    ax.set_title(
-        "Residual Distribution: All Models",
-        fontsize=13,
-        fontweight="bold",
-    )
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    path = os.path.join(plot_dir, "multi_residuals.png")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved: {path}")
-
-    # ── 3. Per-sample comparison ────────────────────────────────────────
+    # ── 2. Per-sample comparison ────────────────────────────────────────
     show_n = min(300, n)
     idx = np.arange(show_n)
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -682,7 +547,7 @@ def _generate_multi_comparison_plots(
     plt.close(fig)
     print(f"  Saved: {path}")
 
-    # ── 4. MSE / MAE bar chart ─────────────────────────────────────────
+    # ── 3. MSE / MAE bar chart ─────────────────────────────────────────
     labels = [r[0] for r in runs]
     mse_vals = [float(np.mean((r[1][:n] - true_vals) ** 2)) for r in runs]
     mae_vals = [float(np.mean(np.abs(r[1][:n] - true_vals))) for r in runs]
@@ -746,6 +611,10 @@ def main():
     # Restore training args as a namespace (acts as defaults)
     saved_args_dict = ckpt.get("args", {})
     args = SimpleNamespace(**saved_args_dict)
+
+    # Override dataset_type if requested (for mixed dataset checkpoints)
+    if cli_args.dataset_type is not None:
+        args.dataset_type = cli_args.dataset_type
 
     # Apply CLI overrides
     if cli_args.batch_size is not None:
@@ -872,8 +741,8 @@ def main():
     args.loss_type = saved_loss_type
     args.return_mode = saved_return_mode
 
-    gamma = getattr(args, "gamma", 0.99)
-    clip_len = getattr(args, "clip_len", 32)
+    gamma = getattr(args, "gamma", 0.95)
+    clip_len = getattr(args, "clip_len", 16)
     clip_gamma = gamma**clip_len
 
     # ── 4b. Optionally load EMA shadow weights for bootstrap ────────────────
@@ -1003,88 +872,85 @@ def main():
         f"min: {rewards.min():.4f}  max: {rewards.max():.4f}"
     )
 
-    # Primary comparison: V(s) vs TD target  (this is what the model was trained on)
-    if has_td_targets:
-        print(
-            f"  TD Tgt — mean: {td_targets.mean():.4f}  std: {td_targets.std():.4f}  "
-            f"min: {td_targets.min():.4f}  max: {td_targets.max():.4f}"
-        )
-        mse_td = float(np.mean((preds - td_targets) ** 2))
-        mae_td = float(np.mean(np.abs(preds - td_targets)))
-        pearson_td = _pearson_corr(preds, td_targets)
-        print(
-            f"\n  vs TD Target  (G^H + γ^H*(1-d)*V_ema(s')):  [PRIMARY — training objective]"
-        )
-        print(f"    MSE:              {mse_td:.6f}")
-        print(f"    MAE:              {mae_td:.6f}")
-        print(f"    Pearson corr:     {pearson_td:.4f}")
-        try:
-            spearman_td = _spearman_corr(preds, td_targets)
-            print(f"    Spearman corr:    {spearman_td:.4f}")
-        except ImportError:
-            print(f"    Spearman corr:    (scipy not available)")
-
-    # Secondary: V(s) vs raw reward
-    mse_reward = float(np.mean((preds - rewards) ** 2))
-    mae_reward = float(np.mean(np.abs(preds - rewards)))
-    pearson_reward = _pearson_corr(preds, rewards)
-    print(f"\n  vs Raw Reward  (for reference):")
-    print(f"    MSE:              {mse_reward:.6f}")
-    print(f"    MAE:              {mae_reward:.6f}")
-    print(f"    Pearson corr:     {pearson_reward:.4f}")
-    try:
-        spearman_reward = _spearman_corr(preds, rewards)
-        print(f"    Spearman corr:    {spearman_reward:.4f}")
-    except ImportError:
-        print(f"    Spearman corr:    (scipy not available)")
-
+    # Primary comparison: V(s) vs returns (raw sequence values)
     if has_returns:
         mse_ret = float(np.mean((preds - returns) ** 2))
         mae_ret = float(np.mean(np.abs(preds - returns)))
-        pearson_ret = _pearson_corr(preds, returns)
-        print(f"\n  vs Cumulative Returns (sum of rewards in clip):")
+        print(f"\n  vs Cumulative Returns (sum of rewards in clip): [PRIMARY]")
         print(f"    MSE:              {mse_ret:.6f}")
         print(f"    MAE:              {mae_ret:.6f}")
-        print(f"    Pearson corr:     {pearson_ret:.4f}")
         try:
             spearman_ret = _spearman_corr(preds, returns)
             print(f"    Spearman corr:    {spearman_ret:.4f}")
         except ImportError:
             pass
 
+    if has_td_targets:
+        print(
+            f"\n  TD Tgt — mean: {td_targets.mean():.4f}  std: {td_targets.std():.4f}  "
+            f"min: {td_targets.min():.4f}  max: {td_targets.max():.4f}"
+        )
+        mse_td = float(np.mean((preds - td_targets) ** 2))
+        mae_td = float(np.mean(np.abs(preds - td_targets)))
+        print(f"  vs TD Target  (G^H + γ^H*(1-d)*V_ema(s')):  [FOR REFERENCE]")
+        print(f"    MSE:              {mse_td:.6f}")
+        print(f"    MAE:              {mae_td:.6f}")
+        try:
+            spearman_td = _spearman_corr(preds, td_targets)
+            print(f"    Spearman corr:    {spearman_td:.4f}")
+        except ImportError:
+            print(f"    Spearman corr:    (scipy not available)")
+
     print(f"{'=' * 60}")
 
     # ── Suffix outputs in baseline mode so they don't overwrite fine-tuned results ──
-    suffix = "_baseline" if baseline_mode else ""
+    dataset_name = getattr(args, "dataset_type", "unknown").upper()
+
+    is_lora = getattr(args, "peft", "none") != "none"
+    lora_name = "NoLoRA" if (baseline_mode or not is_lora) else "LoRA"
+
     plot_dir = cli_args.plot_dir
     output_file = cli_args.output_file
-    if suffix:
-        if plot_dir:
-            plot_dir = plot_dir.rstrip("/") + suffix
-        if output_file:
-            base, ext = os.path.splitext(output_file)
-            output_file = f"{base}{suffix}{ext}"
+
+    if plot_dir == "inference_plots":
+        # Automatically organize into subfolders by dataset and lora type
+        plot_dir = os.path.join(plot_dir, dataset_name, lora_name)
+    elif baseline_mode and plot_dir:
+        plot_dir = plot_dir.rstrip("/") + "_baseline"
+
+    if output_file and baseline_mode:
+        base, ext = os.path.splitext(output_file)
+        output_file = f"{base}_baseline{ext}"
 
     # ── 7. Generate plots ───────────────────────────────────────────────────
-    td_or_returns = td_targets if has_td_targets else (returns if has_returns else None)
+    if has_returns:
+        primary_target = returns
+        primary_label = "Return"
+    elif has_td_targets:
+        primary_target = td_targets
+        primary_label = "TD Target"
+    else:
+        primary_target = None
+        primary_label = "Target"
 
     if plot_dir:
         _generate_plots(
             preds,
-            rewards,
-            td_or_returns,
+            primary_target,
             plot_dir,
             epoch,
+            target_label=primary_label,
         )
 
     # ── 7b. Overlay comparison plots (if --compare_csv provided) ────────────
     if cli_args.compare_csv and plot_dir:
         _generate_overlay_plots(
             preds,
-            td_or_returns,
+            primary_target,
             cli_args.compare_csv,
             plot_dir,
             epoch,
+            target_label=primary_label,
         )
 
     # ── 7c. Multi-model comparison (if --compare_csvs provided) ────────────
@@ -1110,11 +976,12 @@ def main():
 
         _generate_multi_comparison_plots(
             current_preds=preds,
-            current_targets=td_or_returns,
+            current_targets=primary_target,
             current_label=curr_label,
             compare_csvs=parsed,
             plot_dir=plot_dir,
             epoch=epoch,
+            target_label=primary_label,
         )
 
     # ── 8. Optional CSV output ──────────────────────────────────────────────
@@ -1146,26 +1013,35 @@ def main():
         "gamma": gamma,
         "pred_mean": float(preds.mean()),
         "pred_std": float(preds.std()),
-        "reward_mean": float(rewards.mean()),
-        "mse_vs_reward": mse_reward,
-        "mae_vs_reward": mae_reward,
-        "pearson_vs_reward": pearson_reward,
     }
     if has_td_targets:
         summary["td_target_mean"] = float(td_targets.mean())
         summary["mse_vs_td_target"] = mse_td
         summary["mae_vs_td_target"] = mae_td
-        summary["pearson_vs_td_target"] = pearson_td
+        try:
+            summary["spearman_vs_td_target"] = spearman_td
+        except NameError:
+            pass
     if has_returns:
         summary["mse_vs_return"] = mse_ret
         summary["mae_vs_return"] = mae_ret
-        summary["pearson_vs_return"] = pearson_ret
+        try:
+            summary["spearman_vs_return"] = spearman_ret
+        except NameError:
+            pass
 
     # Save summary JSON alongside output
     if output_file:
         json_path = os.path.splitext(output_file)[0] + "_summary.json"
     else:
+        suffix = "_baseline" if baseline_mode else ""
         json_path = f"inference_summary{suffix}.json"
+        if plot_dir:
+            json_path = os.path.join(plot_dir, json_path)
+
+    if plot_dir and not os.path.exists(plot_dir):
+        os.makedirs(plot_dir, exist_ok=True)
+
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"  Summary JSON saved to: {json_path}")

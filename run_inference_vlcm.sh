@@ -12,7 +12,7 @@ echo "Starting Inference on $(hostname)"
 echo "Date: $(date)"
 
 # ── Paths (edit these) ──────────────────────────────────────────────────────
-CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/ckpt_epoch_3.pt"
+CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/0.5B_Final.pt"
 TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_test"
 OUTPUT_FILE="inference_results.csv"
 

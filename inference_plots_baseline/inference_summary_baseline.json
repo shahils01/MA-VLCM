@@ -1,0 +1,20 @@
+{
+  "checkpoint": "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/checkpoints_rware/0.5B_Final.pt",
+  "baseline": true,
+  "epoch": 10,
+  "num_samples": 100,
+  "gamma": 0.95,
+  "pred_mean": 8.6068754196167,
+  "pred_std": 2.1202621459960938,
+  "reward_mean": -0.2800000011920929,
+  "mse_vs_reward": 83.90943145751953,
+  "mae_vs_reward": 8.88687515258789,
+  "pearson_vs_reward": -0.12383202463388443,
+  "td_target_mean": -0.6498091220855713,
+  "mse_vs_td_target": 114.23712921142578,
+  "mae_vs_td_target": 9.256684303283691,
+  "pearson_vs_td_target": -0.01335307490080595,
+  "mse_vs_return": 178.2801513671875,
+  "mae_vs_return": 12.307724952697754,
+  "pearson_vs_return": -0.006166826467961073
+}

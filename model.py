@@ -335,6 +335,9 @@ class MultimodalValueModel(nn.Module):
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
         self.value_head = nn.Linear(lm_hidden + cfg.d_model, 1)
+        # Initialize bias to roughly the mean TD target (return over clip_len)
+        # to prevent max_grad_norm from choking the MSE loss component.
+        nn.init.constant_(self.value_head.bias, 50.0)
 
     def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
         # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]

@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../VLCM_Data_Collection"
+		},
+		{
+			"path": "../pymarlzooplus"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}
