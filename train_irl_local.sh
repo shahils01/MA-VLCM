@@ -24,8 +24,8 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --clip_len 15 \
   --critic_updates 1 \
   --actor_updates 1 \
-  --policy_batch_size 2 \
-  --expert_batch_size 2 \
+  --policy_batch_size 4 \
+  --expert_batch_size 4 \
   --num_workers 2 \
   --entropy_coef 0.001 \
   --expert_done_reduce all \
@@ -39,7 +39,7 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --actor_lr 1e-4 \
   --critic_grad_clip 1.0 \
   --mixed_precision bf16 \
-  --grad_accum_steps 16 \
+  --grad_accum_steps 64 \
   --ddp_find_unused_parameters \
   --vl_backend llava_video \
   --vl_model_name "${VL_MODEL_NAME}" \

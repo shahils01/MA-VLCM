@@ -1,20 +1,21 @@
-TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_0/shard-{000000..000040}.tar::/scratch/shahils/data/gotogoal_new_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_new_pt_30/shard-{000000..000290}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
+# TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_0/shard-{000000..000040}.tar::/scratch/shahils/data/gotogoal_new_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_new_pt_30/shard-{000000..000290}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
+TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000250}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000150}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000120}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000110}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/OFFROAD/dataset_2/shard-{000000..000030}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
-accelerate launch --num_processes 2 train.py \
+accelerate launch --num_processes 4 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
-  --num_workers 16 \
-  --grad_accum_steps 16 \
+  --num_workers 1 \
+  --grad_accum_steps 64 \
   --mixed_precision bf16 \
   --allow_tf32 \
   --value_pooling last_token_logits \
   --vl_logits_to_keep 128 \
   --epochs 500 \
-  --clip_len 20 \
-  --clip_stride 20 \
+  --clip_len 10 \
+  --clip_stride 10 \
   --log_every 50 \
   --robot_source obs \
   --reward_reduce mean \
@@ -23,7 +24,7 @@ accelerate launch --num_processes 2 train.py \
   --loss_type td \
   --text_mode raw \
   --return_mode nstep \
-  --n_step 20 \
+  --n_step 10 \
   --vl_backend llava_video \
   --vl_model_preset $VL_MODEL_PRESET \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\
@@ -36,7 +37,7 @@ accelerate launch --num_processes 2 train.py \
   --wandb_project ma-vlcm \
   --wandb_run_name ma-vlcm-ddp \
   --peft qlora \
-  --resume_checkpoint checkpoints/ckpt_epoch_3.pt \
+  # --resume_checkpoint checkpoints/ckpt_epoch_3.pt \
   # --disable_vl_cache \
   # --lora_r 16 \
   # --lora_alpha 32 \

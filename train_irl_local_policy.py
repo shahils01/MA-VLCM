@@ -1139,8 +1139,8 @@ def main():
                 else:
                     expert_scores_raw = expert_out
                     expert_features = None
-                # expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
-                expert_scores = expert_scores_raw
+                expert_scores = torch.tanh(expert_scores_raw / args.disc_tanh_temp)
+                # expert_scores = expert_scores_raw
                 expert_term = -expert_scores.mean() #+ args.raw_score_l2_coef * expert_scores_raw.pow(2).mean()
                 # expert_feat_loss = expert_scores_raw.sum() * 0.0
                 # expert_center = None
@@ -1162,8 +1162,8 @@ def main():
                 else:
                     policy_scores_raw = policy_out
                     policy_features = None
-                # policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
-                policy_scores = policy_scores_raw
+                policy_scores = torch.tanh(policy_scores_raw / args.disc_tanh_temp)
+                # policy_scores = policy_scores_raw
                 policy_term = policy_scores.mean() #+ args.raw_score_l2_coef * policy_scores_raw.pow(2).mean()
                 # policy_feat_loss = policy_scores_raw.sum() * 0.0
                 # if use_feat_aux and policy_features is not None and expert_center is not None:
@@ -1207,8 +1207,8 @@ def main():
             with accelerator.accumulate(actors):
                 with torch.no_grad():
                     score = critic(policy_inputs, policy_batch["robot_obs"], policy_batch["adj"])
-                    # score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
-                    score = score * args.score_scale
+                    score = torch.tanh((score / args.disc_tanh_temp) * args.score_scale)
+                    # score = score * args.score_scale
 
                 obs_seq = policy_batch["robot_obs"]   # [B, T, N, D]
                 act_seq = policy_batch["actions"]     # [B, T, N, A]
