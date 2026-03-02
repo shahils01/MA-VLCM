@@ -9,7 +9,7 @@ NUM_PROCESSES="${NUM_PROCESSES:-1}"
 VL_MODEL_NAME="${VL_MODEL_NAME:-llava-hf/llava-onevision-qwen2-0.5b-ov-hf}"  # llava-onevision-qwen2-0.5b-ov-hf or LLaVA-NeXT-Video-7B-hf
 WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-irl}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-irl-local}"
-PEFT_MODE="${PEFT_MODE:-none}" # none / lora / qlora
+PEFT_MODE="${PEFT_MODE:-qlora}" # none / lora / qlora
 
 MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --scenario "${SCENARIO}" \
