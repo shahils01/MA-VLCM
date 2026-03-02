@@ -4,27 +4,27 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/s
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
-accelerate launch --num_processes 4 train.py \
+accelerate launch --num_processes 1 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
   --num_workers 1 \
   --grad_accum_steps 64 \
   --mixed_precision bf16 \
   --allow_tf32 \
-  --value_pooling last_token_logits \
+  --value_pooling hidden_mean \
   --vl_logits_to_keep 128 \
   --epochs 500 \
-  --clip_len 10 \
-  --clip_stride 10 \
+  --clip_len 15 \
+  --clip_stride 15 \
   --log_every 50 \
   --robot_source obs \
   --reward_reduce mean \
-  --done_reduce any \
-  --gamma 0.99 \
-  --loss_type td \
+  --done_reduce all \
+  --gamma 0.95 \
+  --loss_type td_contrastive \
   --text_mode raw \
   --return_mode nstep \
-  --n_step 10 \
+  --n_step 64 \
   --vl_backend llava_video \
   --vl_model_preset $VL_MODEL_PRESET \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\

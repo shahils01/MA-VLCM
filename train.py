@@ -58,7 +58,7 @@ def parse_args():
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
-    p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
+    p.add_argument("--done_reduce", type=str, default="all", choices=["any", "all", "mean", "sum", "first"])
     p.add_argument("--preprocess_in_loader", default=True, action="store_true", help="Use VLM image processor in dataloader")
     p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
@@ -77,7 +77,7 @@ def parse_args():
         help="For nstep-style targets: discounted return over clip or from clip start to terminal state in episode.",
     )
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
+    p.add_argument("--loss_type", type=str, default="td_contrastive", choices=["td", "contrastive", "td_contrastive"])
     p.add_argument(
         "--contrastive_objective",
         type=str,
