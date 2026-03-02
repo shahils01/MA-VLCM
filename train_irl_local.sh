@@ -11,7 +11,7 @@ WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-irl}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-irl-local}"
 PEFT_MODE="${PEFT_MODE:-none}" # none / lora / qlora
 
-accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
+MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_local_policy.py \
   --scenario "${SCENARIO}" \
   --train_shards "${TRAIN_SHARDS}" \
   --num_envs 4 \

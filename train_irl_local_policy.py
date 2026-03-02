@@ -4,7 +4,7 @@ import random
 from collections import deque
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -15,6 +15,9 @@ from PIL import Image
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 import wandb
+
+# ManyAgentGoToGoal rendering is matplotlib-based; Agg avoids black/empty frames on headless nodes.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 try:
     import ManyAgent_GoTOGoal  # noqa: F401
@@ -192,6 +195,50 @@ def _edge_index_to_adj(edge_index, num_agents: int) -> np.ndarray:
     raise RuntimeError(f"Unsupported edge_index shape {ei.shape}.")
 
 
+def _extract_rgb_frame(render_out: Any):
+    if isinstance(render_out, np.ndarray):
+        if render_out.ndim == 3:
+            return render_out
+        if render_out.ndim == 4 and render_out.shape[0] > 0:
+            return render_out[0]
+        return None
+    if isinstance(render_out, (list, tuple)):
+        for x in render_out:
+            fr = _extract_rgb_frame(x)
+            if fr is not None:
+                return fr
+    return None
+
+
+def _extract_frame_from_env_canvas(env: Any):
+    # Fallback for envs that render via matplotlib and return None.
+    cand = [env, getattr(env, "unwrapped", None)]
+    for obj in cand:
+        if obj is None:
+            continue
+        for name in ("fig", "figure", "_fig", "_render_fig"):
+            fig = getattr(obj, name, None)
+            if fig is None:
+                continue
+            canvas = getattr(fig, "canvas", None)
+            if canvas is None:
+                continue
+            try:
+                canvas.draw()
+                w, h = canvas.get_width_height()
+                if hasattr(canvas, "tostring_rgb"):
+                    buf = canvas.tostring_rgb()
+                    arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3)
+                    return arr
+                if hasattr(canvas, "buffer_rgba"):
+                    buf = np.asarray(canvas.buffer_rgba(), dtype=np.uint8)
+                    if buf.ndim == 3 and buf.shape[-1] >= 3:
+                        return buf[..., :3].copy()
+            except Exception:
+                continue
+    return None
+
+
 class ManyAgentVecEnv:
     """Minimal synchronous vector wrapper for ManyAgentGoToGoal-style env API."""
 
@@ -200,7 +247,11 @@ class ManyAgentVecEnv:
         self.num_envs = num_envs
         self.envs = []
         for i in range(num_envs):
-            env = gym.make(self.scenario, disable_env_checker=True)
+            try:
+                env = gym.make(self.scenario, disable_env_checker=True, render_mode="rgb_array")
+            except TypeError:
+                # Some env versions may not expose render_mode in constructor.
+                env = gym.make(self.scenario, disable_env_checker=True)
             if hasattr(env, "seed"):
                 env.seed(seed + i * 1000)
             self.envs.append(env)
@@ -267,23 +318,23 @@ class ManyAgentVecEnv:
         frames = []
         for env in self.envs:
             fr = None
+            target = getattr(env, "unwrapped", env)
             try:
-                fr = env.render(mode="rgb_array")
+                fr = target.render(mode="rgb_array")
             except TypeError:
                 try:
-                    fr = env.render()
+                    fr = target.render()
                 except Exception:
                     fr = None
             except Exception:
                 fr = None
 
-            if isinstance(fr, np.ndarray):
-                if fr.ndim == 3:
-                    frames.append(fr)
-                    continue
-                if fr.ndim == 4 and fr.shape[0] > 0:
-                    frames.append(fr[0])
-                    continue
+            frame = _extract_rgb_frame(fr)
+            if frame is None:
+                frame = _extract_frame_from_env_canvas(target)
+            if frame is not None:
+                frames.append(frame.astype(np.uint8, copy=False))
+                continue
 
             # Fallback black frame if render output unavailable.
             frames.append(np.zeros((84, 84, 3), dtype=np.uint8))
