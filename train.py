@@ -1772,15 +1772,10 @@ def run_epoch(
                         "train/step_loss": loss.item(),
                         "train/step": step,
                         "train/pred_mean": pred.detach().mean().item(),
+                        "train/target_mean": target.detach().mean().item(),
                         "train/reward_mean": reward.detach().mean().item(),
                     }
-                    if "returns" in batch:
-                        log_dict["train/true_returns_mean"] = (
-                            batch["returns"].to(accelerator.device).mean().item()
-                        )
-
-                    # Always log the bootstrapped target mean
-                    log_dict["train/target_mean"] = target.detach().mean().item()
+                    
                     if args.loss_type in ("contrastive", "contrastive_mse"):
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
@@ -2281,9 +2276,16 @@ def main():
             )
 
             # Save accompanying JSON spec file
+            config_dict = {}
+            for k, v in vars(args).items():
+                if isinstance(v, (int, float, str, bool, type(None))):
+                    config_dict[k] = v
+                else:
+                    config_dict[k] = str(v)
+
             info_dict = {
                 "dataset_type": args.dataset_type,
-                "config": vars(args),
+                "config": config_dict,
                 "sample_text_prompt": (
                     args.text_prompt_template
                     if args.text_prompt_template is not None
