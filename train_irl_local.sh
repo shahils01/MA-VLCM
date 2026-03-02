@@ -28,6 +28,8 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --expert_batch_size 2 \
   --num_workers 2 \
   --entropy_coef 0.001 \
+  --expert_done_reduce all \
+  --expert_sanity_batches 3 \
   --score_scale 1.0 \
   --disc_tanh_temp 20.0 \
   --raw_score_l2_coef 1e-4 \

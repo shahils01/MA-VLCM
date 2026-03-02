@@ -145,6 +145,16 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
+def _done_any_all_from_frame(sample):
+    arr = _as_numpy(sample["dones.npy"])
+    if hasattr(arr, "numpy"):
+        arr = arr.numpy()
+    t = torch.tensor(arr, dtype=torch.float32)
+    done_any = (t > 0).any()
+    done_all = (t > 0).all()
+    return done_any, done_all
+
+
 def _extract_episode_id(key):
     key = str(key)
     if "_step_" in key:
@@ -522,6 +532,7 @@ class SequenceWebDataset(IterableDataset):
 
             reward = _reward_from_frame(sample, self.reward_reduce)
             done = _done_from_frame(sample, self.done_reduce)
+            done_any, done_all = _done_any_all_from_frame(sample)
 
             buffer.append(
                 {
@@ -531,6 +542,8 @@ class SequenceWebDataset(IterableDataset):
                     "text": text,
                     "reward": reward,
                     "done": done,
+                    "done_any": done_any,
+                    "done_all": done_all,
                     "shard_id": shard_id,
                 }
             )
@@ -557,6 +570,10 @@ def _collate_sequence_batch(batch):
         "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
         "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
     }
+    if "done_any" in batch[0]:
+        out["done_any"] = torch.stack([b["done_any"] for b in batch], dim=0).view(-1)
+    if "done_all" in batch[0]:
+        out["done_all"] = torch.stack([b["done_all"] for b in batch], dim=0).view(-1)
     if "next_inputs" in batch[0]:
         out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
         out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)

@@ -663,6 +663,91 @@ def _get_expert_batch(loader_iter, loader):
         return batch, loader_iter
 
 
+def _extract_video_tensor_from_inputs(inputs: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+    for key in ("pixel_values_videos", "pixel_values", "video_values", "videos", "video"):
+        val = inputs.get(key, None)
+        if torch.is_tensor(val):
+            return val
+    return None
+
+
+def _expert_batch_sanity_report(batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    report = {
+        "clips": 0.0,
+        "mean_temporal_diff": 0.0,
+        "near_static_clip_frac": 0.0,
+        "done_rate": 0.0,
+        "done_any_rate": 0.0,
+        "done_all_rate": 0.0,
+        "done_any_not_all_rate": 0.0,
+    }
+
+    if "done" in batch:
+        done = batch["done"].detach().float()
+        report["done_rate"] = float(done.mean().item())
+    if "done_any" in batch:
+        done_any = batch["done_any"].detach().float()
+        report["done_any_rate"] = float(done_any.mean().item())
+    if "done_all" in batch:
+        done_all = batch["done_all"].detach().float()
+        report["done_all_rate"] = float(done_all.mean().item())
+    if "done_any" in batch and "done_all" in batch:
+        done_any = batch["done_any"].detach().float()
+        done_all = batch["done_all"].detach().float()
+        report["done_any_not_all_rate"] = float(((done_any > 0.5) & (done_all < 0.5)).float().mean().item())
+
+    video = _extract_video_tensor_from_inputs(batch.get("inputs", {}))
+    if video is None or video.ndim < 4:
+        return report
+
+    x = video.detach().float().cpu()
+    if x.ndim == 4:
+        x = x.unsqueeze(0)
+    if x.ndim < 5:
+        return report
+
+    bsz = float(x.shape[0])
+    report["clips"] = bsz
+    tdim = 1
+    if x.shape[tdim] < 2:
+        return report
+
+    diffs = (x[:, 1:] - x[:, :-1]).abs().flatten(start_dim=2).mean(dim=2)
+    clip_temporal = diffs.mean(dim=1)
+    report["mean_temporal_diff"] = float(clip_temporal.mean().item())
+    report["near_static_clip_frac"] = float((clip_temporal < 1e-3).float().mean().item())
+    return report
+
+
+def _run_expert_loader_sanity_check(loader, num_batches: int, accelerator) -> None:
+    if num_batches <= 0:
+        return
+    it = iter(loader)
+    reports = []
+    for _ in range(num_batches):
+        try:
+            b = next(it)
+        except StopIteration:
+            break
+        reports.append(_expert_batch_sanity_report(b))
+    if not reports:
+        accelerator.print("[expert_sanity] no batches available.")
+        return
+
+    keys = reports[0].keys()
+    mean_report = {k: float(np.mean([r[k] for r in reports])) for k in keys}
+    accelerator.print(
+        "[expert_sanity] "
+        f"batches={len(reports)} clips_per_batch={mean_report['clips']:.2f} "
+        f"mean_temporal_diff={mean_report['mean_temporal_diff']:.6f} "
+        f"near_static_clip_frac={mean_report['near_static_clip_frac']:.3f} "
+        f"done_rate={mean_report['done_rate']:.3f} "
+        f"done_any_rate={mean_report['done_any_rate']:.3f} "
+        f"done_all_rate={mean_report['done_all_rate']:.3f} "
+        f"done_any_not_all_rate={mean_report['done_any_not_all_rate']:.3f}"
+    )
+
+
 def _feature_compactness_loss(features: torch.Tensor) -> torch.Tensor:
     # Encourage expert features to stay close in latent space.
     if features.ndim != 2:
@@ -703,6 +788,8 @@ def parse_args():
     p.add_argument("--train_shards", type=str, required=True)
     p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--expert_batch_size", type=int, default=2)
+    p.add_argument("--expert_done_reduce", type=str, default="all", choices=["any", "all", "mean", "sum", "first"])
+    p.add_argument("--expert_sanity_batches", type=int, default=3, help="Run loader sanity checks on N expert batches at startup.")
     p.add_argument("--text_prompt_template", type=str, default="You are a critic model. <video><obs> Evaluate team performance.")
 
     # Adversarial IRL
@@ -962,7 +1049,7 @@ def main():
         text_mode="raw",
         robot_source="obs",
         reward_reduce="mean",
-        done_reduce="any",
+        done_reduce=args.expert_done_reduce,
         preprocess_in_loader=True,
         vl_model_name=args.vl_model_name,
         text_prompt_template=args.text_prompt_template,
@@ -977,6 +1064,7 @@ def main():
     critic, critic_opt, expert_loader = accelerator.prepare(
         critic, critic_opt, expert_loader
     )
+    _run_expert_loader_sanity_check(expert_loader, args.expert_sanity_batches, accelerator)
     expert_iter = iter(expert_loader)
     critic_raw = accelerator.unwrap_model(critic)
     vlm_truncation = args.vl_backend != "llava_video"
