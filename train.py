@@ -140,6 +140,7 @@ def parse_args():
         help="Feature pooling strategy for value head; last_token_logits is more memory efficient.",
     )
     p.add_argument("--vl_logits_to_keep", type=int, default=0, help="If supported, keep logits for only last K tokens")
+    p.add_argument("--obs_summary_tokens", type=int, default=2, help="Number of temporal graph summary tokens injected as <obs>.")
 
     # PEFT / LoRA
     p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
@@ -223,6 +224,7 @@ def build_model(args, device):
         debug_save_video=args.debug_save_video,
         value_pooling=args.value_pooling,
         logits_to_keep=args.vl_logits_to_keep,
+        obs_summary_tokens=args.obs_summary_tokens,
     )
     return MultimodalValueModel(cfg, device=device)
 

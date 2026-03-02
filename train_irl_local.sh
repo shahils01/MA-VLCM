@@ -44,6 +44,7 @@ MPLBACKEND=Agg accelerate launch --num_processes "${NUM_PROCESSES}" train_irl_lo
   --vl_backend llava_video \
   --vl_model_name "${VL_MODEL_NAME}" \
   --vl_dtype bfloat16 \
+  --obs_summary_tokens 2 \
   --robot_obs_dim 40 \
   --d_model 256 \
   --temporal_layers 2 \

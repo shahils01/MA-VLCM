@@ -172,6 +172,7 @@ def preprocess_vlm_video_inputs(
     vlm_max_text_len=256,
     vlm_truncation=False,
     vlm_padding="longest",
+    obs_token_repeats=1,
     squeeze_batch_dim=True,
 ):
     if vlm_processor is None:
@@ -192,6 +193,9 @@ def preprocess_vlm_video_inputs(
                 proc_text = proc_text.replace("<video>\n", "<video><obs>\n", 1)
             else:
                 proc_text = f"<obs>\n{proc_text}"
+        reps = max(1, int(obs_token_repeats))
+        if reps > 1 and "<obs>" in proc_text:
+            proc_text = proc_text.replace("<obs>", " ".join(["<obs>"] * reps), 1)
 
     # For batched videos (list of list-of-frames), HF processors expect batched text.
     if isinstance(frames, (list, tuple)) and len(frames) > 0 and isinstance(frames[0], (list, tuple)):
@@ -240,6 +244,7 @@ class SequenceWebDataset(IterableDataset):
         include_nstep_bootstrap=False,
         num_robots=None,
         robot_obs_dim=None,
+        obs_token_repeats=1,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -259,6 +264,7 @@ class SequenceWebDataset(IterableDataset):
         self.include_nstep_bootstrap = include_nstep_bootstrap
         self.num_robots = int(num_robots) if num_robots is not None else None
         self.robot_obs_dim = int(robot_obs_dim) if robot_obs_dim is not None else None
+        self.obs_token_repeats = max(1, int(obs_token_repeats))
         if return_horizon not in {"clip", "trajectory"}:
             raise ValueError("return_horizon must be one of {'clip', 'trajectory'}")
         self.return_horizon = return_horizon
@@ -421,6 +427,7 @@ class SequenceWebDataset(IterableDataset):
                     vlm_max_text_len=self.vlm_max_text_len,
                     vlm_truncation=self.vlm_truncation,
                     vlm_padding=self.vlm_padding,
+                    obs_token_repeats=self.obs_token_repeats,
                     squeeze_batch_dim=True,
                 )
                 next_inputs = (
@@ -432,6 +439,7 @@ class SequenceWebDataset(IterableDataset):
                         vlm_max_text_len=self.vlm_max_text_len,
                         vlm_truncation=self.vlm_truncation,
                         vlm_padding=self.vlm_padding,
+                        obs_token_repeats=self.obs_token_repeats,
                         squeeze_batch_dim=True,
                     )
                     if self.include_next
@@ -446,6 +454,7 @@ class SequenceWebDataset(IterableDataset):
                         vlm_max_text_len=self.vlm_max_text_len,
                         vlm_truncation=self.vlm_truncation,
                         vlm_padding=self.vlm_padding,
+                        obs_token_repeats=self.obs_token_repeats,
                         squeeze_batch_dim=True,
                     )
                     if self.include_nstep_bootstrap
@@ -673,6 +682,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         n_step=getattr(args, "n_step", 1),
         num_robots=getattr(args, "num_robots", None),
         robot_obs_dim=getattr(args, "robot_obs_dim", None),
+        obs_token_repeats=getattr(args, "obs_summary_tokens", 1),
     )
     if getattr(args, "shard_aware_batching", False):
         dataset = UniqueShardBatchDataset(

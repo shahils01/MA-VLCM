@@ -60,6 +60,8 @@ class ModelConfig:
     value_pooling: str = "hidden_mean"
     # If the backend forward supports it, keep logits only for last K tokens.
     logits_to_keep: int = 1
+    # Number of learned graph-summary tokens to inject at <obs> positions.
+    obs_summary_tokens: int = 2
 
 
 
@@ -288,6 +290,16 @@ class MultimodalValueModel(nn.Module):
             self._backbone_forward_params = set()
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
+        self.robot_temporal = TemporalTransformer(
+            d_model=cfg.d_model,
+            layers=cfg.temporal_layers,
+            heads=cfg.temporal_heads,
+            dropout=cfg.temporal_dropout,
+        )
+        if int(cfg.obs_summary_tokens) < 1:
+            raise ValueError("obs_summary_tokens must be >= 1")
+        self.obs_summary_tokens = int(cfg.obs_summary_tokens)
+        self.obs_queries = nn.Parameter(torch.randn(self.obs_summary_tokens, cfg.d_model) * (cfg.d_model ** -0.5))
 
         try:
             from gat import GNN_Model
@@ -472,6 +484,27 @@ class MultimodalValueModel(nn.Module):
         flat_dst = batch_idx * num_nodes + dst
         return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
 
+    def _encode_robot_temporal(self, robot_obs: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
+        # robot_obs: [B, T, N, robot_node_dim], adj: [B, T, N, N] -> [B, K, d_model]
+        bsz, tlen = robot_obs.shape[0], robot_obs.shape[1]
+        step_team = []
+        for t in range(tlen):
+            robot_t = robot_obs[:, t, :, :].contiguous()  # [B, N, robot_node_dim]
+            adj_t = adj[:, t, :, :].contiguous()  # [B, N, N]
+            edge_index = self._adj_to_batched_edge_index(adj_t).to(device=robot_t.device)
+            node_feats = self.robot_gnn(robot_t, edge_index)  # [B, N, d_model]
+            step_team.append(node_feats.mean(dim=1))  # [B, d_model]
+
+        team_seq = torch.stack(step_team, dim=1)  # [B, T, d_model]
+        team_seq = self.robot_temporal(team_seq)  # [B, T, d_model]
+
+        # Learned query pooling over time to produce K summary tokens.
+        queries = self.obs_queries.unsqueeze(0).expand(bsz, -1, -1)  # [B, K, d_model]
+        attn_logits = torch.einsum("bkd,btd->bkt", queries, team_seq) / math.sqrt(float(self.cfg.d_model))
+        attn = F.softmax(attn_logits, dim=-1)
+        summary = torch.einsum("bkt,btd->bkd", attn, team_seq)  # [B, K, d_model]
+        return summary
+
     def forward(
         self,
         video,
@@ -517,13 +550,10 @@ class MultimodalValueModel(nn.Module):
                 "Set --num_robots to match your dataset."
             )
 
-        # Use only the last-step robot obs and encode team structure with GNN.
-        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
-        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
-        edge_index = self._adj_to_batched_edge_index(adj_last)
-        edge_index = edge_index.to(device=robot_last.device)
-        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
-        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
+        # Encode per-step graph features, then summarize temporally into K tokens.
+        robot_seq = robot_obs[:, :, :, : self.robot_node_dim].contiguous()  # [B, T, N, robot_node_dim]
+        robot_summary_tokens = self._encode_robot_temporal(robot_seq, adj)  # [B, K, d_model]
+        robot_team_feat = robot_summary_tokens.mean(dim=1)  # [B, d_model]
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
@@ -535,27 +565,47 @@ class MultimodalValueModel(nn.Module):
         attn_for_pool = attn_mask.clone() if attn_mask is not None else None
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
-        # Pool team graph features to one token and inject at <obs>.
-        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
-        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+        # Project K graph-summary tokens to LM space and inject at <obs> positions.
+        obs_token = self.obs_to_lm(robot_summary_tokens)
+        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)  # [B, K, H]
 
         obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
 
             if obs_mask.any():
-                obs_mask = obs_mask.unsqueeze(-1)
                 if input_ids.shape[0] == bsz:
                     # input_ids: [B, S]
-                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
+                    replaced = inputs_embeds.clone()
+                    k = obs_token.size(1)
+                    for b in range(bsz):
+                        pos = obs_mask[b].nonzero(as_tuple=False).view(-1)
+                        if pos.numel() == 0:
+                            continue
+                        use_n = min(int(pos.numel()), int(k))
+                        replaced[b, pos[:use_n], :] = obs_token[b, :use_n, :]
+                        if pos.numel() > use_n:
+                            tail = obs_token[b, use_n - 1 : use_n, :].expand(pos.numel() - use_n, -1)
+                            replaced[b, pos[use_n:], :] = tail
+                    inputs_embeds = replaced
                 elif input_ids.shape[1] == bsz:
                     # input_ids: [S, B]
-                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
+                    replaced = inputs_embeds.clone()
+                    k = obs_token.size(1)
+                    for b in range(bsz):
+                        pos = obs_mask[:, b].nonzero(as_tuple=False).view(-1)
+                        if pos.numel() == 0:
+                            continue
+                        use_n = min(int(pos.numel()), int(k))
+                        replaced[pos[:use_n], b, :] = obs_token[b, :use_n, :]
+                        if pos.numel() > use_n:
+                            tail = obs_token[b, use_n - 1 : use_n, :].expand(pos.numel() - use_n, -1)
+                            replaced[pos[use_n:], b, :] = tail
+                    inputs_embeds = replaced
                 else:
                     raise RuntimeError(
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
                     )
-                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
         model_inputs = {k: v for k, v in inputs.items() if k != "input_ids"}
         if attn_mask is not None:

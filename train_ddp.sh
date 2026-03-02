@@ -12,6 +12,7 @@ accelerate launch --num_processes 1 train.py \
   --mixed_precision bf16 \
   --allow_tf32 \
   --value_pooling hidden_mean \
+  --obs_summary_tokens 2 \
   --vl_logits_to_keep 128 \
   --epochs 500 \
   --clip_len 15 \

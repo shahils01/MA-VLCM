@@ -479,6 +479,7 @@ class CachedBlankVideoInputs:
         vlm_max_text_len: int = 256,
         vlm_truncation: bool = False,
         vlm_padding: str = "longest",
+        obs_token_repeats: int = 1,
     ):
         self.processor = processor
         self.prompt = prompt
@@ -487,6 +488,7 @@ class CachedBlankVideoInputs:
         self.vlm_max_text_len = vlm_max_text_len
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
+        self.obs_token_repeats = max(1, int(obs_token_repeats))
         self.cache = {}
 
     def get(self, batch_size: int) -> Dict[str, torch.Tensor]:
@@ -503,6 +505,7 @@ class CachedBlankVideoInputs:
             vlm_max_text_len=self.vlm_max_text_len,
             vlm_truncation=self.vlm_truncation,
             vlm_padding=self.vlm_padding,
+            obs_token_repeats=self.obs_token_repeats,
             squeeze_batch_dim=False,
         )
         self.cache[batch_size] = {k: v for k, v in inputs.items()}
@@ -525,6 +528,7 @@ def build_video_inputs_from_batch(
     vlm_max_text_len: int,
     vlm_truncation: bool,
     vlm_padding: str,
+    obs_token_repeats: int,
 ) -> Dict[str, torch.Tensor]:
     # videos_uint8: [B, T, H, W, 3] on CPU
     v = videos_uint8.detach().cpu().numpy().astype(np.uint8)
@@ -543,6 +547,7 @@ def build_video_inputs_from_batch(
         vlm_max_text_len=vlm_max_text_len,
         vlm_truncation=vlm_truncation,
         vlm_padding=vlm_padding,
+        obs_token_repeats=max(1, int(obs_token_repeats)),
         squeeze_batch_dim=False,
     )
 
@@ -573,6 +578,7 @@ def build_critic(args, device: torch.device) -> MultimodalValueModel:
         moe_experts=4,
         moe_top_k=2,
         debug_save_video=False,
+        obs_summary_tokens=args.obs_summary_tokens,
     )
     model = MultimodalValueModel(cfg, device=device)
     return model
@@ -829,6 +835,7 @@ def parse_args():
     p.add_argument("--vl_model_name", type=str, default="llava-hf/LLaVA-NeXT-Video-7B-hf")
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
+    p.add_argument("--obs_summary_tokens", type=int, default=2)
     p.add_argument("--freeze_vl", action="store_true")
     p.add_argument("--video_size", type=int, default=224)
     p.add_argument("--robot_obs_dim", type=int, default=40)
@@ -1083,6 +1090,7 @@ def main():
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=vlm_truncation,
         vlm_padding=vlm_padding,
+        obs_token_repeats=args.obs_summary_tokens,
     )
 
     obs = collect_rollout(
@@ -1117,6 +1125,7 @@ def main():
                     vlm_max_text_len=args.vl_max_text_len,
                     vlm_truncation=vlm_truncation,
                     vlm_padding=vlm_padding,
+                    obs_token_repeats=args.obs_summary_tokens,
                 )
                 policy_inputs = _to_device_inputs(policy_inputs, device)
             else:
@@ -1199,6 +1208,7 @@ def main():
                     vlm_max_text_len=args.vl_max_text_len,
                     vlm_truncation=vlm_truncation,
                     vlm_padding=vlm_padding,
+                    obs_token_repeats=args.obs_summary_tokens,
                 )
                 policy_inputs = _to_device_inputs(policy_inputs, device)
             else:
