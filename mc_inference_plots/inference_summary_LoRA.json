@@ -1,0 +1,16 @@
+{
+  "checkpoint": "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/checkpoints/0.5B_LoRA_epoch_3.pt",
+  "baseline": false,
+  "epoch": 3,
+  "num_samples": 100,
+  "gamma": 0.95,
+  "pred_mean": 6.095468521118164,
+  "pred_std": 2.7738542556762695,
+  "td_target_mean": 11.823919296264648,
+  "mse_vs_td_target": 38.84104919433594,
+  "mae_vs_td_target": 5.781468391418457,
+  "spearman_vs_td_target": 0.62304447286475,
+  "mse_vs_return": 34.531410217285156,
+  "mae_vs_return": 5.376049041748047,
+  "spearman_vs_return": 0.6299094476972321
+}
