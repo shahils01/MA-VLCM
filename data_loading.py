@@ -170,22 +170,27 @@ def preprocess_vlm_video_inputs(
         text = text_prompt_template
     if not isinstance(text, str):
         text = ""
+    proc_text = text
 
     tokenizer = getattr(vlm_processor, "tokenizer", None)
     if tokenizer is not None:
         vocab = tokenizer.get_vocab()
-        if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
-            text = f"<video>\n{text}"
-        if "<obs>" in vocab and "<obs>" not in text:
-            if "<video>" in text:
-                text = text.replace("<video>\n", "<video><obs>\n", 1)
+        if "<video>" in vocab and "<video>" not in proc_text and "<image>" not in proc_text:
+            proc_text = f"<video>\n{proc_text}"
+        if "<obs>" in vocab and "<obs>" not in proc_text:
+            if "<video>" in proc_text:
+                proc_text = proc_text.replace("<video>\n", "<video><obs>\n", 1)
             else:
-                text = f"<obs>\n{text}"
+                proc_text = f"<obs>\n{proc_text}"
+
+    # For batched videos (list of list-of-frames), HF processors expect batched text.
+    if isinstance(frames, (list, tuple)) and len(frames) > 0 and isinstance(frames[0], (list, tuple)):
+        proc_text = [proc_text for _ in range(len(frames))]
 
     try:
         max_len = vlm_max_text_len if vlm_truncation else None
         inputs = vlm_processor(
-            text=text,
+            text=proc_text,
             videos=frames,
             return_tensors="pt",
             padding=vlm_padding,
