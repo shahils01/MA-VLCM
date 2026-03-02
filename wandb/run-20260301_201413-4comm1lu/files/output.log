@@ -1,0 +1,54 @@
+The image processor of type `LlavaNextImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 687/687 [00:03<00:00, 214.95it/s, Materializing param=model.vision_tower.vision_model.pre_layrnorm.weight]                        
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 3,145,728 trainable / 155,658,240 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 768 shards.
+Found 814 shards.
+Found 192 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 650 params, CPU-only)
+train:   0%|          | 0/9887 [00:00<?, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train:  16%|█▌        | 1562/9887 [6:03:01<32:14:48, 13.94s/it, loss=0.7431, lr=2.00e-04]
+val:  16%|█▌        | 390/2475 [39:38<3:31:55,  6.10s/it, loss=0.7777]
+epoch=1 train_loss=0.7431 val_loss=0.7777353283035784
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2286, in <module>
+    main()
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2270, in main
+    json.dump(info_dict, f, indent=4)
+  File "/usr/lib/python3.10/json/__init__.py", line 179, in dump
+    for chunk in iterable:
+  File "/usr/lib/python3.10/json/encoder.py", line 431, in _iterencode
+    yield from _iterencode_dict(o, _current_indent_level)
+  File "/usr/lib/python3.10/json/encoder.py", line 405, in _iterencode_dict
+    yield from chunks
+  File "/usr/lib/python3.10/json/encoder.py", line 405, in _iterencode_dict
+    yield from chunks
+  File "/usr/lib/python3.10/json/encoder.py", line 438, in _iterencode
+    o = _default(o)
+  File "/usr/lib/python3.10/json/encoder.py", line 179, in default
+    raise TypeError(f'Object of type {o.__class__.__name__} '
+TypeError: Object of type BitsAndBytesConfig is not JSON serializable
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2286, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2270, in main
+[rank0]:     json.dump(info_dict, f, indent=4)
+[rank0]:   File "/usr/lib/python3.10/json/__init__.py", line 179, in dump
+[rank0]:     for chunk in iterable:
+[rank0]:   File "/usr/lib/python3.10/json/encoder.py", line 431, in _iterencode
+[rank0]:     yield from _iterencode_dict(o, _current_indent_level)
+[rank0]:   File "/usr/lib/python3.10/json/encoder.py", line 405, in _iterencode_dict
+[rank0]:     yield from chunks
+[rank0]:   File "/usr/lib/python3.10/json/encoder.py", line 405, in _iterencode_dict
+[rank0]:     yield from chunks
+[rank0]:   File "/usr/lib/python3.10/json/encoder.py", line 438, in _iterencode
+[rank0]:     o = _default(o)
+[rank0]:   File "/usr/lib/python3.10/json/encoder.py", line 179, in default
+[rank0]:     raise TypeError(f'Object of type {o.__class__.__name__} '
+[rank0]: TypeError: Object of type BitsAndBytesConfig is not JSON serializable

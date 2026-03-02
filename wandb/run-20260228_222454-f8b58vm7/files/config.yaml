@@ -1,0 +1,179 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 49
+                - 71
+            "3":
+                - 13
+                - 16
+            "4": 3.10.12
+            "5": 0.24.2
+            "8":
+                - 2
+            "12": 0.24.2
+            "13": linux-x86_64
+batch_size:
+    value: 4
+clip_len:
+    value: 16
+clip_stride:
+    value: 1
+compile:
+    value: false
+contrastive_margin:
+    value: 0
+d_model:
+    value: 256
+dataset_type:
+    value: rware
+ddp_find_unused_parameters:
+    value: false
+debug_out_dir:
+    value: debug_samples
+debug_save_video:
+    value: false
+done_reduce:
+    value: any
+ema_decay:
+    value: 0.995
+epochs:
+    value: 10
+freeze_vision_tower:
+    value: false
+freeze_vl:
+    value: true
+fsdp:
+    value: false
+fsdp_cpu_offload:
+    value: false
+fsdp_min_num_params:
+    value: 1000000
+fsdp_use_orig_params:
+    value: false
+fusion_hidden:
+    value: 512
+gamma:
+    value: 0.95
+gnn_layers:
+    value: 2
+grad_accum_steps:
+    value: 4
+log_every:
+    value: 50
+lora_alpha:
+    value: 32
+lora_bias:
+    value: none
+lora_dropout:
+    value: 0.05
+lora_r:
+    value: 16
+lora_target_modules:
+    value: ""
+loss_type:
+    value: contrastive_mse
+lr:
+    value: 0.0003
+max_grad_norm:
+    value: 1
+max_return_horizon:
+    value: 64
+mixed_precision:
+    value: bf16
+moe_experts:
+    value: 4
+moe_top_k:
+    value: 2
+mse_loss_weight:
+    value: 0.01
+n_step:
+    value: 50
+num_robots:
+    value: 8
+num_workers:
+    value: 8
+offroad_num_robots:
+    value: 8
+offroad_shards:
+    value: /scratch/aparame/Research/VLCM_Data_Collection/OFFROAD/Varied_Traversability_new
+peft:
+    value: none
+preprocess_in_loader:
+    value: true
+quantization_config:
+    value: null
+resize_height:
+    value: 336
+resize_width:
+    value: 672
+return_mode:
+    value: nstep
+reward_reduce:
+    value: mean
+robot_obs_dim:
+    value: 8
+robot_source:
+    value: obs
+run_name:
+    value: 50StepReturn_ContrastiveMSE_20260228_222442
+rware_config:
+    value: mixed-rware
+rware_visual_mode:
+    value: rware_only
+samples_per_epoch:
+    value: 50000
+save_dir:
+    value: /scratch/aparame/Research/VLCM_checkpoints
+temporal_dropout:
+    value: 0.1
+temporal_heads:
+    value: 4
+temporal_layers:
+    value: 2
+text_dim:
+    value: 512
+text_mode:
+    value: raw
+text_prompt_template:
+    value: null
+train_shards:
+    value: /scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_scratch
+use_moe:
+    value: false
+val_shards:
+    value: ""
+val_split:
+    value: 0.2
+video_channels:
+    value: 3
+video_frames:
+    value: 8
+video_mean:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+video_preprocessed:
+    value: true
+video_std:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+vision_lr:
+    value: 1e-05
+vl_backend:
+    value: llava_video
+vl_dtype:
+    value: bfloat16
+vl_max_text_len:
+    value: 4700
+vl_model_name:
+    value: llava-hf/LLaVA-NeXT-Video-7B-32K-hf
+weight_decay:
+    value: 0.01

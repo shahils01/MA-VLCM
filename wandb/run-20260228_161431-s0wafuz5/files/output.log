@@ -1,0 +1,83 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The image processor of type `LlavaOnevisionImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`.
+Loading weights: 100%|██████████| 716/716 [00:00<00:00, 1922.24it/s, Materializing param=model.vision_tower.vision_model.post_layernorm.weight]                      
+[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.
+[PEFT] Gradient checkpointing ENABLED
+/usr/local/lib/python3.10/dist-packages/peft/mapping_func.py:72: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+[PEFT] Vision tower LoRA applied: 3,833,856 trainable / 401,581,600 total params, targets=['q_proj', 'k_proj', 'v_proj', 'out_proj', 'proj']
+No vision tower found; using single param group.
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 768 shards.
+Found 814 shards.
+Found 192 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 554 params, CPU-only)
+train:   0%|          | 0/9887 [00:00<?, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+train:  16%|█▌        | 1562/9887 [1:45:12<9:20:43,  4.04s/it, loss=1.1117, lr=3.00e-04]
+val:  16%|█▌        | 390/2475 [12:25<1:06:27,  1.91s/it, loss=1.7787]
+epoch=1 train_loss=1.1117 val_loss=1.7786537411885384
+train:  16%|█▌        | 1562/9887 [1:45:08<9:20:23,  4.04s/it, loss=0.8461, lr=2.98e-04] 
+val:  16%|█▌        | 390/2475 [12:21<1:06:05,  1.90s/it, loss=0.8542]
+epoch=2 train_loss=0.8461 val_loss=0.8542067202237936
+train:  16%|█▌        | 1562/9887 [1:45:08<9:20:20,  4.04s/it, loss=0.7161, lr=2.92e-04] 
+val:  16%|█▌        | 390/2475 [12:20<1:05:59,  1.90s/it, loss=1.1746]
+epoch=3 train_loss=0.7161 val_loss=1.1746097569138958
+train:   1%|          | 64/9887 [04:23<11:14:17,  4.12s/it, loss=0.9889, lr=2.92e-04]
+Traceback (most recent call last):
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2215, in <module>
+    if accelerator.is_main_process:
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2124, in main
+    target_model = {}
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1581, in run_epoch
+    step = 0
+  File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/home/aparame/Research/MA-VLCM/train.py", line 2006, in __iter__
+    self.main_shards_count = len(main_shards) if main_shards else 0
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+AttributeError: Caught AttributeError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+  File "/home/aparame/Research/MA-VLCM/train.py", line 1027, in __iter__
+    image.load()
+AttributeError: 'bytes' object has no attribute 'size'
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2215, in <module>
+[rank0]:     if accelerator.is_main_process:
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2124, in main
+[rank0]:     target_model = {}
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1581, in run_epoch
+[rank0]:     step = 0
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/tqdm/std.py", line 1181, in __iter__
+[rank0]:     for obj in iterable:
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 2006, in __iter__
+[rank0]:     self.main_shards_count = len(main_shards) if main_shards else 0
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 701, in __next__
+[rank0]:     data = self._next_data()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+[rank0]:     return self._process_data(data)
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+[rank0]:     data.reraise()
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/_utils.py", line 715, in reraise
+[rank0]:     raise exception
+[rank0]: AttributeError: Caught AttributeError in DataLoader worker process 0.
+[rank0]: Original Traceback (most recent call last):
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+[rank0]:     data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+[rank0]:   File "/usr/local/lib/python3.10/dist-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+[rank0]:     data.append(next(self.dataset_iter))
+[rank0]:   File "/home/aparame/Research/MA-VLCM/train.py", line 1027, in __iter__
+[rank0]:     image.load()
+[rank0]: AttributeError: 'bytes' object has no attribute 'size'
