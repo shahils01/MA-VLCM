@@ -24,6 +24,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import torch
+import scipy.stats as stats
+import pandas as pd
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -63,7 +65,7 @@ def parse_inference_args():
     p.add_argument(
         "--mixed_precision",
         type=str,
-        default=None,
+        default="bf16",
         choices=["no", "fp16", "bf16"],
     )
     p.add_argument(
@@ -123,6 +125,18 @@ def parse_inference_args():
         help="Override the dataset_type saved in the checkpoint. Necessary if the model was trained on mixed datasets and you want to evaluate on a specific one.",
     )
 
+    p.add_argument(
+        "--run_mc_dropout",
+        action="store_true",
+        help="Run Monte Carlo dropout runs for prediction intervals on the loaded model and save to CSV.",
+    )
+    p.add_argument(
+        "--mc_runs",
+        type=int,
+        default=1,
+        help="Number of inference runs for Monte Carlo Dropout (default: 20).",
+    )
+
     return p.parse_args()
 
 
@@ -137,7 +151,9 @@ def _spearman_corr(x, y):
 
 
 # ────────────────────────── Plotting ────────────────────────────────────────
-def _generate_plots(preds, targets, plot_dir, epoch, target_label="Return"):
+def _generate_plots(
+    preds, targets, plot_dir, epoch, target_label="Return", lora_name=""
+):
     """Generate comparison plots of predicted vs true values.
 
     Args:
@@ -146,6 +162,9 @@ def _generate_plots(preds, targets, plot_dir, epoch, target_label="Return"):
     """
     os.makedirs(plot_dir, exist_ok=True)
     print(f"\nGenerating plots in: {plot_dir}")
+
+    suffix = f"_{lora_name}" if lora_name else ""
+    title_suffix = f" ({lora_name})" if lora_name else ""
 
     true_label = target_label
     true_vals = targets
@@ -165,30 +184,97 @@ def _generate_plots(preds, targets, plot_dir, epoch, target_label="Return"):
         linewidth=1.5,
         label="y = x (perfect)",
     )
-    # Linear fit
-    if len(true_vals) > 1:
-        coeffs = np.polyfit(true_vals, preds, 1)
-        fit_x = np.linspace(lo - margin, hi + margin, 100)
+    # Linear fit and Prediction Intervals
+    import scipy.stats as stats
+    from scipy.interpolate import interp1d
+    from scipy.ndimage import gaussian_filter1d
+
+    if len(true_vals) > 2:
+        slope, intercept, r_value, p_value, std_err = stats.linregress(true_vals, preds)
+        x_sorted = np.sort(true_vals)
+        y_pred = slope * x_sorted + intercept
         ax.plot(
-            fit_x,
-            np.polyval(coeffs, fit_x),
+            x_sorted,
+            y_pred,
             "-",
             color="#55A868",
-            linewidth=1.5,
-            label=f"Linear fit (slope={coeffs[0]:.3f})",
+            linewidth=2,
+            label=f"Linear fit (slope={slope:.2f})",
+        )
+
+        n_pts = len(true_vals)
+
+        # Local variance calculation via binning
+        num_bins = min(40, n_pts // 5)
+        if num_bins < 3:
+            num_bins = 3
+
+        min_x, max_x = np.min(true_vals), np.max(true_vals)
+        bins = np.linspace(min_x, max_x, num_bins + 1)
+
+        bin_centers = []
+        bin_stds = []
+
+        for i in range(num_bins):
+            # Include exact max in the last bin
+            if i == num_bins - 1:
+                mask = (true_vals >= bins[i]) & (true_vals <= bins[i + 1] + 1e-9)
+            else:
+                mask = (true_vals >= bins[i]) & (true_vals < bins[i + 1])
+
+            pts_y = preds[mask]
+            pts_x = true_vals[mask]
+
+            if len(pts_y) > 1:
+                resids = pts_y - (slope * pts_x + intercept)
+                bin_std = np.std(resids, ddof=1)
+                bin_centers.append((bins[i] + bins[i + 1]) / 2)
+                bin_stds.append(bin_std)
+
+        if len(bin_centers) < 2:
+            resids = preds - (slope * true_vals + intercept)
+            global_std = np.std(resids, ddof=1)
+            bin_centers = [min_x, max_x]
+            bin_stds = [global_std, global_std]
+
+        # Interpolate the std dev across all x values to make it smooth
+        smooth_std_func = interp1d(
+            bin_centers, bin_stds, kind="linear", fill_value="extrapolate"
+        )
+        local_std = smooth_std_func(x_sorted)
+
+        # Smooth the resulting std array so it doesn't look jagged (sigma scaled to length)
+        local_std_smoothed = gaussian_filter1d(
+            local_std, sigma=max(1, len(true_vals) // 10)
+        )
+
+        # ~95% interval using 1.96 * local std dev of residuals
+        pi_margin = 1.96 * local_std_smoothed
+
+        # Ensure it doesn't drop below 0 unrealistically if the model is very confident
+        pi_margin = np.maximum(pi_margin, 1e-3)
+
+        ax.fill_between(
+            x_sorted,
+            y_pred - pi_margin,
+            y_pred + pi_margin,
+            color="#55A868",
+            alpha=0.15,
+            label="Local 95% PI",
         )
     spearman = _spearman_corr(preds, true_vals)
     ax.set_xlabel(f"True {true_label}", fontsize=13)
     ax.set_ylabel("Predicted Value", fontsize=13)
     ax.set_title(
-        f"Predicted vs True {true_label}  (epoch {epoch}, \u03c1={spearman:.3f})",
+        f"Predicted vs True {true_label}{title_suffix}  "
+        f"(epoch {epoch}, \u03c1={spearman:.3f})",
         fontsize=14,
         fontweight="bold",
     )
     ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3)
+    ax.grid(False)  # Turn off grid entirely
     fig.tight_layout()
-    path = os.path.join(plot_dir, "scatter_pred_vs_true.png")
+    path = os.path.join(plot_dir, f"scatter_pred_vs_true{suffix}.png")
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -218,14 +304,14 @@ def _generate_plots(preds, targets, plot_dir, epoch, target_label="Return"):
     ax.set_xlabel("Sample Index", fontsize=13)
     ax.set_ylabel("Value", fontsize=13)
     ax.set_title(
-        f"Per-Sample Comparison  (first {show_n} samples)",
+        f"Per-Sample Comparison{title_suffix}  (first {show_n} samples)",
         fontsize=14,
         fontweight="bold",
     )
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    path = os.path.join(plot_dir, "sample_comparison.png")
+    path = os.path.join(plot_dir, f"sample_comparison{suffix}.png")
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -600,7 +686,207 @@ def _generate_multi_comparison_plots(
     print(f"  Saved: {path}")
 
 
+def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
+    print(
+        f"\n--- Running MC Dropout (runs={cli_args.mc_runs}) for currently loaded model ---"
+    )
+
+    # Setup test loader
+    args.train_shards = cli_args.test_shards
+    saved_loss_type = getattr(args, "loss_type", "td")
+    args.loss_type = "td"
+    test_loader = webdataset_loader(
+        args,
+        shards=cli_args.test_shards,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+    )
+    args.loss_type = saved_loss_type
+
+    def _move_and_cast(tensor_dict):
+        out = {}
+        for k, v in tensor_dict.items():
+            if torch.is_tensor(v):
+                out[k] = v.to(
+                    device, dtype=model_dtype if v.is_floating_point() else None
+                )
+            else:
+                out[k] = v
+        return out
+
+    print(f"Caching up to {cli_args.max_samples} samples into RAM...")
+    batches = []
+    num_processed = 0
+    true_returns = []
+
+    for batch in test_loader:
+        b_cpu = {}
+        for k, v in batch.items():
+            if torch.is_tensor(v):
+                b_cpu[k] = v.cpu()
+            elif isinstance(v, dict):
+                b_cpu[k] = {
+                    k2: v2.cpu() if torch.is_tensor(v2) else v2 for k2, v2 in v.items()
+                }
+            else:
+                b_cpu[k] = v
+        batches.append(b_cpu)
+
+        b_size = batch["robot_obs"].shape[0]
+        if "returns" in batch:
+            true_returns.append(batch["returns"].cpu().float())
+
+        num_processed += b_size
+        if cli_args.max_samples and num_processed >= cli_args.max_samples:
+            break
+
+    if len(true_returns) > 0:
+        true_returns = (
+            torch.cat(true_returns, dim=0).view(-1).numpy()[: cli_args.max_samples]
+        )
+    else:
+        print("Warning: no 'returns' found in batch. Cannot plot true returns!")
+        true_returns = np.zeros(num_processed)[: cli_args.max_samples]
+
+    def enable_dropout(m):
+        if m.__class__.__name__.startswith("Dropout"):
+            m.train()
+
+    model.apply(enable_dropout)
+    all_mc_preds = []
+
+    print(f"\nEvaluating {cli_args.mc_runs} MC passes...")
+    for run_idx in tqdm(range(cli_args.mc_runs), desc="MC Runs"):
+        run_preds = []
+        with torch.no_grad():
+            for batch in batches:
+                inputs = _move_and_cast(batch["inputs"])
+                robot_obs = batch["robot_obs"].to(device=device, dtype=model_dtype)
+                adj = batch["adj"].to(device=device, dtype=model_dtype)
+                pred = model(inputs, robot_obs, adj)
+                run_preds.append(pred.detach().cpu().float())
+
+        run_preds_flat = (
+            torch.cat(run_preds, dim=0).view(-1).numpy()[: cli_args.max_samples]
+        )
+        all_mc_preds.append(run_preds_flat)
+
+    runs_array = np.stack(all_mc_preds, axis=0)  # [mc_runs, N]
+    runs_mean = runs_array.mean(axis=0)
+    runs_std = runs_array.std(axis=0)
+
+    print("\nSaving MC runs to CSV...")
+    plot_dir = cli_args.plot_dir or "inference_plots"
+    dataset_name = getattr(args, "dataset_type", "unknown").upper()
+    is_lora = getattr(args, "peft", "none") != "none"
+    lora_name = "NoLoRA" if (cli_args.baseline or not is_lora) else "LoRA"
+
+    if plot_dir == "inference_plots":
+        plot_dir = os.path.join(plot_dir, dataset_name, lora_name)
+    elif cli_args.baseline and "baseline" not in plot_dir.lower():
+        plot_dir = plot_dir.rstrip("/") + "_baseline"
+
+    os.makedirs(plot_dir, exist_ok=True)
+
+    import pandas as pd
+
+    df = pd.DataFrame({"true_return": true_returns})
+    for i in range(runs_array.shape[0]):
+        df[f"run_{i}"] = runs_array[i]
+
+    csv_path = os.path.join(plot_dir, f"mc_runs_{lora_name}.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"  Saved MC runs to: {csv_path}")
+
+    # Plot Scatter w/ Errorbars
+    print("\nGenerating prediction interval scatter plot...")
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    lbl = "Predicted returns"
+    col = "#8DA0CB" if cli_args.baseline else "#E78AC3"
+    lbl += " (Baseline)" if cli_args.baseline else " (LoRA)"
+
+    ax.scatter(
+        true_returns,
+        runs_mean,
+        color=col,
+        alpha=0.6,
+        label=lbl,
+        marker="o",
+        s=30,
+        edgecolors="none",
+    )
+
+    if len(true_returns) > 2:
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            true_returns, runs_mean
+        )
+        x_sorted = np.sort(true_returns)
+        y_pred = slope * x_sorted + intercept
+        ax.plot(
+            x_sorted,
+            y_pred,
+            color=col,
+            linewidth=2,
+            label=f"{lbl} Fit (slope={slope:.2f})",
+        )
+
+        y_pred_for_se = slope * true_returns + intercept
+        n_pts = len(true_returns)
+        se_estimate = np.sqrt(np.sum((runs_mean - y_pred_for_se) ** 2) / (n_pts - 2))
+
+        t_val = stats.t.ppf(0.975, n_pts - 2)
+        x_mean = np.mean(true_returns)
+        ss_x = np.sum((true_returns - x_mean) ** 2)
+        pi_margin = (
+            t_val
+            * se_estimate
+            * np.sqrt(1 + 1 / n_pts + (x_sorted - x_mean) ** 2 / ss_x)
+        )
+
+        ax.fill_between(
+            x_sorted,
+            y_pred - pi_margin,
+            y_pred + pi_margin,
+            color=col,
+            alpha=0.15,
+            label=f"{lbl} 95% PI",
+        )
+
+    lo = min(true_returns.min(), runs_mean.min())
+    hi = max(true_returns.max(), runs_mean.max())
+    margin = (hi - lo) * 0.05
+    ax.plot(
+        [lo - margin, hi + margin],
+        [lo - margin, hi + margin],
+        "--",
+        color="#333333",
+        linewidth=1.5,
+        alpha=0.8,
+        label="y = x (Perfect Prediction)",
+    )
+
+    ax.set_xlabel("True Return", fontsize=13)
+    ax.set_ylabel("Predicted Return", fontsize=13)
+    ax.set_title(
+        f"Prediction Intervals ({lora_name}, MC Runs: {cli_args.mc_runs})",
+        fontsize=14,
+        fontweight="bold",
+    )
+    ax.legend(fontsize=11)
+    ax.grid(False)
+    fig.tight_layout()
+
+    path = os.path.join(plot_dir, f"mc_prediction_scatter_{lora_name}.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved plot to: {path}")
+
+
 # ──────────────────────────────── Main ──────────────────────────────────────
+
+
 def main():
     cli_args = parse_inference_args()
 
@@ -736,6 +1022,10 @@ def main():
 
     model = model.to(device=device, dtype=model_dtype)
     model.eval()
+
+    if getattr(cli_args, "run_mc_dropout", False):
+        run_mc_dropout_flow(cli_args, model, args, device, model_dtype)
+        return
 
     # ── 4. Build test data loader ───────────────────────────────────────────
     print(f"Loading test data from: {cli_args.test_shards}")
@@ -939,9 +1229,21 @@ def main():
     elif baseline_mode and plot_dir:
         plot_dir = plot_dir.rstrip("/") + "_baseline"
 
-    if output_file and baseline_mode:
+    if plot_dir:
+        os.makedirs(plot_dir, exist_ok=True)
+
+    if not output_file and plot_dir:
+        output_file = os.path.join(plot_dir, "inference_results.csv")
+
+    if output_file:
         base, ext = os.path.splitext(output_file)
-        output_file = f"{base}_baseline{ext}"
+        if base.endswith("_baseline"):
+            base = base[:-9]
+        if base.endswith("_LoRA"):
+            base = base[:-5]
+        if base.endswith("_NoLoRA"):
+            base = base[:-7]
+        output_file = f"{base}_{lora_name}{ext}"
 
     # ── 7. Generate plots ───────────────────────────────────────────────────
     if has_returns:
@@ -961,6 +1263,7 @@ def main():
             plot_dir,
             epoch,
             target_label=primary_label,
+            lora_name=lora_name,
         )
 
     # ── 7b. Overlay comparison plots (if --compare_csv provided) ────────────
@@ -1003,6 +1306,36 @@ def main():
             plot_dir=plot_dir,
             epoch=epoch,
             target_label=primary_label,
+        )
+
+    # ── 7c. Multi-model comparison (if --compare_csvs provided) ────────────
+    if cli_args.compare_csvs and plot_dir:
+        # Parse 'Label:path.csv' format
+        parsed = []
+        for entry in cli_args.compare_csvs:
+            if ":" in entry and not entry.startswith("/"):
+                parts = entry.split(":", 1)
+                lbl, path = parts[0], parts[1]
+            else:
+                lbl = os.path.splitext(os.path.basename(entry))[0]
+                path = entry
+            parsed.append((lbl, path))
+
+        # Current run label
+        if cli_args.label:
+            curr_label = cli_args.label
+        elif baseline_mode:
+            curr_label = "Baseline (no LoRA)"
+        else:
+            curr_label = "Fine-tuned (LoRA)"
+
+        _generate_multi_comparison_plots(
+            current_preds=preds,
+            current_targets=td_or_returns,
+            current_label=curr_label,
+            compare_csvs=parsed,
+            plot_dir=plot_dir,
+            epoch=epoch,
         )
 
     # ── 8. Optional CSV output ──────────────────────────────────────────────
@@ -1055,8 +1388,7 @@ def main():
     if output_file:
         json_path = os.path.splitext(output_file)[0] + "_summary.json"
     else:
-        suffix = "_baseline" if baseline_mode else ""
-        json_path = f"inference_summary{suffix}.json"
+        json_path = f"inference_summary_{lora_name}.json"
         if plot_dir:
             json_path = os.path.join(plot_dir, json_path)
 
