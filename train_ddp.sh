@@ -23,6 +23,9 @@ accelerate launch --num_processes 1 train.py \
   --done_reduce all \
   --gamma 0.95 \
   --loss_type td_contrastive \
+  --contrastive_multidepth \
+  --contrastive_depth_offsets "0,4,8" \
+  --contrastive_depth_weights "1.0,0.7,0.5" \
   --text_mode raw \
   --return_mode nstep \
   --n_step 64 \
