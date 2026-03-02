@@ -93,6 +93,23 @@ def parse_args():
         default=0,
         help="Top-K high-reward samples used as positive pool for InfoNCE (0 => B//2).",
     )
+    p.add_argument(
+        "--contrastive_multidepth",
+        action="store_true",
+        help="Apply contrastive supervision on multiple hidden depths using attention-max pooled features.",
+    )
+    p.add_argument(
+        "--contrastive_depth_offsets",
+        type=str,
+        default="0",
+        help="Comma-separated hidden-layer offsets from final layer for multidepth contrastive (e.g., '0,4,8').",
+    )
+    p.add_argument(
+        "--contrastive_depth_weights",
+        type=str,
+        default="",
+        help="Optional comma-separated weights for multidepth losses. Empty => uniform.",
+    )
     p.add_argument("--lambda_td", type=float, default=1.0, help="Weight for TD loss when using td_contrastive")
     p.add_argument("--lambda_c", type=float, default=1.0, help="Weight for contrastive loss when using td_contrastive")
     p.add_argument(
@@ -194,6 +211,42 @@ def parse_args():
     return p.parse_args()
 
 
+def _parse_int_csv(value: str):
+    if value is None:
+        return []
+    items = [x.strip() for x in str(value).split(",") if x.strip()]
+    out = []
+    for x in items:
+        out.append(int(x))
+    return out
+
+
+def _parse_float_csv(value: str):
+    if value is None or str(value).strip() == "":
+        return []
+    items = [x.strip() for x in str(value).split(",") if x.strip()]
+    out = []
+    for x in items:
+        out.append(float(x))
+    return out
+
+
+def _resolve_contrastive_depth_args(args):
+    offsets = _parse_int_csv(args.contrastive_depth_offsets)
+    if not offsets:
+        offsets = [0]
+    offsets = [max(0, int(o)) for o in offsets]
+    args.contrastive_depth_offsets_list = offsets
+
+    weights = _parse_float_csv(args.contrastive_depth_weights)
+    if weights and len(weights) != len(offsets):
+        raise ValueError(
+            "contrastive_depth_weights length must match contrastive_depth_offsets. "
+            f"Got {len(weights)} vs {len(offsets)}."
+        )
+    args.contrastive_depth_weights_list = weights
+
+
 def build_model(args, device):
     cfg = ModelConfig(
         vl_backend=args.vl_backend,
@@ -225,6 +278,8 @@ def build_model(args, device):
         value_pooling=args.value_pooling,
         logits_to_keep=args.vl_logits_to_keep,
         obs_summary_tokens=args.obs_summary_tokens,
+        contrastive_multidepth=args.contrastive_multidepth,
+        contrastive_depth_offsets=tuple(getattr(args, "contrastive_depth_offsets_list", [0])),
     )
     return MultimodalValueModel(cfg, device=device)
 
@@ -424,6 +479,33 @@ def _compute_contrastive_loss(embeddings, rewards, args):
     return _contrastive_point_to_set_loss(embeddings, rewards, margin=args.contrastive_margin)
 
 
+def _compute_multidepth_contrastive_loss(main_embeddings, depth_embeddings, rewards, args):
+    feats = []
+    if depth_embeddings:
+        feats.extend(depth_embeddings)
+    else:
+        feats.append(main_embeddings)
+
+    if args.contrastive_depth_weights_list:
+        weights = args.contrastive_depth_weights_list
+    else:
+        weights = [1.0 for _ in feats]
+
+    total_w = 0.0
+    total_loss = None
+    for w, feat in zip(weights, feats):
+        w = float(w)
+        if w <= 0.0:
+            continue
+        l = _compute_contrastive_loss(feat, rewards, args)
+        total_w += w
+        total_loss = (w * l) if total_loss is None else (total_loss + w * l)
+
+    if total_loss is None or total_w <= 0:
+        return main_embeddings.sum() * 0.0
+    return total_loss / total_w
+
+
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
     model.train() if train else model.eval()
 
@@ -481,10 +563,12 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 if isinstance(model_out, dict):
                     pred = model_out["value"]
                     vlm_feature = model_out.get("vlm_feature")
+                    vlm_multidepth_features = model_out.get("vlm_multidepth_features")
                     debug_text = model_out.get("debug_text")
                 else:
                     pred = model_out
                     vlm_feature = None
+                    vlm_multidepth_features = None
                     debug_text = None
                 contrastive_targets = (
                     batch["returns"].to(accelerator.device)
@@ -495,7 +579,9 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 if args.loss_type == "contrastive":
                     if vlm_feature is None:
                         raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
-                    contrastive_loss = _compute_contrastive_loss(vlm_feature, contrastive_targets.view(-1), args)
+                    contrastive_loss = _compute_multidepth_contrastive_loss(
+                        vlm_feature, vlm_multidepth_features, contrastive_targets.view(-1), args
+                    )
                     loss = contrastive_loss
                 else:
                     if args.return_mode == "td":
@@ -513,7 +599,9 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     if args.loss_type == "td_contrastive":
                         if vlm_feature is None:
                             raise RuntimeError("td_contrastive loss requires model features; got None from model forward.")
-                        contrastive_loss = _compute_contrastive_loss(vlm_feature, contrastive_targets.view(-1), args)
+                        contrastive_loss = _compute_multidepth_contrastive_loss(
+                            vlm_feature, vlm_multidepth_features, contrastive_targets.view(-1), args
+                        )
                         loss = args.lambda_td * td_loss + args.lambda_c * contrastive_loss
                     else:
                         loss = td_loss
@@ -552,6 +640,7 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
 def main():
     args = parse_args()
+    _resolve_contrastive_depth_args(args)
     _resolve_vl_model_preset(args)
     os.makedirs(args.save_dir, exist_ok=True)
 

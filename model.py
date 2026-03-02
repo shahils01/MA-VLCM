@@ -62,6 +62,10 @@ class ModelConfig:
     logits_to_keep: int = 1
     # Number of learned graph-summary tokens to inject at <obs> positions.
     obs_summary_tokens: int = 2
+    # Multi-depth contrastive supervision settings.
+    contrastive_multidepth: bool = False
+    # Offsets from final hidden layer (0=last, 1=one before, ...).
+    contrastive_depth_offsets: tuple = (0,)
 
 
 
@@ -290,6 +294,7 @@ class MultimodalValueModel(nn.Module):
             self._backbone_forward_params = set()
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
+        self.token_attn_pool = nn.Linear(lm_hidden, 1)
         self.robot_temporal = TemporalTransformer(
             d_model=cfg.d_model,
             layers=cfg.temporal_layers,
@@ -341,6 +346,28 @@ class MultimodalValueModel(nn.Module):
         else:
             vl_feat_dim = lm_hidden
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
+
+    def _attention_max_pool(self, hidden: torch.Tensor, attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        # hidden: [B, S, D] -> [B, D] via attention-weighted max pooling over sequence tokens.
+        scores = self.token_attn_pool(hidden).squeeze(-1)  # [B, S]
+        if attn_mask is not None and attn_mask.shape[:2] == hidden.shape[:2]:
+            valid = attn_mask.bool()
+            scores = scores.masked_fill(~valid, -1e9)
+        else:
+            valid = None
+        attn = F.softmax(scores, dim=1)  # [B, S]
+        weighted = hidden * attn.unsqueeze(-1)  # [B, S, D]
+        if valid is not None:
+            weighted = weighted.masked_fill(~valid.unsqueeze(-1), float("-inf"))
+        pooled = weighted.max(dim=1).values  # [B, D]
+
+        # Fallback for rows that became all -inf due to masking.
+        bad = ~torch.isfinite(pooled).all(dim=1)
+        if bad.any():
+            fallback = hidden[bad].mean(dim=1)
+            pooled = pooled.clone()
+            pooled[bad] = fallback
+        return pooled
 
     def _maybe_save_debug_video_from_inputs(self, inputs: dict):
         # if (not self.debug_save_video) or self._debug_video_saved:
@@ -616,7 +643,10 @@ class MultimodalValueModel(nn.Module):
         if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
             # KV cache is only useful for autoregressive generation, not value regression training.
             forward_kwargs["use_cache"] = False
-        if self.cfg.value_pooling == "hidden_mean":
+        need_hidden_states = self.cfg.value_pooling == "hidden_mean" or (
+            return_features and bool(getattr(self.cfg, "contrastive_multidepth", False))
+        )
+        if need_hidden_states:
             forward_kwargs["output_hidden_states"] = True
         if self.cfg.logits_to_keep > 0:
             # Some transformers versions expose either logits_to_keep or num_logits_to_keep.
@@ -627,9 +657,10 @@ class MultimodalValueModel(nn.Module):
 
         output = self.backbone.model(**model_inputs, **forward_kwargs)
 
+        hidden_states = getattr(output, "hidden_states", None)
         final_hidden = None
-        if self.cfg.value_pooling == "hidden_mean":
-            final_hidden = output.hidden_states[-1]
+        if hidden_states is not None and len(hidden_states) > 0:
+            final_hidden = hidden_states[-1]
         debug_text = None
         if return_debug:
             logits = getattr(output, "logits", None)
@@ -657,10 +688,27 @@ class MultimodalValueModel(nn.Module):
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
 
+        vlm_multidepth_features = None
+        if return_features and bool(getattr(self.cfg, "contrastive_multidepth", False)):
+            if hidden_states is None or len(hidden_states) == 0:
+                raise RuntimeError(
+                    "Multi-depth contrastive supervision requested but hidden states were not returned by the backbone."
+                )
+            depth_feats = []
+            offsets = tuple(getattr(self.cfg, "contrastive_depth_offsets", (0,)))
+            for off in offsets:
+                off_i = max(0, int(off))
+                idx = max(0, len(hidden_states) - 1 - off_i)
+                feat = self._attention_max_pool(hidden_states[idx], attn_for_pool)
+                depth_feats.append(feat)
+            vlm_multidepth_features = depth_feats
+
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
         if return_debug or return_features:
             out = {"value": value, "vlm_feature": pooled}
+            if vlm_multidepth_features is not None:
+                out["vlm_multidepth_features"] = vlm_multidepth_features
             if return_debug:
                 out["debug_text"] = debug_text
             return out
