@@ -196,19 +196,19 @@ def main():
         label="y = x (Perfect)",
     )
 
-    ax.set_xlabel("True Return", fontsize=13)
-    ax.set_ylabel("Predicted Return", fontsize=13)
+    ax.set_xlabel("True Return", fontsize=18)
+    ax.set_ylabel("Predicted Return", fontsize=18)
     ax.set_title(
         f"IID vs OOD Predictions & 95% Prediction Intervals",
-        fontsize=14,
+        fontsize=20,
         fontweight="bold",
     )
 
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=15)
     ax.grid(False)  # Turn off grid entirely
 
     out_path = os.path.join(args.output_dir, "iid_vs_ood_prediction_intervals.png")
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=250, bbox_inches="tight")
     plt.close(fig)
     print(f"\nSaved comparison plot to: {out_path}")
 
