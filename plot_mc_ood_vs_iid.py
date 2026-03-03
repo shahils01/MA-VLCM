@@ -198,6 +198,13 @@ def main():
 
     ax.set_xlabel("True Return", fontsize=18)
     ax.set_ylabel("Predicted Return", fontsize=18)
+
+    # Decrease ticks to 5 values
+    from matplotlib.ticker import MaxNLocator
+
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+    ax.tick_params(axis="both", labelsize=14)
     ax.set_title(
         f"IID vs OOD Predictions & 95% Prediction Intervals",
         fontsize=20,

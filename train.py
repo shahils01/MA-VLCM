@@ -2,7 +2,6 @@ import argparse
 import os
 import io
 import json
-import pathlib
 import glob
 import functools
 import inspect
@@ -136,6 +135,12 @@ def parse_args():
         default=0.2,
         help="Fraction of shards to hold out for validation",
     )
+    p.add_argument(
+        "--dataset_type",
+        type=str,
+        default="mixed",
+        help="Type of dataset (e.g., rware, offroad, mixed)",
+    )
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=10)
@@ -209,7 +214,12 @@ def parse_args():
         choices=["point_to_set", "infonce", "pairwise"],
         help="Contrastive objective used when loss_type includes contrastive.",
     )
-    p.add_argument("--infonce_temperature", type=float, default=0.1, help="Temperature for InfoNCE.")
+    p.add_argument(
+        "--infonce_temperature",
+        type=float,
+        default=0.1,
+        help="Temperature for InfoNCE.",
+    )
     p.add_argument(
         "--infonce_topk_pos",
         type=int,
@@ -234,10 +244,10 @@ def parse_args():
         help="Optional comma-separated weights for multidepth losses. Empty => uniform.",
     )
     p.add_argument(
-        "--lambda_c", 
-        type=float, 
-        default=1.0, 
-        help="Weight for multi-depth / vlm contrastive loss"
+        "--lambda_c",
+        type=float,
+        default=1.0,
+        help="Weight for multi-depth / vlm contrastive loss",
     )
     p.add_argument(
         "--lambda_value_c",
@@ -406,6 +416,7 @@ def _resolve_contrastive_depth_args(args):
         )
     args.contrastive_depth_weights_list = weights
 
+
 def build_model(args, device):
     cfg = ModelConfig(
         vl_backend=args.vl_backend,
@@ -434,7 +445,9 @@ def build_model(args, device):
         moe_top_k=args.moe_top_k,
         debug_save_video=args.debug_save_video,
         contrastive_multidepth=getattr(args, "contrastive_multidepth", False),
-        contrastive_depth_offsets=tuple(getattr(args, "contrastive_depth_offsets_list", [0])),
+        contrastive_depth_offsets=tuple(
+            getattr(args, "contrastive_depth_offsets_list", [0])
+        ),
     )
     return MultimodalValueModel(cfg, device=device)
 
@@ -1238,11 +1251,15 @@ class SequenceWebDataset(IterableDataset):
 
                     if traj_id not in self.times_cache:
                         times_path = None
-                        
+
                         # Dynamically find the dataset directory from self.shards to avoid hardcoded paths
-                        dataset_root = "data_scratch" # Fallback
+                        dataset_root = "data_scratch"  # Fallback
                         if isinstance(self.shards, str):
-                            dataset_root = self.shards.split('/*')[0] if '/*' in self.shards else os.path.dirname(self.shards)
+                            dataset_root = (
+                                self.shards.split("/*")[0]
+                                if "/*" in self.shards
+                                else os.path.dirname(self.shards)
+                            )
                         elif isinstance(self.shards, list) and len(self.shards) > 0:
                             # Assume the root is at most 3 levels up from a shard (e.g. data_test/config/date/shard.tar)
                             parts = self.shards[0].split(os.sep)
@@ -1253,13 +1270,18 @@ class SequenceWebDataset(IterableDataset):
 
                         # We try to find the _times.npy recursively or in the derived root
                         # But typically it's saved in the base dataset_root directory
-                        candidate_path = os.path.join(dataset_root, f"{traj_id}_times.npy")
+                        candidate_path = os.path.join(
+                            dataset_root, f"{traj_id}_times.npy"
+                        )
                         if os.path.exists(candidate_path):
                             times_path = candidate_path
                         else:
                             # Fallback: search recursively if not found immediately
                             import glob
-                            search_pattern = os.path.join(dataset_root, "**", f"{traj_id}_times.npy")
+
+                            search_pattern = os.path.join(
+                                dataset_root, "**", f"{traj_id}_times.npy"
+                            )
                             found = glob.glob(search_pattern, recursive=True)
                             if found:
                                 times_path = found[0]
@@ -1753,12 +1775,18 @@ def _compute_contrastive_loss(embeddings, rewards, args):
         z = F.normalize(embeddings, dim=-1)
         sim = torch.matmul(z, z.t())
         # To reuse the score logic where higher is better for same rewards
-        return _contrastive_pairwise_loss(sim.mean(dim=-1), rewards, margin=args.contrastive_margin)
+        return _contrastive_pairwise_loss(
+            sim.mean(dim=-1), rewards, margin=args.contrastive_margin
+        )
     else:
-        return _contrastive_point_to_set_loss(embeddings, rewards, margin=args.contrastive_margin)
+        return _contrastive_point_to_set_loss(
+            embeddings, rewards, margin=args.contrastive_margin
+        )
 
 
-def _compute_multidepth_contrastive_loss(main_embeddings, depth_embeddings, rewards, args):
+def _compute_multidepth_contrastive_loss(
+    main_embeddings, depth_embeddings, rewards, args
+):
     feats = []
     if depth_embeddings:
         feats.extend(depth_embeddings)
@@ -1855,9 +1883,14 @@ def run_epoch(
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
-                return_features = args.loss_type in ("contrastive", "contrastive_mse") and getattr(args, "contrastive_multidepth", False)
-                model_out = model(inputs, robot_obs, adj, return_features=return_features)
-                
+                return_features = args.loss_type in (
+                    "contrastive",
+                    "contrastive_mse",
+                ) and getattr(args, "contrastive_multidepth", False)
+                model_out = model(
+                    inputs, robot_obs, adj, return_features=return_features
+                )
+
                 if isinstance(model_out, dict):
                     pred = model_out["value"]
                     vlm_feature = model_out.get("vlm_feature")
@@ -1884,7 +1917,7 @@ def run_epoch(
                                 next_inputs,
                                 next_robot_obs,
                                 next_adj,
-                                return_features=False
+                                return_features=False,
                             )
                             if isinstance(next_pred, dict):
                                 next_pred = next_pred["value"]
@@ -1894,7 +1927,7 @@ def run_epoch(
                                 for n, p in raw.named_parameters():
                                     if n in saved:
                                         p.data.copy_(saved[n])
-                                        
+
                                 del saved
                         clip_gamma = gamma**args.clip_len
                         if "returns" in batch:
@@ -1917,15 +1950,22 @@ def run_epoch(
                             margin=args.contrastive_margin,
                         )
                         contrastive_loss = args.lambda_value_c * value_contrastive_loss
-                        
+
                         if getattr(args, "contrastive_multidepth", False):
                             if vlm_feature is None:
-                                raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
+                                raise RuntimeError(
+                                    "Contrastive loss requires model features; got None from model forward."
+                                )
                             vlm_contrastive_loss = _compute_multidepth_contrastive_loss(
-                                vlm_feature, vlm_multidepth_features, target.view(-1), args
+                                vlm_feature,
+                                vlm_multidepth_features,
+                                target.view(-1),
+                                args,
                             )
-                            contrastive_loss = contrastive_loss + (args.lambda_c * vlm_contrastive_loss)
-                        
+                            contrastive_loss = contrastive_loss + (
+                                args.lambda_c * vlm_contrastive_loss
+                            )
+
                         if args.loss_type == "contrastive_mse":
                             mse_loss = F.mse_loss(pred.view(-1), target.view(-1))
                             loss = contrastive_loss + args.mse_loss_weight * mse_loss
@@ -1984,7 +2024,7 @@ def run_epoch(
                         "train/target_mean": target.detach().mean().item(),
                         "train/reward_mean": reward.detach().mean().item(),
                     }
-                    
+
                     if args.loss_type in ("contrastive", "contrastive_mse"):
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
@@ -2240,8 +2280,10 @@ def main():
     train_main_shards, val_main_shards = split_shards(args.train_shards, args.val_split)
 
     if not args.offroad_shards:
-        raise ValueError("Must provide both --train_shards (RWARE) and --offroad_shards (OFFROAD)")
-        
+        raise ValueError(
+            "Must provide both --train_shards (RWARE) and --offroad_shards (OFFROAD)"
+        )
+
     accelerator.print(
         f"Multi-dataset training enabled. Interleaving rware and offroad datasets."
     )
@@ -2277,9 +2319,7 @@ def main():
         def __len__(self):
             # Approximation of dataset length for progress bar and steps
             # Assumes ~50 clips per shard (as stated in defaults)
-            total_samples = (
-                self.main_shards_count + self.offroad_shards_count
-            ) * 100
+            total_samples = (self.main_shards_count + self.offroad_shards_count) * 100
             # Scale correctly down based on batch size & world size
             return max(
                 1,

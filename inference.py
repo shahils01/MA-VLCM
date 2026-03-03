@@ -1132,11 +1132,13 @@ def main():
                     td_target = (
                         nstep_returns
                         + clip_gamma * (1.0 - done) * next_pred.detach().cpu().float()
+                        - 50.0  
                     )
                 else:
                     td_target = (
                         reward
                         + clip_gamma * (1.0 - done) * next_pred.detach().cpu().float()
+                        - 50.0
                     )
                 all_td_targets.append(td_target.view(-1))
 
