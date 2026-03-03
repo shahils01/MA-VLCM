@@ -529,7 +529,8 @@ class SequenceWebDataset(IterableDataset):
 
             num_nodes = robot_obs.shape[0]
             adj = _edge_index_to_adj(_as_numpy(sample["edge_index.npy"]), num_nodes)
-            # robot_obs, adj = self._normalize_robot_tensors(robot_obs, adj)
+            # Normalize per-frame graph tensors so mixed-source datasets can still batch.
+            robot_obs, adj = self._normalize_robot_tensors(robot_obs, adj)
 
             if self.text_mode == "raw":
                 text = self.text_prompt_template
