@@ -108,12 +108,6 @@ def parse_args():
     )
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
-    p.add_argument(
-        "--dataset_type",
-        type=str,
-        default="rware",
-        choices=["default", "rware", "offroad"],
-    )
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
     p.add_argument(
         "--rware_visual_mode",
@@ -207,6 +201,49 @@ def parse_args():
         type=float,
         default=1.0,
         help="Max gradient norm for clipping (0 to disable)",
+    )
+    p.add_argument(
+        "--contrastive_objective",
+        type=str,
+        default="infonce",
+        choices=["point_to_set", "infonce", "pairwise"],
+        help="Contrastive objective used when loss_type includes contrastive.",
+    )
+    p.add_argument("--infonce_temperature", type=float, default=0.1, help="Temperature for InfoNCE.")
+    p.add_argument(
+        "--infonce_topk_pos",
+        type=int,
+        default=0,
+        help="Top-K high-reward samples used as positive pool for InfoNCE (0 => B//2).",
+    )
+    p.add_argument(
+        "--contrastive_multidepth",
+        action="store_true",
+        help="Apply contrastive supervision on multiple hidden depths using attention-max pooled features.",
+    )
+    p.add_argument(
+        "--contrastive_depth_offsets",
+        type=str,
+        default="0",
+        help="Comma-separated hidden-layer offsets from final layer for multidepth contrastive (e.g., '0,4,8').",
+    )
+    p.add_argument(
+        "--contrastive_depth_weights",
+        type=str,
+        default="",
+        help="Optional comma-separated weights for multidepth losses. Empty => uniform.",
+    )
+    p.add_argument(
+        "--lambda_c", 
+        type=float, 
+        default=1.0, 
+        help="Weight for multi-depth / vlm contrastive loss"
+    )
+    p.add_argument(
+        "--lambda_value_c",
+        type=float,
+        default=1.0,
+        help="Weight for value-head pairwise contrastive loss.",
     )
 
     # Accelerate
@@ -334,6 +371,41 @@ def parse_args():
     return p.parse_args()
 
 
+def _parse_int_csv(value: str):
+    if value is None:
+        return []
+    items = [x.strip() for x in str(value).split(",") if x.strip()]
+    out = []
+    for x in items:
+        out.append(int(x))
+    return out
+
+
+def _parse_float_csv(value: str):
+    if value is None or str(value).strip() == "":
+        return []
+    items = [x.strip() for x in str(value).split(",") if x.strip()]
+    out = []
+    for x in items:
+        out.append(float(x))
+    return out
+
+
+def _resolve_contrastive_depth_args(args):
+    offsets = _parse_int_csv(args.contrastive_depth_offsets)
+    if not offsets:
+        offsets = [0]
+    offsets = [max(0, int(o)) for o in offsets]
+    args.contrastive_depth_offsets_list = offsets
+
+    weights = _parse_float_csv(args.contrastive_depth_weights)
+    if weights and len(weights) != len(offsets):
+        raise ValueError(
+            "contrastive_depth_weights length must match contrastive_depth_offsets. "
+            f"Got {len(weights)} vs {len(offsets)}."
+        )
+    args.contrastive_depth_weights_list = weights
+
 def build_model(args, device):
     cfg = ModelConfig(
         vl_backend=args.vl_backend,
@@ -361,6 +433,8 @@ def build_model(args, device):
         moe_experts=args.moe_experts,
         moe_top_k=args.moe_top_k,
         debug_save_video=args.debug_save_video,
+        contrastive_multidepth=getattr(args, "contrastive_multidepth", False),
+        contrastive_depth_offsets=tuple(getattr(args, "contrastive_depth_offsets_list", [0])),
     )
     return MultimodalValueModel(cfg, device=device)
 
@@ -1494,9 +1568,6 @@ def webdataset_loader(
         else:
             print(f"Warning: No files matched glob pattern {shards}")
 
-    if dataset_type is None:
-        dataset_type = args.dataset_type
-
     vlm_processor = None
     # vlm_processor is now lazily loaded in the dataset worker to avoid pickling issues
     # and ensure robustness.
@@ -1601,6 +1672,119 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     return loss[mask].mean()
 
 
+def _contrastive_point_to_set_loss(embeddings, rewards, margin=0.0):
+    if embeddings.ndim != 2:
+        embeddings = embeddings.view(embeddings.shape[0], -1)
+    if embeddings.shape[0] < 2:
+        return embeddings.sum() * 0.0
+
+    bsz = embeddings.shape[0]
+    k = max(1, bsz // 2)
+    topk_idx = torch.topk(rewards.view(-1), k=k, largest=True).indices
+    desirable_set = embeddings[topk_idx]
+
+    dists = torch.cdist(embeddings, desirable_set, p=2)
+    scores = -dists.min(dim=1).values
+    return _contrastive_pairwise_loss(scores, rewards.view(-1), margin=margin)
+
+
+def _contrastive_infonce_loss(embeddings, rewards, temperature=0.1, topk_pos=0):
+    if embeddings.ndim != 2:
+        embeddings = embeddings.view(embeddings.shape[0], -1)
+    bsz = int(embeddings.shape[0])
+    if bsz < 3:
+        return embeddings.sum() * 0.0
+
+    if temperature <= 0:
+        raise ValueError("infonce_temperature must be > 0")
+
+    rewards = rewards.view(-1)
+    k = int(topk_pos) if int(topk_pos) > 0 else max(1, bsz // 2)
+    k = min(max(1, k), bsz)
+
+    # Reward-defined desirable pool.
+    topk_idx = torch.topk(rewards, k=k, largest=True).indices
+    desirable_mask = torch.zeros(bsz, dtype=torch.bool, device=embeddings.device)
+    desirable_mask[topk_idx] = True
+
+    z = F.normalize(embeddings, dim=-1)
+    sim = torch.matmul(z, z.t()) / float(temperature)  # [B, B]
+
+    losses = []
+    for i in range(bsz):
+        valid_neg_mask = torch.ones(bsz, dtype=torch.bool, device=embeddings.device)
+        valid_neg_mask[i] = False  # remove self from denominator
+        if valid_neg_mask.sum() == 0:
+            continue
+
+        pos_mask = desirable_mask.clone()
+        pos_mask[i] = False  # avoid trivial self-positive
+        if pos_mask.sum() == 0:
+            continue
+
+        # Select one positive from desirable pool: most similar desirable sample.
+        pos_candidates = pos_mask.nonzero(as_tuple=False).view(-1)
+        pos_sim = sim[i, pos_candidates]
+        pos_idx = pos_candidates[pos_sim.argmax()]
+
+        denom_idx = valid_neg_mask.nonzero(as_tuple=False).view(-1)
+        logits = sim[i, denom_idx]
+        target = (denom_idx == pos_idx).nonzero(as_tuple=False)
+        if target.numel() == 0:
+            continue
+        target = target.view(-1)[0]
+        losses.append(F.cross_entropy(logits.unsqueeze(0), target.unsqueeze(0)))
+
+    if not losses:
+        return embeddings.sum() * 0.0
+    return torch.stack(losses).mean()
+
+
+def _compute_contrastive_loss(embeddings, rewards, args):
+    if args.contrastive_objective == "infonce":
+        return _contrastive_infonce_loss(
+            embeddings,
+            rewards,
+            temperature=args.infonce_temperature,
+            topk_pos=args.infonce_topk_pos,
+        )
+    elif args.contrastive_objective == "pairwise":
+        # Usually applied to logits (e.g., value head) but if used for feats, need inner product / sim scores
+        z = F.normalize(embeddings, dim=-1)
+        sim = torch.matmul(z, z.t())
+        # To reuse the score logic where higher is better for same rewards
+        return _contrastive_pairwise_loss(sim.mean(dim=-1), rewards, margin=args.contrastive_margin)
+    else:
+        return _contrastive_point_to_set_loss(embeddings, rewards, margin=args.contrastive_margin)
+
+
+def _compute_multidepth_contrastive_loss(main_embeddings, depth_embeddings, rewards, args):
+    feats = []
+    if depth_embeddings:
+        feats.extend(depth_embeddings)
+    else:
+        feats.append(main_embeddings)
+
+    if args.contrastive_depth_weights_list:
+        weights = args.contrastive_depth_weights_list
+    else:
+        weights = [1.0 for _ in feats]
+
+    total_w = 0.0
+    total_loss = None
+    for w, feat in zip(weights, feats):
+        w = float(w)
+        if w <= 0.0:
+            continue
+        l = _compute_contrastive_loss(feat, rewards, args)
+        total_w += w
+        total_loss = (w * l) if total_loss is None else (total_loss + w * l)
+
+    if total_loss is None or total_w <= 0:
+        return main_embeddings.sum() * 0.0
+    return total_loss / total_w
+
+
 def run_epoch(
     model,
     loader,
@@ -1671,7 +1855,18 @@ def run_epoch(
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
-                pred = model(inputs, robot_obs, adj)
+                return_features = args.loss_type in ("contrastive", "contrastive_mse") and getattr(args, "contrastive_multidepth", False)
+                model_out = model(inputs, robot_obs, adj, return_features=return_features)
+                
+                if isinstance(model_out, dict):
+                    pred = model_out["value"]
+                    vlm_feature = model_out.get("vlm_feature")
+                    vlm_multidepth_features = model_out.get("vlm_multidepth_features")
+                else:
+                    pred = model_out
+                    vlm_feature = None
+                    vlm_multidepth_features = None
+
                 if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
                     # Calculate bootstrapped target
                     if use_next:
@@ -1689,13 +1884,17 @@ def run_epoch(
                                 next_inputs,
                                 next_robot_obs,
                                 next_adj,
+                                return_features=False
                             )
+                            if isinstance(next_pred, dict):
+                                next_pred = next_pred["value"]
 
                             # Swap back online weights
                             if target_model is not None:
                                 for n, p in raw.named_parameters():
                                     if n in saved:
                                         p.data.copy_(saved[n])
+                                        
                                 del saved
                         clip_gamma = gamma**args.clip_len
                         if "returns" in batch:
@@ -1712,11 +1911,21 @@ def run_epoch(
                             target = reward
 
                     if args.loss_type in ("contrastive", "contrastive_mse"):
-                        contrastive_loss = _contrastive_pairwise_loss(
+                        value_contrastive_loss = _contrastive_pairwise_loss(
                             pred.view(-1),
                             target.view(-1),
                             margin=args.contrastive_margin,
                         )
+                        contrastive_loss = args.lambda_value_c * value_contrastive_loss
+                        
+                        if getattr(args, "contrastive_multidepth", False):
+                            if vlm_feature is None:
+                                raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
+                            vlm_contrastive_loss = _compute_multidepth_contrastive_loss(
+                                vlm_feature, vlm_multidepth_features, target.view(-1), args
+                            )
+                            contrastive_loss = contrastive_loss + (args.lambda_c * vlm_contrastive_loss)
+                        
                         if args.loss_type == "contrastive_mse":
                             mse_loss = F.mse_loss(pred.view(-1), target.view(-1))
                             loss = contrastive_loss + args.mse_loss_weight * mse_loss
@@ -1827,6 +2036,7 @@ def split_shards(shards_pattern, val_split=0.3, seed=42):
 
 def main():
     args = parse_args()
+    _resolve_contrastive_depth_args(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
     from datetime import datetime
@@ -2029,123 +2239,114 @@ def main():
     # --- Shard Splitting & Loader Creation ---
     train_main_shards, val_main_shards = split_shards(args.train_shards, args.val_split)
 
-    if args.offroad_shards:
-        accelerator.print(
-            f"Multi-dataset training enabled. Interleaving {args.dataset_type} and offroad datasets."
-        )
-        train_offroad_shards, val_offroad_shards = split_shards(
-            args.offroad_shards, args.val_split
-        )
+    if not args.offroad_shards:
+        raise ValueError("Must provide both --train_shards (RWARE) and --offroad_shards (OFFROAD)")
+        
+    accelerator.print(
+        f"Multi-dataset training enabled. Interleaving rware and offroad datasets."
+    )
+    train_offroad_shards, val_offroad_shards = split_shards(
+        args.offroad_shards, args.val_split
+    )
 
-        class InterleavedDataLoader:
-            def __init__(self, loader1, loader2, main_shards, offroad_shards):
-                self.loader1 = loader1
-                self.loader2 = loader2
-                self.main_shards_count = len(main_shards) if main_shards else 0
-                self.offroad_shards_count = len(offroad_shards) if offroad_shards else 0
+    class InterleavedDataLoader:
+        def __init__(self, loader1, loader2, main_shards, offroad_shards):
+            self.loader1 = loader1
+            self.loader2 = loader2
+            self.main_shards_count = len(main_shards) if main_shards else 0
+            self.offroad_shards_count = len(offroad_shards) if offroad_shards else 0
 
-            def __iter__(self):
-                iter1 = iter(self.loader1)
-                iter2 = iter(self.loader2)
-                exhausted1 = False
-                exhausted2 = False
-                while not (exhausted1 and exhausted2):
-                    if not exhausted1:
-                        try:
-                            yield next(iter1)
-                        except StopIteration:
-                            exhausted1 = True
+        def __iter__(self):
+            iter1 = iter(self.loader1)
+            iter2 = iter(self.loader2)
+            exhausted1 = False
+            exhausted2 = False
+            while not (exhausted1 and exhausted2):
+                if not exhausted1:
+                    try:
+                        yield next(iter1)
+                    except StopIteration:
+                        exhausted1 = True
 
-                    if not exhausted2:
-                        try:
-                            yield next(iter2)
-                        except StopIteration:
-                            exhausted2 = True
+                if not exhausted2:
+                    try:
+                        yield next(iter2)
+                    except StopIteration:
+                        exhausted2 = True
 
-            def __len__(self):
-                # Approximation of dataset length for progress bar and steps
-                # Assumes ~50 clips per shard (as stated in defaults)
-                total_samples = (
-                    self.main_shards_count + self.offroad_shards_count
-                ) * 100
-                # Scale correctly down based on batch size & world size
-                return max(
-                    1,
-                    total_samples
-                    // max(1, args.batch_size)
-                    // max(1, accelerator.num_processes),
-                )
-
-        # Train Loader
-        main_train_loader = webdataset_loader(
-            args,
-            train_main_shards,
-            args.batch_size,
-            args.num_workers,
-            shuffle=True,
-            dataset_type=args.dataset_type,
-        )
-        offroad_train_loader = webdataset_loader(
-            args,
-            train_offroad_shards,
-            args.batch_size,
-            args.num_workers,
-            shuffle=True,
-            dataset_type="offroad",
-        )
-        train_loader = InterleavedDataLoader(
-            main_train_loader,
-            offroad_train_loader,
-            train_main_shards,
-            train_offroad_shards,
-        )
-
-        # Val Loader
-        val_loader = None
-        if val_main_shards or val_offroad_shards:
-            val_loaders = []
-            if val_main_shards:
-                val_loaders.append(
-                    webdataset_loader(
-                        args,
-                        val_main_shards,
-                        args.batch_size,
-                        args.num_workers,
-                        shuffle=False,
-                        dataset_type=args.dataset_type,
-                    )
-                )
-            if val_offroad_shards:
-                val_loaders.append(
-                    webdataset_loader(
-                        args,
-                        val_offroad_shards,
-                        args.batch_size,
-                        args.num_workers,
-                        shuffle=False,
-                        dataset_type="offroad",
-                    )
-                )
-            if len(val_loaders) == 2:
-                val_loader = InterleavedDataLoader(
-                    val_loaders[0],
-                    val_loaders[1],
-                    val_main_shards or [],
-                    val_offroad_shards or [],
-                )
-            elif len(val_loaders) == 1:
-                val_loader = val_loaders[0]
-
-    else:
-        # Standard single dataset loading
-        train_loader = webdataset_loader(
-            args, train_main_shards, args.batch_size, args.num_workers, shuffle=True
-        )
-        val_loader = None
-        if val_main_shards:
-            val_loader = webdataset_loader(
-                args, val_main_shards, args.batch_size, args.num_workers, shuffle=False
+        def __len__(self):
+            # Approximation of dataset length for progress bar and steps
+            # Assumes ~50 clips per shard (as stated in defaults)
+            total_samples = (
+                self.main_shards_count + self.offroad_shards_count
+            ) * 100
+            # Scale correctly down based on batch size & world size
+            return max(
+                1,
+                total_samples
+                // max(1, args.batch_size)
+                // max(1, accelerator.num_processes),
             )
+
+    # Train Loader
+    main_train_loader = webdataset_loader(
+        args,
+        train_main_shards,
+        args.batch_size,
+        args.num_workers,
+        shuffle=True,
+        dataset_type="rware",
+    )
+    offroad_train_loader = webdataset_loader(
+        args,
+        train_offroad_shards,
+        args.batch_size,
+        args.num_workers,
+        shuffle=True,
+        dataset_type="offroad",
+    )
+    train_loader = InterleavedDataLoader(
+        main_train_loader,
+        offroad_train_loader,
+        train_main_shards,
+        train_offroad_shards,
+    )
+
+    # Val Loader
+    val_loader = None
+    if val_main_shards or val_offroad_shards:
+        val_loaders = []
+        if val_main_shards:
+            val_loaders.append(
+                webdataset_loader(
+                    args,
+                    val_main_shards,
+                    args.batch_size,
+                    args.num_workers,
+                    shuffle=False,
+                    dataset_type="rware",
+                )
+            )
+        if val_offroad_shards:
+            val_loaders.append(
+                webdataset_loader(
+                    args,
+                    val_offroad_shards,
+                    args.batch_size,
+                    args.num_workers,
+                    shuffle=False,
+                    dataset_type="offroad",
+                )
+            )
+        if len(val_loaders) == 2:
+            val_loader = InterleavedDataLoader(
+                val_loaders[0],
+                val_loaders[1],
+                val_main_shards or [],
+                val_offroad_shards or [],
+            )
+        elif len(val_loaders) == 1:
+            val_loader = val_loaders[0]
 
     if val_loader is not None:
         model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(

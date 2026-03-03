@@ -1,0 +1,6 @@
+PWD /Users/aditya/Desktop/VLCM/MA-VLCM
+INPUT /usr/local/texlive/2025basic/texmf.cnf
+INPUT /usr/local/texlive/2025basic/texmf-dist/web2c/texmf.cnf
+INPUT /usr/local/texlive/2025basic/texmf-var/web2c/pdftex/pdflatex.fmt
+INPUT /Users/aditya/Desktop/VLCM/MA-VLCM/root.tex
+OUTPUT root.log

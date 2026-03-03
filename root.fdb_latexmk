@@ -1,0 +1,14 @@
+# Fdb version 4
+["pdflatex"] 1772511127.86715 "/Users/aditya/Desktop/VLCM/MA-VLCM/root.tex" "root.pdf" "root" 1772511127.92708 2
+  "/Users/aditya/Desktop/VLCM/MA-VLCM/root.tex" 1772511127.35744 47015 0be470d5e35dc6a313874468d462bcc1 ""
+  "/usr/local/texlive/2025basic/texmf-dist/web2c/texmf.cnf" 1749313668 42213 4e2ca030e8e2640502016e9e45868dcb ""
+  "/usr/local/texlive/2025basic/texmf-var/web2c/pdftex/pdflatex.fmt" 1758219278 2946639 56943e569ae2c2ab26ad6816904684a3 ""
+  "/usr/local/texlive/2025basic/texmf.cnf" 1741448314 628 81d1ada0f601fb1ffa62f1323192d946 ""
+  "ieeeconf.cls" 0 -1 0 ""
+  "root.aux" 1772511119.86667 32 3985256e7290058c681f74d7a3565a19 "pdflatex"
+  "root.tex" 1772511127.35744 47015 0be470d5e35dc6a313874468d462bcc1 ""
+  (generated)
+  "root.aux"
+  "root.log"
+  "root.pdf"
+  (rewritten before read)

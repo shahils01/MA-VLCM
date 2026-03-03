@@ -1,0 +1,33 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025) (preloaded format=pdflatex 2025.9.18)  2 MAR 2026 23:12
+entering extended mode
+ restricted \write18 enabled.
+ file:line:error style messages enabled.
+ %&-line parsing enabled.
+**/Users/aditya/Desktop/VLCM/MA-VLCM/root.tex
+(/Users/aditya/Desktop/VLCM/MA-VLCM/root.tex
+LaTeX2e <2025-06-01> patch level 1
+L3 programming layer <2025-09-02>
+
+! LaTeX Error: File `ieeeconf.cls' not found.
+
+Type X to quit or <RETURN> to proceed,
+or enter new name. (Default extension: cls)
+
+Enter file name: 
+/Users/aditya/Desktop/VLCM/MA-VLCM/root.tex:6: Emergency stop.
+<read *> 
+         
+l.6 ^^M
+       
+*** (cannot \read from terminal in nonstop modes)
+
+ 
+Here is how much of TeX's memory you used:
+ 19 strings out of 469269
+ 511 string characters out of 5467112
+ 430984 words of memory out of 5000000
+ 28551 multiletter control sequences out of 15000+600000
+ 626825 words of font info for 40 fonts, out of 8000000 for 9000
+ 319 hyphenation exceptions out of 8191
+ 19i,0n,29p,155b,17s stack positions out of 10000i,1000n,20000p,200000b,200000s
+/Users/aditya/Desktop/VLCM/MA-VLCM/root.tex:6:  ==> Fatal error occurred, no output PDF file produced!

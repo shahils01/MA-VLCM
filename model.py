@@ -51,6 +51,10 @@ class ModelConfig:
     # Debug
     debug_save_video: bool = False
 
+    # Contrastive
+    contrastive_multidepth: bool = False
+    contrastive_depth_offsets: tuple = (0,)
+
 
 class LLaVAVideoBackbone(nn.Module):
     """Backbone wrapper for LLaVA-style video models using HF interfaces."""
@@ -365,6 +369,7 @@ class MultimodalValueModel(nn.Module):
         text_ids=None,
         text_mask=None,
         image_sizes=None,
+        return_features=False,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
@@ -448,8 +453,28 @@ class MultimodalValueModel(nn.Module):
         pooled = pooled.to(
             dtype=self.value_head.weight.dtype, device=self.value_head.weight.device
         )
+        
+        multidepth_features = None
+        if return_features and self.cfg.contrastive_multidepth:
+            multidepth_features = []
+            for offset in self.cfg.contrastive_depth_offsets:
+                idx = -(1 + offset)
+                if abs(idx) <= len(output.hidden_states):
+                    h = output.hidden_states[idx]
+                    if attn is not None:
+                        h_pooled = (h * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+                    else:
+                        h_pooled = h[:, -1, :]
+                    multidepth_features.append(h_pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device))
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
         # print('value shape = ', value.shape)
+        
+        if return_features:
+            return {
+                "value": value,
+                "vlm_feature": pooled,
+                "vlm_multidepth_features": multidepth_features
+            }
         return value

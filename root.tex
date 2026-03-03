@@ -1,0 +1,486 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%2345678901234567890123456789012345678901234567890123456789012345678901234567890
+%        1         2         3         4         5         6         7         8
+
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}  % Comment this line out if you need a4paper
+
+%\documentclass[a4paper, 10pt, conference]{ieeeconf}      % Use this line for a4 paper
+
+\IEEEoverridecommandlockouts                              % This command is only needed if
+% you want to use the \thanks command
+
+\overrideIEEEmargins                                      % Needed to meet printer requirements.
+
+%In case you encounter the following error:
+%Error 1010 The PDF file may be corrupt (unable to open PDF file) OR
+%Error 1000 An error occurred while parsing a contents stream. Unable to analyze the PDF file.
+%This is a known problem with pdfLaTeX conversion filter. The file cannot be opened with acrobat reader
+%Please use one of the alternatives below to circumvent this error by uncommenting one or the other
+%\pdfobjcompresslevel=0
+%\pdfminorversion=4
+
+% See the \addtolength command later in the file to balance the column lengths
+% on the last page of the document
+
+% The following packages can be found on http:\\www.ctan.org
+\usepackage{graphics} % for pdf, bitmapped graphics files
+\usepackage{graphicx}
+\usepackage{cite}
+%\usepackage{epsfig} % for postscript graphics files
+%\usepackage{mathptmx} % assumes new font selection scheme installed
+%\usepackage{times} % assumes new font selection scheme installed
+\usepackage{amsmath} % assumes amsmath package installed
+\usepackage{amssymb}  % assumes amsmath package installed
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{comment}
+\usepackage{ulem}
+\usepackage{xcolor}
+
+
+
+\newcommand{\EditYW}[1]{{\color{red} #1}}
+\newcommand{\EditAP}[1]{{\color{orange} #1}}
+\newcommand{\EditSS}[1]{{\color{violet} #1}}
+\newcommand{\EditAN}[1]{{\color{blue} #1}}
+
+\title{\LARGE \bf
+  MA-VLCM: A Vision Language Critic Model for Value Estimation of Policies in Multi-Agent Team Settings
+}
+
+
+\author{Shahil Shaik$^{1\dagger}$, Aditya Parameshwaran$^{1*}$, Anshul Nayak$^{1}$, Jonathon M. Smereka$^{2}$, and Yue Wang$^{1}$% <-this % stops a space
+  \thanks{$\dagger$ Conceived the core idea and contributed to the theoretical framework; Designed the MARL-VLCM pipeline}%
+  \thanks{* Designed and implemented the MA-VLC data collection pipeline; Contributed to theoretical framework; Curated the VLCM training for large scale dataset}%
+  \thanks{$^{1}$Shahil Shaik, Aditya Parameshwaran, Anshul Nayak and Yue Wang are with the Mechanical Engineering
+    Department, Clemson University.}%
+  \thanks{$^{2}$Jonathon M. Smereka is with the Ground
+    Vehicle Systems Center U.S. Army CCDC}%
+}
+
+
+\begin{document}
+
+
+
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+Multi-agent reinforcement learning (MARL) commonly relies on a centralized critic to estimate the value function. However, learning such a critic from scratch is highly sample-inefficient and often lacks generalization across environments. At the same time, large vision–language-action models (VLAs) trained on internet-scale data exhibit strong multimodal reasoning and zero-shot generalization capabilities. However, directly deploying large VLA models for robotic execution remains computationally prohibitive, particularly in heterogeneous multi-robot systems with diverse embodiments and resource constraints.
+To address these challenges, we propose Multi-Agent Vision–Language–Critic Models (MA-VLCM), a framework that replaces the learned centralized critic in MARL with a pretrained vision–language model fine-tuned to evaluate multi-agent behavior. MA-VLCM acts as a centralized critic conditioned on natural language task descriptions, visual trajectory observations, and structured multi-agent state information. Rather than training a critic jointly within the MARL loop, we leverage the pretrained MA-VLCM to supervise the learning of lightweight, task-specific multi-agent policies. By eliminating critic learning during policy optimization, our approach significantly improves sample efficiency while producing compact execution policies suitable for deployment on resource-constrained robots. Results demonstrate that MA-VLCM-guided policies achieve comparable performance to centralized critic methods such as MAPPO and MADDPG, highlighting the role of fine-tuned VLMs as potential generalized critics in MARL.
+
+
+\end{abstract}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{INTRODUCTION}
+
+% Recent works in Multi-Agent Systems (MAS), such as Multi-Agent Reinforcement Learning (MARL) have emerged as a powerful approach to enable MAS to learn collaborative, competitive and mixed-behaviours in complex shared environments \cite{lowe2017multi}.
+
+Vision–Language–Action models (VLAs) have recently emerged as a powerful paradigm for controlling embodied robotic systems across a broad range of tasks. Unlike traditional reinforcement learning (RL) policies, which typically excel only at the specific tasks they are trained for, VLAs demonstrate strong generalization to novel task specifications by leveraging a semantic understanding of both the task and the surrounding environment, such as $\pi_0$ \cite{intelligence2025pi_}. This capability is largely enabled by large vision–language model (VLM) backbones trained on internet-scale data, which are subsequently fine-tuned on diverse robotic datasets to produce action outputs.
+
+Despite their effectiveness, modern VLAs suffer from slow inference speeds and large model sizes \cite{kim24openvla}, which significantly hinder their deployment in real-world robotic systems. This limitation becomes particularly pronounced in multi-agent settings, where practical systems often consist of heterogeneous teams of robots with varying physical dimensions, sensing modalities, actuation capabilities, and onboard computational resources \cite{ramachandran2021resilient}. Extending VLAs to such multi-agent, heterogeneous systems introduces several additional challenges beyond inference latency. First, smaller or resource-constrained robots (e.g., aerial drones or micro-robots) may lack the computational capacity or energy budget required to run a VLA onboard. Second, training or fine-tuning a unified VLA across multiple robotic platforms is highly data-intensive, and incorporating new robot embodiments typically requires costly retraining to learn platform-specific control dynamics.
+
+
+In parallel, Multi-Agent Reinforcement Learning (MARL) has been  a principled approach for learning joint policy for  teams of agents under shared or partial observations \cite{lowe2017multi}. A widely adopted paradigm within MARL is centralized training with decentralized execution (CTDE), where a centralized critic leverages global information during training while execution policies remain decentralized and lightweight \cite{lowe2017multi, yu2021surprising}. Centralized critics have proven effective in mitigating non-stationarity and stabilizing learning in cooperative multi-agent systems.
+
+However, MARL also suffers from well-known limitations. First, learning effective value functions in high-dimensional observation spaces—particularly those involving raw visual inputs—requires enormous data and training is sample inefficient. Second, sparse and poorly shaped rewards make exploration difficult in long-horizon tasks. Third, MARL policies  struggle to generalize across variations in task specifications and environments. Each new task often requires retraining from scratch, and incorporating natural language goals remains nontrivial. As a result, while MARL offers computational efficiency and deployable policies, it does not inherently provide the semantic flexibility and cross-task generalization that characterize VLAs.
+
+
+To address these challenges, we propose the Multi-Agent Vision–Language–Critic Model (MA-VLCM) framework. Instead of directly deploying a VLA as an execution policy, the MA-VLCM is trained to evaluate and critique team-level robot behaviors. Specifically, the critic takes as input a textual task description, visual observations in the form of trajectory videos, and structured multi-agent state observations, evaluating the robot team’s performance with respect to the task (e.g., predicting the cumulative discounted reward). Trained contrastively to assign higher values to behaviors that better satisfy team objectives, the VLCM acquires cross-task and cross-environment generalization. Our work represents a first step towards a generalized, sample-efficient multi-agent critic, eliminating the need to learn a critic from scratch during MARL policy training.
+
+The main contributions of this work are threefold:
+\begin{itemize}
+    \item We introduce MA-VLCM, a novel vision–language-based centralized critic that evaluates multi-agent robot team behavior conditioned on task instructions, visual trajectory data, and multi-agent observations.
+    % \item We propose a training framework that leverages a pre-trained MA-VLCM to supervise the learning of lightweight, task-specific MARL execution policies, eliminating the need for critic learning during policy optimization and significantly improving sample efficiency.
+    \item We demonstrate that the resulting critic model achieve strong task performance across multiple environments and OOD tasks once trained........... [Fill this part with results]
+    \end{itemize}
+    % while being computationally efficient and deployable on heterogeneous, resource-constrained robotic platforms, enabling scalable real-world multi-agent systems.
+
+
+\section{Related Work}
+
+\subsection{VLM/VLA}
+
+Foundational models such as large language models \cite{driess2023palm} and vision–language models \cite{liu2023visual} have transformed embodied AI. Pretrained robotic Vision–Language–Action (VLA) systems such as OpenVLA \cite{kim24openvla} demonstrate strong multi-task generalization by leveraging internet-scale data. These models learn rich semantic representations enabling zero-shot adaptation, instruction following, and long-horizon reasoning.
+
+VLA models map visual and linguistic observations directly to robot actions. However, they face key limitations: they are computationally expensive and slow at inference \cite{zitkovich2023rt} and adapting them across heterogeneous agents requires large-scale finetuning on extensive datasets \cite{bousmalis2023robocat}. Consequently, despite their semantic flexibility, VLAs are not well suited for direct deployment in distributed multi-agent systems. Recent works have instead used foundation models for planning, reward modeling, and policy evaluation \cite{xie2023text2reward} but these approaches are largely confined to single-agent settings and do not address centralized value estimation in multi-agent reinforcement learning.
+
+
+\subsection{MARL}
+
+Multi-Agent Reinforcement Learning (MARL) provides a principled framework for learning collaborative and competitive behaviors among interacting agents \cite{oroojlooy2023review}. A widely adopted paradigm is centralized training with decentralized execution (CTDE) \cite{amato2024introduction}, where a centralized critic accesses global state information during training while lightweight policies are executed independently. Algorithms such as MADDPG \cite{lowe2017multi} and MAPPO \cite{yu2022surprising} employ centralized critics to mitigate non-stationarity arising from evolving agent behaviors.
+
+Despite their effectiveness, centralized critics present several limitations. First, learning value functions from scratch in high-dimensional observation spaces—particularly those involving raw visual inputs—is sample inefficient. Second, critics trained in a specific environment rarely generalize across task variations or domain shifts \cite{cobbe2019quantifying}. Third, traditional critics rely solely on reward signals and structured state representations, lacking semantic grounding in language or visual abstractions. As a result, MARL policies typically require retraining for new tasks and struggle with long-horizon reasoning under sparse rewards. Recent efforts attempt to improve sample efficiency via representation learning, shared encoders, or contrastive objectives over trajectories.  However, these approaches still learn the critic jointly within the RL loop and do not leverage pretrained multimodal foundation models as generalized value estimators.
+
+\subsection{Vision-language critic}
+
+Recent works have explored leveraging vision–language models as critics or reward models for real-world robotic reinforcement learning. Vision–Language–Action–Critic (VLAC) \cite{zhai2025vision} models unify actor and critic roles within a single autoregressive architecture to produce dense progress signals directly from image pairs and task descriptions. Similarly, Video-Language Critic (VLC) \cite{alakuijala2024video} and Language-Image Value Learning (LIV) \cite{ma2023liv}
+frameworks learn transferable reward functions via contrastive video–language alignment or temporal ranking objectives.  While these methods demonstrate improved sample efficiency and generalization in real-world manipulation, they are predominantly designed for single-agent settings and evaluate individual trajectories without modeling coordination or joint value estimation. In contrast, our work extends the vision–language critic paradigm to a multi-agent centralized setting, where a pretrained VLM serves as a coordination-aware critic that evaluates team-level behavior and supports decentralized multi-agent policy learning.
+
+
+
+\begin{figure*}[ht]
+    \centering
+    \includegraphics[width=\textwidth]{images/overall_architecture.png}
+    \caption{Overall architecture of the MA-VLCM training (\textcolor{red}{--}) and inference (-) directions}
+    \label{fig:approach}
+\end{figure*}
+
+
+
+\section{Preliminaries}
+\subsection{Problem Formulation}
+% We consider a cooperative MARL problem formulated as a Dec-POMDP, represented by the tuple $\langle\mathcal{N}, \mathcal{T}, \{\mathcal{O}^i\}_{i=1}^n, \{\mathcal{A}^i\}_{i=1}^n, R, P, \gamma\rangle$. Here, $\mathcal{N}={1,\dots,n}$ is the set of agents, and $\mathcal{T}$ is the set of all possible tasks. Each agent $i\in\mathcal{N}$ has an observation space $\mathcal{O}^i\subset\mathbb{R}^p$, where $p$ is the observation dimension, and an action space $\mathcal{A}^i\subset\mathbb{R}^q$, where $q$ is the action dimension. The joint observation and action spaces are ${\mathcal{O}}=\prod_{i=1}^n \mathcal{O}^i$ and ${\mathcal{A}}=\prod_{i=1}^n \mathcal{A}^i$, respectively.  The transition kernel $P:{\mathcal{O}}\times{\mathcal{A}}\times{\mathcal{O}}\to[0,1]$ defines the environment dynamics, $R:{\mathcal{O}}\times{\mathcal{A}}\to[-R_{\min},R_{\max}]$ is the VLCM compatible reward function (more details in Section \ref{section:VLCM}), and $\gamma\in[0,1)$ is the discount factor.
+
+% We model the multi-agent interaction structure as a dynamic graph $G=(\mathcal{N},\mathcal{E})$, where nodes $\mathcal{N}$ correspond to agents and edges $\mathcal{E}$ denote available communication links which can change in real-time. The graph structured data is processed by the centralized VLCM while the agents policies act solely using local observations $o^i_t$, i.e, they follow the CTDE paradigm. Based on the task information, and local observations, agents select actions ${a}^i_t$ from their respective policy $\pi^i$, which is the ${i}^\text{th}$ component of the joint policy ${\pi} = \prod_{i=1}^n \pi^i$. The transition kernel and the joint policy induce the marginal observation distribution $\rho_{{\pi}}(\cdot)=\sum_{t=0}^\infty\gamma^t{Pr}(\boldsymbol{o}_t\mid {\pi})$ \cite{wen2022multi}. All agents then receive a shared team reward $R(\boldsymbol{o}_t,\boldsymbol{a}_t)=\frac{1}{N}\sum_{i\in\mathcal{N}}R^i(o^i,a^i)$ and observe $\boldsymbol{o}^i_{t+1}$. 
+
+We consider a cooperative MARL problem modeled as a Dec-POMDP
+$
+\langle \mathcal{N}, \mathcal{T}, \{\mathcal{O}^i\}_{i=1}^n,
+\{\mathcal{A}^i\}_{i=1}^n, R, P, \gamma \rangle .
+$
+Here, $\mathcal{N}=\{1,\dots,n\}$ denotes the set of agents and $\mathcal{T}$ the task set. 
+Each agent $i$ has observation and action spaces 
+$\mathcal{O}^i \subset \mathbb{R}^p$ and 
+$\mathcal{A}^i \subset \mathbb{R}^q$, with joint spaces 
+$\mathcal{O}=\prod_{i=1}^n \mathcal{O}^i$ and 
+$\mathcal{A}=\prod_{i=1}^n \mathcal{A}^i$. 
+The transition kernel 
+$P:\mathcal{O}\times\mathcal{A}\times\mathcal{O}\to[0,1]$ 
+defines the environment dynamics, 
+$R:\mathcal{O}\times\mathcal{A}\to[-R_{\min},R_{\max}]$ 
+is the VLCM-compatible reward (see Section~\ref{section:VLCM}), 
+and $\gamma\in[0,1)$ is the discount factor.
+
+Agent interactions are modeled as a dynamic graph 
+$G=(\mathcal{N},\mathcal{E})$, where edges represent time-varying communication links. 
+During training, the centralized VLCM processes graph-structured information, 
+while policies execute using only local observations $o_t^i$ under CTDE. 
+Each agent selects actions $a_t^i \sim \pi^i$, forming the joint policy 
+$\pi=\prod_{i=1}^n \pi^i$. 
+Together with $P$, this induces the discounted state distribution
+$
+\rho_{\pi}(\cdot)=\sum_{t=0}^{\infty}\gamma^t 
+\Pr(\mathbf{o}_t \mid \pi)
+$
+\cite{wen2022multi}. 
+Agents receive a shared team reward
+$
+R(\mathbf{o}_t,\mathbf{a}_t)
+= \frac{1}{n}\sum_{i\in\mathcal{N}} R^i(o_t^i,a_t^i),
+$
+and observe the next local observations $o_{t+1}^i$.
+
+We consider the fully cooperative setting in which all agents optimize a shared/averaged team reward. The goal is to learn local policies $\{\pi^i\}_{i=1}^n$ that maximize the expected discounted team return:
+\begin{equation}\label{eq:objective_function}
+    J\left(\pi\right) = \mathbb{E}_{\pi}\left[\sum_{t=0}^{\infty}\gamma^t R(\mathbf{o}_t,\mathbf{a}_t)\right]
+\end{equation}
+
+
+\subsection{Graph Attention Networks}
+
+Graph Attention Networks (GATs) \cite{velivckovic2017graph, brody2021attentive} are effective at learning representations from graph-structured data by modeling relational dependencies through adaptive, attention-based message passing. By assigning data-dependent weights to neighboring nodes, GATs enable selective aggregation of informative interactions while suppressing less relevant ones.
+
+Formally, consider a node $i$ with feature vector $\boldsymbol{h}^i \in \mathbb{R}^d$ and neighborhood $\mathcal{N}^i$. A shared attention function $e : \mathbb{R}^d \times \mathbb{R}^d \to \mathbb{R}$ computes an unnormalized attention score for each neighbor $j \in \mathcal{N}^i$:
+\begin{equation} \label{eq:attention_score}
+    e(\boldsymbol{h}^i,\boldsymbol{h}^j) = \text{LeakyReLU}\left({\boldsymbol{q}}^\top\left[\boldsymbol{W}\boldsymbol{h}^i\|\boldsymbol{W}\boldsymbol{h}^j\right]\right),
+\end{equation}
+where $\boldsymbol{W} \in \mathbb{R}^{d' \times d}$ is a learnable linear transformation, ${\boldsymbol{q}} \in \mathbb{R}^{2d'}$ is a trainable weight vector, and $\|$ denotes concatenation. The attention scores are normalized using a softmax:
+\begin{equation}\label{eq:norm_attention_score}
+    \alpha_{ij} = \frac{\exp\left(e(\boldsymbol{h}^i,\boldsymbol{h}^j)\right)}{\sum_{j'\in\mathcal{N}^i}\exp(e(\boldsymbol{h}^i,\boldsymbol{h}^{j'}))}.
+\end{equation}
+
+The updated node representation is computed as
+$
+\hat{\boldsymbol{h}}^i = \sigma\left(\sum_{j \in \mathcal{N}^i} \alpha_{ij}\boldsymbol{W}\boldsymbol{h}^j\right)$, where $\sigma$ denotes a nonlinear activation function.
+
+
+\section{Methodology}
+\label{section:VLCM}
+
+\subsection{Multi-Agent Vision--Language--Critic Model}
+The primary role of a centralized critic, $V:\mathcal{O}\rightarrow\mathbb{R}$, in MARL is to estimate the long-term return of a team of agents executing a joint policy $\pi$ from a global observation $\mathbf{o}\in\mathcal{O}$. Although centralized critics improve stability under centralized training with decentralized execution (CTDE), they are typically learned from scratch for each task distribution $\mathcal{T}$, resulting in high sample complexity and limited cross-task generalization. To address this limitation, we propose the Multi-Agent Vision--Language--Critic Model (MA-VLCM) (Fig.~1), which replaces a task-specific critic with a foundation-model-based critic that leverages (i) large-scale pre-trained vision--language priors and (ii) structured multi-agent temporal reasoning via graph attention. The key idea is to reinterpret value estimation as a multi-modal sequence understanding problem, where the model jointly reasons over the visual trajectory, a natural-language task specification, and structured multi-agent observations to evaluate the quality of the executed team behavior.
+
+\subsection{Multi-modal conditioning with observation tokens.}
+Let a trajectory segment under policy $\pi$ be
+\[
+\tau=\{\mathbf{o}_k,\mathbf{I}_k, \mathbf{a}_k\}_{k=t}^{t+H-1},
+\]
+where $\mathbf{o}_k$, $\mathbf{I}_k$, and $\mathbf{a}_k$ denote the multi-agent state observations, corresponding bird's eye view (BEV) video frame, and actions at timestep $k$, respectively; let $\ell$ denote the language task prompt. We encode the structured robotic observations at each timestep $k$ using a temporal graph-attention module,
+\begin{equation}
+\mathbf{h}_k = f_{\mathrm{GAT}}(\mathbf{o}_k, \mathbf{a}_k),
+\end{equation}
+which produces permutation-invariant embeddings that capture inter-agent interactions. These embeddings are projected into the token embedding space of the vision--language backbone:
+\begin{equation}
+\mathbf{e}^{\mathrm{obs}}_k = \mathbf{W}_{\mathrm{proj}}\,\mathbf{h}_k .
+\end{equation}
+We introduce a dedicated learnable observation token $\langle\texttt{OBS}\rangle$ and instantiate a time-indexed token $\langle\texttt{OBS}\rangle_k$ whose input embedding is set to $\mathbf{e}^{\mathrm{obs}}_k$. The transformer input is then formed by concatenating video tokens, text tokens, and observation tokens sequence:
+\[
+\Big[\; \text{Video}\; ;\; \text{Text}\; ;\; \langle\texttt{OBS}\rangle_t,\ldots,\langle\texttt{OBS}\rangle_{t+H-1} \;\Big].
+\]
+This construction enables the backbone to capture information across (i) spatial-temporal visual features, (ii) task-level semantic intent, and (iii) explicit robotic state  encoded by the graph module.
+
+\subsection{Policy-space interpretation of the critic.}
+
+Let $\Phi(\tau,\ell)\in\mathbb{R}^m$ denote the latent representation produced by the vision--language backbone after cross-modal reasoning over the input sequence. We interpret $\Phi(\tau,\ell)$ as an implicit embedding of the executed joint policy $\pi\in\Pi$ under task $\ell$. Let $d:\mathbb{R}^m\times\mathbb{R}^m\rightarrow\mathbb{R}_{\ge 0}$ be a metric on the latent representation space. Let $\Pi^\star_\ell\subset\Pi$ denote the set of desirable (near-optimal) policies for task $\ell$, and define the corresponding set of desirable latent embeddings
+\begin{equation}
+\mathcal{Z}^\star_\ell \;:=\; \big\{\, \Phi(\tau^\star,\ell)\in\mathbb{R}^m \;\big|\; \tau^\star \sim \pi^\star,\ \pi^\star\in\Pi^\star_\ell \,\big\}.
+\label{eq:optimal_latent_set}
+\end{equation}
+Conceptually, MA-VLCM should assign higher values to behaviors whose latent representations are closer to $\mathcal{Z}^\star_\ell$ under $d$. Accordingly, we seek to maximize the separation between sub-optimal behaviors and the desirable set in latent space by optimizing the backbone parameters $\psi$ as
+\begin{equation}
+\max_{\psi}\; d\!\left(\Phi(\tau,\ell),\mathcal{Z}^\star_\ell\right)
+\;:=\;
+\max_{\psi}\; \inf_{\mathbf{z}^\star\in\mathcal{Z}^\star_\ell}
+d\!\left(\Phi(\tau,\ell),\mathbf{z}^\star\right),
+\label{eq:policy_distance_value}
+\end{equation}
+where the contrastive loss ($\mathcal{L}_{con}$) is induced by the metric $d$ on $\mathbb{R}^m$. Intuitively, trajectories generated by high-performing policies map to latent representations closer to $\mathcal{Z}^\star_\ell$, while sub-optimal behaviors are embedded farther away under $d$. To shape this latent geometry, we optimize the backbone using a contrastive objective loss that treats embeddings of desirable trajectories as positives and sub-optimal trajectories as negatives. This encourages desirable behaviors to cluster in representation space while increasing separation from poor behaviors, directly enforcing the margin defined in~\eqref{eq:policy_distance_value}. 
+% To explicitly shape this latent geometry, we optimize the backbone using a contrastive objective. Given a trajectory embedding $\mathbf{z}=\Phi(\tau,\ell)$, a desirable embedding $\mathbf{z}^\star\in\mathcal{Z}^\star_\ell$, and a set of sub-optimal embeddings $\{\mathbf{z}^-\}$, we minimize
+% \begin{equation}
+% \mathcal{L}_{\mathrm{con}} 
+% =
+% - \log 
+% \frac{\exp\!\left(- d(\mathbf{z},\mathbf{z}^\star)/\tau_c \right)}
+% {\exp\!\left(- d(\mathbf{z},\mathbf{z}^\star)/\tau_c \right) 
+% + \sum_{\mathbf{z}^-} 
+% \exp\!\left(- d(\mathbf{z},\mathbf{z}^-)/\tau_c \right)},
+% \end{equation}
+% where $\tau_c$ is a temperature parameter. This encourages desirable behaviors to cluster in representation space while pushing sub-optimal behaviors apart, directly enforcing the separation described in~\eqref{eq:policy_distance_value}.
+
+The final scalar value is obtained via a lightweight linear head:
+\begin{equation}
+V^\pi(\tau,\ell) = \mathbf{w}^\top \Phi(\tau,\ell) + b,
+\end{equation}
+where $\mathbf{w}\in\mathbb{R}^m$ and $b\in\mathbb{R}$ are trainable parameters. The value head is trained using standard temporal-difference or Monte-Carlo regression targets,
+\begin{equation}
+\mathcal{L}_{\mathrm{value}} 
+=
+\left( V^\pi(\tau,\ell) - \hat{R} \right)^2,
+\end{equation}
+with $\hat{R}$ denoting the TD or return estimate. The overall optimization combines representation shaping and value calibration:
+\begin{equation}
+\mathcal{L}_{\mathrm{total}} 
+=
+\mathcal{L}_{\mathrm{value}} 
++ \lambda \mathcal{L}_{\mathrm{con}},
+\end{equation}
+where $\lambda$ balances latent separation and return regression.
+
+
+Under this formulation, the backbone learns a structured latent space: trajectories from high-performing policies cluster together, while sub-optimal behaviors lie farther away. The value head then maps this structured representation to a calibrated scalar estimate using standard reinforcement learning targets. By conditioning on observation tokens, the learned representation remains grounded in the underlying multi-agent robotic state dynamics, ensuring that the value estimates are both semantically meaningful and physically consistent.
+
+
+\subsection{Multi-Agent Vision Language Critic Dataset}
+\label{subsec:dataset}
+
+A core contribution of our work is the development of a comprehensive multi-agent, multi-modal dataset designed to train the VLCM. Most of the prior works have focused on single agent offroad navigation tasks \cite{triest2022tartandrive} or single agent manipulation tasks \cite{Khazatskyetal2024}, only comprising of optimal data. However, the current data collection strategy is focused on capturing  multi-agent team tasks with coordination and communication aspects that aid in satisfying a team goal for both structured and unstructured environments. 
+Formally, we define a vision language multi-modal $\mathcal{D} = \{ \tau_i \}_{i=1}^N$ consisting of $N$ trajectories. Each trajectory $\tau$ of horizon $H$ is defined as a sequence of tuples $\tau = \{\mathbf{o}_k,\mathbf{I}_k, \mathbf{a}_k\}_{k=t}^{t+H-1}$ conditioned on a global language prompt $\ell$. To train the generalized vision-language critic, we record the following modalities at each timestep $k$.
+
+
+\textbf{Visual Observations ($\mathbf{I}_t, \tilde{\mathbf{I}}_t$):} 
+At each timestep $t$, we collect multi-modal Bird’s Eye View (BEV) visual inputs 
+$\mathbf{I}_t \in \mathbb{R}^{n \times h \times w \times c}$ for $n$ agents, 
+where $h$ and $w$ denote image height and width, and $c$ the number of channels. These modalities may include RGB imagery, grayscale terrain 
+traversability maps, or rasterized semantic representations. MA-VLCM as a centralized critic has complete 
+BEV visual information of all agents. The BEV can also be rasterized to produce 
+a semantic map $\tilde{\mathbf{I}}_t$ from state observations. An example of the BEV and its rasterized semantic view can be seen in Figure~\ref{fig:rware_image}.
+
+ \begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\columnwidth]{images/combined_RWARE.png}
+    \caption{(a) The Robotic Warehouse (RWARE) 3D environment created in Isaac Sim. (b) A rendering of \texttt{rware-4ag} grid environment with 4 agents and 4 requested boxes (in green) descrbing the rasterized semantic image, (c) and its equivalent BEV camera image collected from the same environment shown in (a).}
+    \label{fig:rware_image}
+\end{figure} 
+
+ \begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\columnwidth]{images/combined_OFFROAD.png}
+    \caption{An unstrucutred offroad environment created in high-fidelity simulator with 3 Clearpath Jackal robots (left), and a corresponding rasterized top-down view (right), with the agents represented as color-coded markers moving to their target location on a traversability map generated from the high-fidelity simulator.}
+    \label{fig:offroad_image}
+\end{figure} 
+
+\textbf{State Observations ($\mathbf{o}_t$):} Proprioceptive state matrix $\mathbf{o}_t \in \mathbb{R}^{n \times p}$ such as pose $(\mathbf{p}_t)$, velocity $(\dot{\mathbf{p}}_t)$, orientation $(\mathbf{w}_t)$ as well as actions ($\mathbf{a}_{t}$) of every agent is recorded. To support unified VLCM training across environments with different observation dimensions, we mask the corresponding GAT input nodes accordingly.
+    
+\textbf{Graph Topology ($\mathbf{A}_t$):} Time-varying multi-agent communication is encoded as an adjacency matrix $\mathbf{A}_t \in \{0,1\}^{n \times n}$, enabling the VLCM to model connectivity and information flow while remaining robust to varying communication distances and team configurations.
+    
+\textbf{Language Task Prompts ($\ell$):} Each trajectory is associated with a caption $\ell$ describing the task and environment configuration, providing richer expressivity than one-hot task IDs. For example, in RWARE environment, $\ell$ specifies: \begin{quote}
+\textit{``Two agents must coordinate to pick two boxes and deliver them to the goal locations''} for (\texttt{rware-tiny-2ag}) vs. \textit{``Four agents must coordinate to pick two boxes...''} for (\texttt{rware-tiny-4ag})
+\end{quote}
+This linguistic grounding enables the critic to evaluate policies relative to semantic instructions rather than generic data. An example prompt is shown in Figure~\ref{fig:approach}
+
+\textbf{Trajectory Returns ($R_t$):} The primary objective of the MA-VLCM is to predict the expected infinite-horizon discounted return of a team's policy given a trajectory segment. To facilitate this, we compute a ground-truth \textbf{Reward matrix} $R \in \mathbb{R}^{n \times T}$ containing the dense rewards received by each agent $i \in n$ at time $t \in T$. During training, the VLCM accepts a short context window of $H$ frames of multi-modal inputs ($\{\mathbf{o}_{t:t+H}, \mathbf{I}_{t:t+H},\mathbf{a}_{t:t+H}\}$) and the language prompt $\ell$. Within each clip, we first compute an \textit{n-step discounted return}: \begin{equation} G_t^{(H)} = \sum_{k=0}^{H-1} \gamma^k R_{t+k} \end{equation} Because the clip length $H$ is typically much shorter than the full episode, truncating the return at $H$ would underestimate the true value. We therefore bootstrap the discounted return beyond clip length using an exponential moving average (EMA) target network $\bar{V}$, yielding the full training target: 
+\begin{equation} 
+y_t = G_t^{(H)} + \gamma^{H} (1 - \rho_{t+H}) \cdot \bar{V}(\mathbf{o}_{t+H}, \mathbf{a}_{t+H}, \ell) 
+\end{equation}
+
+where $\rho_{t+H} \in {0,1}$ is the terminal flag for the episode. The EMA target parameters $\bar{\theta}$ are updated as :
+\begin{equation}
+    \bar{\theta} \leftarrow \alpha \cdot \bar{\theta} + (1 - \alpha) \cdot \theta
+\end{equation}
+
+where $\alpha \in [0, 1]$ is the smoothing coefficient (typically close to $1$). This mechanism mitigates the instabilities inherent in training large-scale foundation models within an RL loop, particularly when dealing with sparse or noisy off-road environment rewards \cite{zhang2026ema}. The MA-VLCM is trained to regress these targets using a combination of mean-squared error and a contrastive pairwise loss, which encourages the critic to preserve the \textit{ranking} of trajectories by quality. This allows the VLCM to learn to distinguish between \textit{high-utility cooperative behaviors and suboptimal policies solely from observation, action, and language context}.
+
+
+
+\subsubsection{Multi-Level Trajectory Optimality}
+\label{subsec:trajectory_optimality}
+Unlike large-scale VLA datasets that predominantly contain expert demonstrations for single-agents, MA-VLCM dataset captures coordination and  team behaviours for multi-agent systems and spans across \textit{multiple levels of optimality}. Since the VLCM is trained as a critic, its objective is to evaluate the quality of any given policy and not merely to imitate optimal behavior. Consequently, collecting data exclusively from high-reward policies would provide an incomplete view of the policy space and limit the critic's discriminative capacity.
+
+To address this, for both the RWARE and offroad environments, we sample trajectories from policies at varying stages of training and with different hyperparameter configurations, yielding a spectrum of cumulative returns from near-random to near-optimal. Formally, let $\Pi = \{\pi_1, \pi_2, \dots, \pi_K\}$ denote a set of $K$ policies with varying performance levels. For each policy $\pi_k \in \Pi$, we collect a set of trajectories $\mathcal{D}_k = \{\tau_j \sim \pi_k\}_{j=1}^{M_k}$, where the expected returns satisfy:
+\begin{equation}
+    V^{\pi_1} \leq V^{\pi_2} \leq \dots \leq V^{\pi_K}.
+\end{equation}
+The complete dataset $\mathcal{D} = \bigcup_{k=1}^{K} \mathcal{D}_k$ thus provides a holistic representation of the policy space, enabling the VLCM to learn fine-grained value distinctions across the full performance spectrum.
+
+
+
+\section{Experiments}
+We evaluate the proposed MA-VLCM framework across two distinct multi-agent domains: a structured robotic warehouse environment and an unstructured offroad navigation environment. This section describes the data collection pipeline for the Multi-Agent Vision Language Critic and the trajectory sampling strategy employed to capture diverse policy behaviors.
+
+\subsection{Data Collection Pipeline}
+\label{subsec:data_collection}
+
+\subsubsection{Structured Environment: Robotic Warehouse (RWARE)}\label{sec:rware}
+For the structured domain, we utilize the Robotic Warehouse (RWARE)~\cite{papoudakis2021benchmarking} environment from the multi-agent reinforcement learning benchmark suite as seen in Figure~\ref{fig:rware_image}. Trajectories are first sampled from multiple RWARE configurations (varying the number of agents, shelf layouts, and task specifications) using the low-fidelity grid-world simulator. To obtain high-fidelity visual observations suitable for vision-language inference, we execute a \textit{sim-to-sim transfer}: the sampled trajectories are replayed in a photorealistic robotic warehouse environment constructed in NVIDIA Isaac Sim. This transfer preserves the original agent interactions and task semantics while enabling the collection of high-dimensional visual data (e.g., RGB imagery, depth maps) that closely approximates real-world warehouse settings. Critically, the sim-to-sim pipeline decouples policy evaluation from visual fidelity, allowing the VLCM to perform inference directly in the high-dimensional observation space without retraining the underlying policies. 
+
+\subsubsection{Unstructured Environment: Offroad Navigation}
+For the unstructured domain, we consider a multi-agent ground robot team operating in an offroad Isaacsim environment as shown in Figure~\ref{fig:offroad_image}. Each agent is tasked with a Go-To-Goal objective  while avoiding collisions and selecting the highly traversable path through a challenging terrain. The BEV representation for this environment consists of rasterized blobs that encode each robot's current position, its trajctory from start position along with  its corresponding goal location using color-coded markers, overlaid on an offroad traversability map. The traversability maps are generated by computing the  local gradients of  terrain constructed in Isaac Sim, providing realistic terrain difficulty estimates to the robots. The Isaac Sim environment is first voxelised to 0.05m voxel size, and then a 2.5D terrain height map is generated as top-down view. The 2.5D terrain height map is then converted to a traversability map based on the max roll and pitch limits of the robot, with static and dynamic coefficients of friction set as 0.7. As with the RWARE pipeline, the VLCM evaluates agent policies using these high-fidelity BEV observations rendered in Isaac Sim, ensuring consistent visual quality across both domains. Along with the visual observation, the dataset also contains state observations, actions, adjacency matrix, traversability  and  rewards at each step. Suboptimality during the dataset collection is generated by adding noise to control commands, intentionally missing goals and inducing collision among agents and so on. 
+A combination ``of offline path planning with weighted-Djikstra* and online path planning with ORCA~\cite{berg2011reciprocal} is used to collect the trajectories and replay them in the same sim2sim way as shown with the RWARE environment in Section~\ref{sec:rware}.
+
+\subsection{Training Implementation}
+\label{subsec:training_impl}
+We train the MA-VLCM using two frozen VLM backbone variants: LLaVA-NeXT-Video-7B-32K and LLaVA-OneVision-Qwen2-0.5B , adapted via Low-Rank Adaptation (LoRA). Trajectories are serialized into WebDataset format for efficient I/ODistributed training is performed across two NVIDIA H200 GPUs utilizing a combined temporal-difference and contrastive pairwise objective. Key training hyperparameters and architectural details are summarized in Table~\ref{tab:hyperparameters}.
+
+\begin{table}[ht]
+\centering
+\caption{Key MA-VLCM Hyperparameters}
+\label{tab:hyperparameters}
+\renewcommand{\arraystretch}{1.2}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\ 
+\midrule
+LoRA Rank ($r$), Scaling ($\alpha$) & $r=16$, $\alpha=32$  \\
+Graph Attention Network (GAT) Dim & 256  \\
+Optimizer & AdamW  \\
+Learning Rate & $3 \times 10^{-4}$  \\
+Effective Batch Size & 32  \\
+Video Clip Length ($H$) & 64 frames  \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+\section{Results}
+In this section, we present experimental results evaluating the MA-VLCM as a centralized critic. We focus on the \textit{value estimation} capability of the VLCM: given a multi-agent trajectory segment, task description, and structured team observations, the model predicts the expected discounted return of the underlying team policy. Accurate value estimation is a prerequisite for using the VLCM as a drop-in replacement for a learned centralized critic in MARL.
+
+\subsection{Value Estimation}
+\label{subsec:value_estimation}
+We evaluate the MA-VLCM's ability to estimate policy returns against ground-truth discounted returns using frozen baselines and LoRA-augmented variants of the 2 VLM backbones. The models are assessed under two generalization regimes: In-Distribution (ID) on held-out trajectories from known configurations, and Out-of-Distribution (OOD) on novel scenarios—such as varying agent counts and new obstacles—where unseen reward components are specified solely through natural language task prompts. To measure performance, we evaluate the Spearman Rank Correlation ($\rho$) to verify whether the critic preserves policy quality rankings (crucial for contrastive value learning), Mean Squared and Absolute Errors (MSE/MAE) for absolute prediction accuracy, and true-versus-predicted return slopes alongside mean prediction interval widths to assess model calibration and uncertainty. For each model configuration and generalization regime, we evaluate over 100 trajectory samples and report the following metrics in Table~\ref{tab:value_estimation}
+
+\begin{table}[ht]
+\centering
+\caption{Value Estimation: In-Distribution vs.\ Out-of-Distribution}
+\label{tab:value_estimation}
+\renewcommand{\arraystretch}{1.2}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l|cc|cc}
+\toprule
+\multirow{2}{*}{\textbf{Metric}} & \multicolumn{2}{c|}{\textbf{In-Distribution}} & \multicolumn{2}{c}{\textbf{Out-of-Distribution}} \\
+ & \textbf{RWARE} & \textbf{Offroad} & \textbf{RWARE} & \textbf{Offroad} \\
+\midrule
+
+\multicolumn{5}{l}{\textit{GNN + Value Head + LLaVA-0.5B-OV (Baseline)}} \\
+\hspace{1em}seconds/iteration $\downarrow$ & \multicolumn{4}{c}{\textbf{1.57}} \\
+\hspace{1em}Spearman $\rho$ $\uparrow$ & 0.606 & 0.7241 &  & 0.1949 \\
+\hspace{1em}MSE $\downarrow$ & 27.715 & 6.1142 &  & 12.0875 \\
+\hspace{1em}MAE $\downarrow$ & 5.101 & 2.044 &  & 3.03 \\
+\hspace{1em}Pred.\ Interval Width & 1.602 & 1.74 &  & 1.74 \\
+\midrule
+
+\multicolumn{5}{l}{\textit{Baseline + LoRA (LLaVA-0.5B-OV)}} \\
+\hspace{1em}seconds/iteration $\downarrow$ & \multicolumn{4}{c}{\textbf{1.75}} \\
+\hspace{1em}Spearman $\rho$ $\uparrow$ & 0.9007 & 0.7273 &  & 0.7634 \\
+\hspace{1em}MSE $\downarrow$ & 27.011 & 18.45 &  & 34.52 \\
+\hspace{1em}MAE $\downarrow$ & 5.1414 & 3.860 &  & 5.4 \\
+\hspace{1em}Pred.\ Interval Width & 1.65 & 3.12 &  & 3.049 \\
+
+
+\midrule
+\multicolumn{5}{l}{\textit{GNN + Value Head + LLaVA-7B (Baseline)}} \\
+\hspace{1em}seconds/iteration $\downarrow$ & \multicolumn{4}{c}{\textbf{4.96}} \\
+\hspace{1em}Spearman $\rho$ $\uparrow$ & 0.4164 & 0.552 &  & 0.3921 \\
+\hspace{1em}MSE $\downarrow$ & 49.609 & 58.65 &  & 76.96 \\
+\hspace{1em}MAE $\downarrow$ & 4.697 & 6.943 &  & 8.18 \\
+\hspace{1em}Pred.\ Interval Width & 0.2735 & 0.2792 &  & 0.3871 \\
+
+\midrule
+\multicolumn{5}{l}{\textit{Baseline + LoRA (LLaVA-7B)}} \\
+\hspace{1em}seconds/iteration $\downarrow$ & \multicolumn{4}{c}{\textbf{5.59}} \\
+\hspace{1em}Spearman $\rho$ $\uparrow$ & 0.5492 & 0.4258 & & 0.2016  \\
+\hspace{1em}MSE $\downarrow$ & 30.99 & 11.68177 &  & 17.39 \\
+\hspace{1em}MAE $\downarrow$ & 5.28 & 2.584664 &  & 3.47 \\
+\hspace{1em}Pred.\ Interval Width & 0.5526 & 1.29 &  & 0.79 \\
+
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The results presented highlight the critical role of LoRA in aligning the vision-language backbone for multi-agent value estimation. Integrating LoRA significantly enhances the model's ability to rank policy qualities, which is the primary objective of the contrastive value framework. For instance, the LLaVA-0.5B-OV model augmented with LoRA achieves a dramatic improvement in Spearman rank correlation ($\rho$) in the OOD Offroad environment, jumping from 0.1949 to 0.7634. This indicates that fine-tuning the vision and language weights is essential for the critic to correctly interpret novel task specifications and generalize to unseen environmental penalty structures. However, this improved ranking capability sometimes trades off with absolute value calibration, as evidenced by the elevated MSE and MAE for the Offroad domain when LoRA is applied.
+
+A comparative analysis across model scales reveals that the more compact LLaVA-0.5B-OV architecture surprisingly outperforms the larger LLaVA-7B model in both accuracy and computational efficiency. The 0.5B baseline processes trajectory clips at a highly efficient 1.57 seconds per iteration, whereas the 7B baseline requires 4.96 seconds. Beyond inference speed, the 0.5B model demonstrates superior rank preservation and lower overall error across almost all ID and OOD scenarios. The relative underperformance of the 7B model—characterized by lower Spearman $\rho$ scores and higher baseline MSE values (e.g., 49.609 for ID RWARE and 58.65 for ID Offroad) suggests that effectively fine-tuning massive foundation models for dense, multi-agent value regression is highly non-trivial. Without significantly larger dataset scales or extensive hyperparameter tuning, the 7B model struggles to map its highly complex, pre-trained latent space to precise scalar return estimates.
+
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\columnwidth]{images/iid_vs_ood_0.5B.png}
+    \caption{Value Estimation on IID vs OOD for Offroad environment with 0.5B VLCM}
+    \label{fig:iid_ood_0.5B}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\columnwidth]{images/sample_comparison_Baseline_vs_LoRA.png}
+    \caption{Value comparison for 100 samples on Offroad environment with 0.5B VLCM}
+    \label{fig:sample_comparison}
+\end{figure}
+
+% \begin{figure}[ht]
+%     \centering
+%     % \includegraphics[width=\columnwidth]{model_boxplot.pdf}
+%     \caption{Box plots comparing prediction error distributions across the four model variants (left) and across ID vs.\ OOD generalization regimes (right). [Placeholder]}
+%     \label{fig:model_boxplot}
+% \end{figure}
+
+
+
+\section{CONCLUSIONS}
+
+In this work, we introduced MA-VLCM, a novel Vision-Language-Critic Model designed to provide generalized value estimation for multi-agent reinforcement learning (MARL). Concurrently, it addresses the pervasive sample inefficiency and limited task generalization associated with traditional MARL centralized critics. To train MA-VLCM, we generated a comprehensive multi-modal dataset encompassing both structured warehouse operations and unstructured offroad navigation tasks, purposefully incorporating trajectories spanning a wide spectrum of optimality. Our evaluations revealed that MA-VLCM robustly estimates policy returns and generalizes to challenging out-of-distribution scenarios, including varying agent configurations and novel constraints specified via natural language prompts. In future research, we intend to integrate the pre-trained MA-VLCM as a generalized centralized critic to train MARL policies in a few-shot approach for OOD settings. Furthermore, we plan to expand the MA-VLC dataset by incorporating additional multi-agent datasets with heterogenous teams.
+
+
+\addtolength{\textheight}{-6cm}   
+
+
+\section*{ACKNOWLEDGMENT}
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% This work was supported by the Automotive Research Center (ARC) at the University of Michigan, Ann Arbor, under Cooperative Agreement W56HZV-24-2-0001 with the US Army DEVCOM Ground Vehicle Systems Center (GVSC). DISTRIBUTION A. Approved for public release\; distribution unlimited. 
+
+\bibliographystyle{IEEEtran}
+\bibliography{References}
+
+
+
+
+\end{document}

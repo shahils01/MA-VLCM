@@ -97,7 +97,6 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --train_shards "$SHARD_PATTERN" \
   --offroad_shards "$OFFROAD_DATA_DIR" \
   --offroad_num_robots "$NUM_ROBOTS" \
-  --dataset_type rware \
   --rware_config "$CONFIG_NAME" \
   --batch_size 8 \
   --grad_accum_steps 4 \
@@ -126,6 +125,9 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
   --max_return_horizon 64 \
   --ema_decay 0.995 \
   --vl_max_text_len 4700 \
+  --contrastive_objective pairwise \
+  --contrastive_multidepth \
+  --contrastive_depth_offsets "0,4,8" \
   ${RESUME_CHECKPOINT:+--resume_from "$RESUME_CHECKPOINT"}
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
@@ -138,7 +140,6 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
 #   --train_shards "$SHARD_PATTERN" \
 #   --offroad_shards "$OFFROAD_DATA_DIR" \
 #   --offroad_num_robots "$NUM_ROBOTS" \
-#   --dataset_type rware \
 #   --rware_config "$CONFIG_NAME" \
 #   --batch_size 8 \
 #   --grad_accum_steps 4 \
@@ -162,4 +163,7 @@ apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
 #   --mse_loss_weight 0.5 \
 #   --max_grad_norm 1.0 \
 #   --samples_per_epoch 50000 \
-#   --vl_max_text_len 7000
+#   --vl_max_text_len 7000 \
+#   --contrastive_objective infonce \
+#   --contrastive_multidepth \
+#   --contrastive_depth_offsets "0,4,8"
