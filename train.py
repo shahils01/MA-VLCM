@@ -81,7 +81,7 @@ def parse_args():
     p.add_argument(
         "--contrastive_objective",
         type=str,
-        default="point_to_set",
+        default="infonce",
         choices=["point_to_set", "infonce"],
         help="Contrastive objective used when loss_type includes contrastive.",
     )
