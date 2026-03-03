@@ -6,7 +6,7 @@ accelerate launch --num_processes 1 eval_critic.py \
   --print_samples 10 \
   --value_pooling hidden_mean \
   --checkpoint checkpoints/ckpt_epoch_1.pt \
-  --num_robots 5 \
+  --num_robots 3 \
 
 
   # --eval_shards "/scratch/shahils/data/gotogoal_pt_0/shard-{000281..000285}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000251..000287}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000151..000159}.tar::/scratch/shahils/data/gotogoal_pt_45/shard-{000121..000129}.tar" \

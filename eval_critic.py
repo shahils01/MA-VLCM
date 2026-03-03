@@ -57,7 +57,12 @@ def parse_args():
     p.add_argument("--video_preprocessed", action="store_true", default=True)
     p.add_argument("--video_mean", type=float, nargs=3, default=(0.5, 0.5, 0.5))
     p.add_argument("--video_std", type=float, nargs=3, default=(0.5, 0.5, 0.5))
-    p.add_argument("--num_robots", type=int, default=5)
+    p.add_argument(
+        "--num_robots",
+        type=int,
+        default=None,
+        help="Override checkpoint num_robots when provided. If omitted, uses checkpoint value (or 5 without checkpoint).",
+    )
     p.add_argument("--robot_obs_dim", type=int, default=40)
     p.add_argument("--text_dim", type=int, default=512)
     p.add_argument("--d_model", type=int, default=256)
@@ -327,7 +332,12 @@ def main():
     if args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location="cpu")
         train_args = _load_train_args(ckpt)
+        if args.num_robots is not None and int(args.num_robots) != int(getattr(train_args, "num_robots", args.num_robots)):
+            print(f"Overriding checkpoint num_robots: {int(train_args.num_robots)} -> {int(args.num_robots)}")
+            train_args.num_robots = int(args.num_robots)
     else:
+        if args.num_robots is None:
+            args.num_robots = 5
         train_args = _args_from_cli(args)
 
     _resolve_vl_model_preset(train_args)
