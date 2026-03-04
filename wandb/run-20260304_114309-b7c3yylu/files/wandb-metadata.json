@@ -1,0 +1,49 @@
+{
+  "os": "Linux-5.15.0-164-lowlatency-x86_64-with-glibc2.35",
+  "python": "CPython 3.10.12",
+  "startedAt": "2026-03-04T16:43:09.845825Z",
+  "args": [
+    "--simplified_critic",
+    "--train_shards",
+    "/home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_test_rware",
+    "--offroad_shards",
+    "/home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/OFFROAD/Varied_Traversability_IID",
+    "--epochs",
+    "2"
+  ],
+  "program": "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py",
+  "codePath": "train.py",
+  "codePathLocal": "train.py",
+  "git": {
+    "remote": "https://github.com/shahils01/MA-VLCM.git",
+    "commit": "d47e58c9f449b13f591e67bc1c00f61beb7c6068"
+  },
+  "email": "aparame@g.clemson.edu",
+  "root": "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM",
+  "host": "administrator-Alienware-Aurora-R13",
+  "executable": "/usr/bin/python3",
+  "cpu_count": 16,
+  "cpu_count_logical": 24,
+  "gpu": "NVIDIA GeForce RTX 3080 Ti",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "67108864",
+      "used": "16384"
+    }
+  },
+  "memory": {
+    "total": "67197472768"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 3080 Ti",
+      "memoryTotal": "12884901888",
+      "cudaCores": 10240,
+      "architecture": "Ampere",
+      "uuid": "GPU-370a3a81-9866-4797-3079-9a993c76575a"
+    }
+  ],
+  "cudaVersion": "13.0",
+  "writerId": "5ygkau2kq1rsegsbudfkmqufxzpdmmyp"
+}
