@@ -1,0 +1,26 @@
+Param groups: vision_tower=199 params (lr=1e-05), other=35 params (lr=0.0003)
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 120 shards.
+Found 814 shards.
+Found 31 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 234 params, CPU-only)
+train:   0%|                     | 0/46700 [00:00<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2615, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2516, in main
+    train_loss = run_epoch(
+                 ^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1938, in run_epoch
+    model_out = model(
+                ^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 614, in forward
+    raise RuntimeError(
+RuntimeError: robot_obs has 2 nodes, but config expects 5. Set --num_robots to match your dataset.

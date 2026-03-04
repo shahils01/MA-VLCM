@@ -143,7 +143,7 @@ def parse_args():
     )
 
     # Sequence building
-    p.add_argument("--clip_len", type=int, default=10)
+    p.add_argument("--clip_len", type=int, default=16)
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument(
@@ -255,6 +255,11 @@ def parse_args():
         default=1.0,
         help="Weight for value-head pairwise contrastive loss.",
     )
+    p.add_argument(
+        "--simplified_critic",
+        action="store_true",
+        help="Use the simplified purely vision+graph critic without the language backbone.",
+    )
 
     # Accelerate
     p.add_argument(
@@ -298,7 +303,13 @@ def parse_args():
         "--vl_backend",
         type=str,
         default="llava_video",
-        choices=["deepseek_vl", "deepseek_vl2", "llava_video", "llava_onevision"],
+        choices=[
+            "deepseek_vl",
+            "deepseek_vl2",
+            "llava_video",
+            "llava_onevision",
+            "clip",
+        ],
     )
     p.add_argument(
         "--vl_model_name", type=str, default="llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
@@ -344,7 +355,7 @@ def parse_args():
 
     # Robots / graph
     p.add_argument("--num_robots", type=int, default=2)
-    p.add_argument("--robot_obs_dim", type=int, default=6)
+    p.add_argument("--robot_obs_dim", type=int, default=8)
 
     # Text
     p.add_argument("--text_dim", type=int, default=512)
@@ -418,6 +429,12 @@ def _resolve_contrastive_depth_args(args):
 
 
 def build_model(args, device):
+    # Calculate maximum robot count across all datasets to ensure the GNN
+    # handles the largest possible input team size.
+    max_robots = args.num_robots
+    if getattr(args, "offroad_shards", ""):
+        max_robots = max(max_robots, getattr(args, "offroad_num_robots", 5))
+
     cfg = ModelConfig(
         vl_backend=args.vl_backend,
         vl_model_name=args.vl_model_name,
@@ -431,7 +448,7 @@ def build_model(args, device):
         video_preprocessed=args.video_preprocessed,
         video_mean=tuple(args.video_mean),
         video_std=tuple(args.video_std),
-        num_robots=args.num_robots,
+        num_robots=max_robots,
         robot_obs_dim=args.robot_obs_dim,
         text_dim=args.text_dim,
         d_model=args.d_model,
@@ -449,6 +466,13 @@ def build_model(args, device):
             getattr(args, "contrastive_depth_offsets_list", [0])
         ),
     )
+    if getattr(args, "simplified_critic", False):
+        from model import SimplifiedCriticModel
+
+        if args.vl_model_name == "llava-hf/LLaVA-NeXT-Video-7B-32K-hf":
+            # Override with a standard CLIP vision encoder if user left the default LLaVA one
+            cfg.vl_model_name = "openai/clip-vit-base-patch32"
+        return SimplifiedCriticModel(cfg, device=device)
     return MultimodalValueModel(cfg, device=device)
 
 
@@ -822,6 +846,7 @@ class SequenceWebDataset(IterableDataset):
         vl_backend="llava_video",
         rware_visual_mode="both",
         max_return_horizon=0,
+        args=None,
     ):
         if isinstance(shards, str):
             if shards.startswith(("hf://", "http://", "https://", "pipe:")):
@@ -875,6 +900,9 @@ class SequenceWebDataset(IterableDataset):
         self.vl_backend = vl_backend
         self.rware_visual_mode = rware_visual_mode
         self._max_return_horizon = max_return_horizon
+        self.simplified_critic = (
+            getattr(args, "simplified_critic", False) if args is not None else False
+        )
 
     def _custom_decoder(self, key, data):
         # We only care about images here.
@@ -908,7 +936,16 @@ class SequenceWebDataset(IterableDataset):
             raise RuntimeError("webdataset is not installed.")
 
         if self.vlm_processor is None and self.vl_model_name is not None:
-            if (
+            if "clip" in self.vl_model_name.lower():
+                from transformers import AutoImageProcessor
+
+                try:
+                    self.vlm_processor = AutoImageProcessor.from_pretrained(
+                        self.vl_model_name, use_safetensors=True
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to load CLIP processor: {e}")
+            elif (
                 self.vl_backend == "llava_onevision"
                 or "llava-onevision" in self.vl_model_name.lower()
             ):
@@ -1001,6 +1038,17 @@ class SequenceWebDataset(IterableDataset):
             if self.vlm_processor is not None:
 
                 def _proc(frames, text):
+                    if (
+                        getattr(self.vlm_processor, "image_processor", None) is None
+                        and getattr(self.vlm_processor, "tokenizer", None) is None
+                    ):
+                        # Pure AutoImageProcessor (CLIP etc)
+                        inputs = self.vlm_processor(images=frames, return_tensors="pt")
+                        packed = {}
+                        for k, v in dict(inputs).items():
+                            packed[k] = v
+                        return packed
+
                     if not isinstance(text, str):
                         text = self.text_prompt_template
                     tokenizer = getattr(self.vlm_processor, "tokenizer", None)
@@ -1035,12 +1083,10 @@ class SequenceWebDataset(IterableDataset):
                         )
                     packed = {}
                     for k, v in dict(inputs).items():
-                        if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
-                            v = v.squeeze(0)
                         packed[k] = v
                     return packed
 
-                text = clip[0]["text"]
+                text = clip[0]["text"] if "text" in clip[0] else None
                 inputs = _proc(raw_video, text)
                 next_inputs = None
                 if next_clip is not None:
@@ -1603,10 +1649,16 @@ def webdataset_loader(
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
         vlm_processor=None,
-        vl_model_name=args.vl_model_name if args.preprocess_in_loader else None,
+        vl_model_name=(
+            getattr(args, "vl_model_name", None) if args.preprocess_in_loader else None
+        ),
         robot_obs_dim=args.robot_obs_dim,
-        num_robots=args.num_robots,
-        max_num_robots=args.num_robots,
+        num_robots=(
+            args.num_robots
+            if dataset_type == "rware"
+            else getattr(args, "offroad_num_robots", 5)
+        ),
+        max_num_robots=max(args.num_robots, getattr(args, "offroad_num_robots", 5)),
         shuffle_shards=shuffle,
         text_prompt_template=args.text_prompt_template,
         dataset_type=dataset_type,
@@ -2076,6 +2128,16 @@ def split_shards(shards_pattern, val_split=0.3, seed=42):
 
 def main():
     args = parse_args()
+
+    # If using simplified critic, the vision encoder is purely CLIP-based.
+    # Force vl_backend to clip so the dataset uses AutoImageProcessor properly
+    # instead of the LLaVaVideoProcessor which requires text inputs.
+    if args.simplified_critic:
+        args.vl_backend = "clip"
+        # Also force model name to a standard CLIP if not explicitly set to something else
+        if "llava" in args.vl_model_name.lower():
+            args.vl_model_name = "openai/clip-vit-base-patch32"
+
     _resolve_contrastive_depth_args(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -2092,6 +2154,8 @@ def main():
     ret_str = f"{args.n_step}StepReturn"
 
     args.run_name = f"{ret_str}_{loss_str}_{timestamp}"
+    if args.simplified_critic:
+        args.run_name = f"simple_critic_{timestamp}"
 
     # ── Performance: enable TF32 for H100 / Ampere+ GPUs ──
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -2220,6 +2284,10 @@ def main():
         vision_tower = getattr(vision_tower, "model", None)
     if vision_tower is not None:
         vision_tower = getattr(vision_tower, "vision_tower", None)
+
+    # Fallback for SimplifiedCriticModel
+    if vision_tower is None:
+        vision_tower = getattr(model, "vision_encoder", None)
 
     if vision_tower is not None:
         vision_tower_ids = {id(p) for p in vision_tower.parameters() if p.requires_grad}

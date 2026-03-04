@@ -1,0 +1,24 @@
+Param groups: vision_tower=199 params (lr=1e-05), other=35 params (lr=0.0003)
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 120 shards.
+Found 814 shards.
+Found 31 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 234 params, CPU-only)
+train:  11%|██████████████▏                                                                                                                      | 5000/46700 [14:29<2:00:54,  5.75it/s, loss=65.1826, lr=2.40e-04]
+val:  11%|███████████████▉                                                                                                                                      | 1250/11750 [00:45<06:18, 27.77it/s, loss=32.7558]
+epoch=1 train_loss=65.1826 val_loss=32.75578438994884
+train:  11%|██████████████▏                                                                                                                     | 5000/46700 [14:24<2:00:09,  5.78it/s, loss=293.6220, lr=2.99e-04]
+val:  11%|███████████████▊                                                                                                                                     | 1250/11750 [00:46<06:27, 27.13it/s, loss=142.5141]
+epoch=2 train_loss=293.6220 val_loss=142.5140954273224
+train:   0%|▌                                                                                                                                    | 197/46700 [00:34<2:17:31,  5.64it/s, loss=132.6590, lr=2.99e-04]
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2621, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2522, in main
+    train_loss = run_epoch(
+                 ^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2049, in run_epoch
+    p.data.cpu(),
+    ^^^^^^^^^^^^
+KeyboardInterrupt

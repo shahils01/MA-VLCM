@@ -1,0 +1,46 @@
+Param groups: vision_tower=199 params (lr=1e-05), other=35 params (lr=0.0003)
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 120 shards.
+Found 814 shards.
+Found 31 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 234 params, CPU-only)
+train:   0%| | 1/46700 [00:01<14:38:49,  1.13s/it, loss=36
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2619, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2520, in main
+    train_loss = run_epoch(
+                 ^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1899, in run_epoch
+    for batch in pbar:
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2381, in __iter__
+    yield next(iter2)
+          ^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+IndexError: Caught IndexError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1495, in __iter__
+    robot_obs = _parse_offroad_state(
+                ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 809, in _parse_offroad_state
+    obs[i, 6] = float(ag.get("dist_to_goal", 0.0))
+    ~~~^^^^^^
+IndexError: index 6 is out of bounds for dimension 1 with size 6

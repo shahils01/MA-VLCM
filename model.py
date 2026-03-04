@@ -78,6 +78,7 @@ class LLaVAVideoBackbone(nn.Module):
                 AutoModelForCausalLM,
                 LlavaNextVideoProcessor,
             )
+
             try:
                 from transformers import LlavaOnevisionProcessor
             except ImportError:
@@ -89,7 +90,7 @@ class LLaVAVideoBackbone(nn.Module):
                 )
             except ImportError:
                 LlavaNextVideoForConditionalGeneration = None
-            
+
             try:
                 from transformers.models.llava_onevision import (
                     LlavaOnevisionForConditionalGeneration,
@@ -113,7 +114,9 @@ class LLaVAVideoBackbone(nn.Module):
 
         if cfg.vl_backend == "llava_onevision":
             if LlavaOnevisionProcessor is None:
-                raise ImportError("LlavaOnevisionProcessor not available in your transformers version.")
+                raise ImportError(
+                    "LlavaOnevisionProcessor not available in your transformers version."
+                )
             self.processor = LlavaOnevisionProcessor.from_pretrained(cfg.vl_model_name)
         else:
             self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
@@ -134,7 +137,9 @@ class LLaVAVideoBackbone(nn.Module):
 
         if cfg.vl_backend == "llava_onevision":
             if LlavaOnevisionForConditionalGeneration is None:
-                raise ImportError("LlavaOnevisionForConditionalGeneration not available.")
+                raise ImportError(
+                    "LlavaOnevisionForConditionalGeneration not available."
+                )
             self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
                 cfg.vl_model_name, **model_kwargs
             )
@@ -159,9 +164,13 @@ class LLaVAVideoBackbone(nn.Module):
                 if vision_tower is not None:
                     for p in vision_tower.parameters():
                         p.requires_grad = True
-                    print(f"[ModelConfig] Vision tower UNFROZEN ({sum(p.numel() for p in vision_tower.parameters()):,} params)")
+                    print(
+                        f"[ModelConfig] Vision tower UNFROZEN ({sum(p.numel() for p in vision_tower.parameters()):,} params)"
+                    )
                 else:
-                    print("[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.")
+                    print(
+                        "[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen."
+                    )
 
         self._dtype = dtype
 
@@ -453,7 +462,7 @@ class MultimodalValueModel(nn.Module):
         pooled = pooled.to(
             dtype=self.value_head.weight.dtype, device=self.value_head.weight.device
         )
-        
+
         multidepth_features = None
         if return_features and self.cfg.contrastive_multidepth:
             multidepth_features = []
@@ -465,16 +474,197 @@ class MultimodalValueModel(nn.Module):
                         h_pooled = (h * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
                     else:
                         h_pooled = h[:, -1, :]
-                    multidepth_features.append(h_pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device))
+                    multidepth_features.append(
+                        h_pooled.to(
+                            dtype=self.value_head.weight.dtype,
+                            device=self.value_head.weight.device,
+                        )
+                    )
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
         # print('value shape = ', value.shape)
-        
+
         if return_features:
             return {
                 "value": value,
                 "vlm_feature": pooled,
-                "vlm_multidepth_features": multidepth_features
+                "vlm_multidepth_features": multidepth_features,
+            }
+        return value
+
+
+class SimplifiedCriticModel(nn.Module):
+    def __init__(self, cfg: ModelConfig, device: torch.device):
+        super().__init__()
+        self.cfg = cfg
+        self.debug_save_video = cfg.debug_save_video
+
+        try:
+            from transformers import CLIPVisionModel
+
+            self.vision_encoder = CLIPVisionModel.from_pretrained(
+                cfg.vl_model_name, use_safetensors=True
+            )
+        except Exception as e:
+            raise ImportError("Failed to load CLIPVisionModel.") from e
+
+        if cfg.freeze_vl or cfg.freeze_vision_tower:
+            for p in self.vision_encoder.parameters():
+                p.requires_grad = False
+        else:
+            for p in self.vision_encoder.parameters():
+                p.requires_grad = True
+
+        # CLIP's output dimension
+        self.vision_dim = (
+            self.vision_encoder.config.hidden_size
+        )  # usually 768 for vit-base
+
+        # Temporal reasoning over the frames
+        self.temporal_transformer = TemporalTransformer(
+            d_model=self.vision_dim,
+            layers=cfg.temporal_layers,
+            heads=cfg.temporal_heads,
+            dropout=cfg.temporal_dropout,
+        )
+
+        # Projection from vision dim to d_model for fusion
+        self.vision_to_dmodel = nn.Linear(self.vision_dim, cfg.d_model)
+
+        try:
+            from gat import GNN_Model
+        except Exception as e:
+            raise ImportError(
+                "Failed to import GNN_Model from aero_gnn.py. "
+                "Make sure torch-geometric and torch-scatter are installed."
+            ) from e
+
+        # Keep the same node feature slice used before flattening (first 8 dims per robot).
+        self.robot_node_dim = min(8, cfg.robot_obs_dim)
+        gnn_heads = max(1, cfg.temporal_heads)
+        gnn_hidden = max(1, math.ceil(cfg.d_model / gnn_heads))
+        gnn_args = SimpleNamespace(
+            num_heads=gnn_heads,
+            iterations=max(1, cfg.gnn_layers),
+            dropout=cfg.temporal_dropout,
+            num_layers=1,
+            add_dropout=False,
+            algorithm_name="mappo_dgnn",
+            lambd_gnn=1.0,
+        )
+        self.robot_gnn = GNN_Model(
+            args=gnn_args,
+            in_channels=self.robot_node_dim,
+            hid_channels=gnn_hidden,
+            out_channels=cfg.d_model,
+            num_agents=cfg.num_robots,
+        )
+
+        self.value_head = nn.Linear(
+            cfg.d_model + cfg.d_model, 1
+        )  # vision(d_model) + graph(d_model)
+        # Initialize bias to roughly the mean TD target (return over clip_len)
+        nn.init.constant_(self.value_head.bias, 50.0)
+
+    def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
+        # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
+        bsz, num_nodes, _ = adj.shape
+        nz = (adj > 0).nonzero(as_tuple=False)
+        if nz.numel() == 0:
+            # Fallback to self-loops when there are no edges.
+            base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
+            return torch.stack([base, base], dim=0)
+
+        batch_idx = nz[:, 0]
+        src = nz[:, 1]
+        dst = nz[:, 2]
+        flat_src = batch_idx * num_nodes + src
+        flat_dst = batch_idx * num_nodes + dst
+        return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
+
+    def forward(
+        self,
+        video,
+        robot_obs,
+        adj,
+        text_emb=None,  # unused padding arguments for compatibility
+        text_raw=None,
+        text_ids=None,
+        text_mask=None,
+        image_sizes=None,
+        return_features=False,
+    ):
+        # video is expected to be a dict out from AutoImageProcessor
+        # Expected keys inside video: 'pixel_values', shape [B * T, C, H, W]
+
+        inputs = None
+        if isinstance(video, dict):
+            inputs = video
+        else:
+            raise ValueError(
+                "video must be a dict outputted from AutoImageProcessor in simplified model."
+            )
+
+        bsz = robot_obs.shape[0]
+        num_frames = getattr(self.cfg, "video_frames", robot_obs.shape[1])
+        num_nodes = robot_obs.shape[2]
+
+        if num_nodes != self.cfg.num_robots:
+            raise RuntimeError(
+                f"robot_obs has {num_nodes} nodes, but config expects {self.cfg.num_robots}. "
+                "Set --num_robots to match your dataset."
+            )
+
+        # 1. Process Vision
+        pv = inputs["pixel_values"].to(self.value_head.weight.device)
+
+        # Flatten time dimension for CLIP processing if it's 5D
+        if pv.dim() == 5:
+            # Expected shape: [B, T, C, H, W]
+            B, T, C, H, W = pv.shape
+            pv = pv.view(B * T, C, H, W)
+        else:
+            # Maybe already 4D, assume T=1
+            B = pv.shape[0]
+            T = 1
+
+        # pass through CLIP vision encoder
+        vision_outputs = self.vision_encoder(pixel_values=pv)
+        pooled_vision = vision_outputs.pooler_output  # [B*T, vision_dim]
+
+        # Reshape to sequence for temporal transformer
+        # In DataLoader, videos are [B*T, C, H, W], we want [B, T, vision_dim]
+        try:
+            pooled_vision = pooled_vision.view(B, T, self.vision_dim)
+        except Exception:
+            # Fallback if specific batch inference fails
+            pooled_vision = pooled_vision.view(bsz, -1, self.vision_dim)
+
+        temporal_feats = self.temporal_transformer(pooled_vision)  # [B, T, d_model]
+        final_vision_feat = temporal_feats[:, -1, :]  # [B, vision_dim]
+        final_vision_feat = self.vision_to_dmodel(final_vision_feat)  # [B, d_model]
+
+        # 2. Process Graph
+        # Use only the last-step robot obs and encode team structure with GNN.
+        robot_last = robot_obs[
+            :, -1, :, : self.robot_node_dim
+        ].contiguous()  # [B, N, robot_node_dim]
+        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
+        edge_index = self._adj_to_batched_edge_index(adj_last)
+        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
+        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
+
+        # 3. Predict Value
+        value_head_input = torch.cat((final_vision_feat, robot_team_feat), dim=-1)
+        value = self.value_head(value_head_input).squeeze(-1)
+
+        # Simplified Critic doesn't have multiple depth layers for VLM,
+        # so we either skip it or return the single vision feat to prevent errors.
+        if return_features:
+            return {
+                "value": value,
+                "vlm_feature": final_vision_feat,
+                "vlm_multidepth_features": None,
             }
         return value

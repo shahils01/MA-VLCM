@@ -1,0 +1,10 @@
+Param groups: vision_tower=199 params (lr=1e-05), other=35 params (lr=0.0003)
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 120 shards.
+Found 814 shards.
+Found 31 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 234 params, CPU-only)
+train:   0%|▌                                                                                                                    | 100/23350 [00:46<2:59:25,  2.16it/s, loss=166.5206, lr=0.00e+00]
+val:   0%|▌                                                                                                                                        | 25/5875 [00:03<13:27,  7.25it/s, loss=68.6689]
+epoch=1 train_loss=166.5206 val_loss=68.66887847900391

@@ -1,0 +1,63 @@
+Param groups: vision_tower=199 params (lr=1e-05), other=35 params (lr=0.0003)
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+EMA enabled (decay=0.995, 234 params, CPU-only)
+train:   0%|                              | 0/6900 [00:00<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2598, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2499, in main
+    train_loss = run_epoch(
+                 ^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1888, in run_epoch
+    for batch in pbar:
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/tqdm/std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2354, in __iter__
+    yield next(iter1)
+          ^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+ValueError: Caught ValueError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/_utils/fetch.py", line 33, in fetch
+    data.append(next(self.dataset_iter))
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1126, in __iter__
+    for sample in dataset:
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/webdataset/pipeline.py", line 105, in iterator
+    for sample in self.iterator1():
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/webdataset/filters.py", line 520, in _map
+    for sample in data:
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/webdataset/compat.py", line 318, in check_empty
+    raise ValueError(
+ValueError: No samples found in dataset; perhaps you have fewer shards than workers.
+Turn off using empty_check=False in the WebDataset constructor.
+
+Exception ignored in atexit callback: <function _MultiProcessingDataLoaderIter._clean_up_worker at 0x7fd735184c20>
+Traceback (most recent call last):
+  File "/home/adi2440/anaconda3/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1598, in _clean_up_worker
+    w.join(timeout=_utils.MP_STATUS_CHECK_INTERVAL)
+  File "/home/adi2440/anaconda3/lib/python3.12/multiprocessing/process.py", line 149, in join
+    res = self._popen.wait(timeout)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/multiprocessing/popen_fork.py", line 40, in wait
+    if not wait([self.sentinel], timeout):
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/multiprocessing/connection.py", line 1135, in wait
+    ready = selector.select(timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adi2440/anaconda3/lib/python3.12/selectors.py", line 415, in select
+    fd_event_list = self._selector.poll(timeout)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt:

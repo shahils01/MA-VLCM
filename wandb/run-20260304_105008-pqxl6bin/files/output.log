@@ -1,0 +1,69 @@
+Loading weights: 100%|█| 199/199 [00:00<00:00, 3464.70it/s, Materiali
+[1mCLIPVisionModel LOAD REPORT[0m from: openai/clip-vit-base-patch32
+Key                                                          | Status     |  |
+-------------------------------------------------------------+------------+--+-
+text_model.encoder.layers.{0...11}.layer_norm1.bias          | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.layer_norm2.bias          | UNEXPECTED |  |
+text_model.embeddings.position_ids                           | UNEXPECTED |  |
+text_model.final_layer_norm.weight                           | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.mlp.fc2.weight            | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.layer_norm2.weight        | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.k_proj.bias     | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.q_proj.weight   | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.mlp.fc1.weight            | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.mlp.fc1.bias              | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.layer_norm1.weight        | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.q_proj.bias     | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.k_proj.weight   | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.v_proj.weight   | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.out_proj.bias   | UNEXPECTED |  |
+text_model.final_layer_norm.bias                             | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.out_proj.weight | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.self_attn.v_proj.bias     | UNEXPECTED |  |
+text_model.encoder.layers.{0...11}.mlp.fc2.bias              | UNEXPECTED |  |
+text_projection.weight                                       | UNEXPECTED |  |
+text_model.embeddings.token_embedding.weight                 | UNEXPECTED |  |
+vision_model.embeddings.position_ids                         | UNEXPECTED |  |
+visual_projection.weight                                     | UNEXPECTED |  |
+text_model.embeddings.position_embedding.weight              | UNEXPECTED |  |
+logit_scale                                                  | UNEXPECTED |  |
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+Param groups: vision_tower=199 params (lr=1e-05), other=35 params (lr=0.0003)
+Multi-dataset training enabled. Interleaving rware and offroad datasets.
+Found 120 shards.
+Found 814 shards.
+Found 31 shards.
+Found 204 shards.
+EMA enabled (decay=0.995, 234 params, CPU-only)
+train:   0%|                               | 0/46700 [00:01<?, ?it/s]
+DEBUG STEP 1 BATCH INPUT KEYS: dict_keys(['input_ids', 'attention_mask', 'pixel_values_videos'])
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2596, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2497, in main
+    train_loss = run_epoch(
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1929, in run_epoch
+    model_out = model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 620, in forward
+    pv = inputs["pixel_values"].to(self.value_head.weight.device)
+KeyError: 'pixel_values'
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2596, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2497, in main
+    train_loss = run_epoch(
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 1929, in run_epoch
+    model_out = model(
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/usr/local/lib/python3.10/dist-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 620, in forward
+    pv = inputs["pixel_values"].to(self.value_head.weight.device)
+KeyError: 'pixel_values'

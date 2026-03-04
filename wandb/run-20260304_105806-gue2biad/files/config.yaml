@@ -1,0 +1,256 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            21nlpm7ckuma7dmny4utyye5mfkhb9wv:
+                args:
+                    - --simplified_critic
+                    - --train_shards
+                    - /home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_test_rware
+                    - --offroad_shards
+                    - /home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/OFFROAD/Varied_Traversability_IID
+                    - --epochs
+                    - "1"
+                    - --samples_per_epoch
+                    - "100"
+                    - --batch_size
+                    - "2"
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 16
+                cpu_count_logical: 24
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "982141468672"
+                        used: "700406149120"
+                email: aparame@g.clemson.edu
+                executable: /home/adi2440/anaconda3/bin/python3
+                git:
+                    commit: 87fafe186f90be4822515babee00954557d6073c
+                    remote: https://github.com/shahils01/MA-VLCM.git
+                gpu: NVIDIA GeForce RTX 3080 Ti
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10240
+                      memoryTotal: "12884901888"
+                      name: NVIDIA GeForce RTX 3080 Ti
+                      uuid: GPU-370a3a81-9866-4797-3079-9a993c76575a
+                host: administrator-Alienware-Aurora-R13
+                memory:
+                    total: "67197472768"
+                os: Linux-5.15.0-164-lowlatency-x86_64-with-glibc2.35
+                program: /home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py
+                python: CPython 3.12.2
+                root: /home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM
+                startedAt: "2026-03-04T15:58:06.692961Z"
+                writerId: 21nlpm7ckuma7dmny4utyye5mfkhb9wv
+        m: []
+        python_version: 3.12.2
+        t:
+            "1":
+                - 1
+                - 49
+                - 71
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+                - 77
+            "3":
+                - 13
+                - 16
+            "4": 3.12.2
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+batch_size:
+    value: 2
+clip_len:
+    value: 10
+clip_stride:
+    value: 1
+compile:
+    value: false
+contrastive_depth_offsets:
+    value: "0"
+contrastive_depth_offsets_list:
+    value:
+        - 0
+contrastive_depth_weights:
+    value: ""
+contrastive_depth_weights_list:
+    value: []
+contrastive_margin:
+    value: 0
+contrastive_multidepth:
+    value: false
+contrastive_objective:
+    value: infonce
+d_model:
+    value: 256
+dataset_type:
+    value: mixed
+ddp_find_unused_parameters:
+    value: false
+debug_out_dir:
+    value: debug_samples
+debug_save_video:
+    value: false
+done_reduce:
+    value: any
+ema_decay:
+    value: 0.995
+epochs:
+    value: 1
+freeze_vision_tower:
+    value: false
+freeze_vl:
+    value: false
+fsdp:
+    value: false
+fsdp_cpu_offload:
+    value: false
+fsdp_min_num_params:
+    value: 1000000
+fsdp_use_orig_params:
+    value: false
+fusion_hidden:
+    value: 512
+gamma:
+    value: 0.95
+gnn_layers:
+    value: 2
+grad_accum_steps:
+    value: 1
+infonce_temperature:
+    value: 0.1
+infonce_topk_pos:
+    value: 0
+lambda_c:
+    value: 1
+lambda_value_c:
+    value: 1
+log_every:
+    value: 50
+lora_alpha:
+    value: 32
+lora_bias:
+    value: none
+lora_dropout:
+    value: 0.05
+lora_r:
+    value: 16
+lora_target_modules:
+    value: ""
+loss_type:
+    value: contrastive_mse
+lr:
+    value: 0.0003
+max_grad_norm:
+    value: 1
+max_return_horizon:
+    value: 64
+mixed_precision:
+    value: "no"
+moe_experts:
+    value: 4
+moe_top_k:
+    value: 2
+mse_loss_weight:
+    value: 1
+n_step:
+    value: 50
+num_robots:
+    value: 2
+num_workers:
+    value: 2
+offroad_num_robots:
+    value: 5
+offroad_shards:
+    value: /home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/OFFROAD/Varied_Traversability_IID
+peft:
+    value: none
+preprocess_in_loader:
+    value: true
+quantization_config:
+    value: null
+resize_height:
+    value: 336
+resize_width:
+    value: 672
+resume_from:
+    value: ""
+return_mode:
+    value: nstep
+reward_reduce:
+    value: mean
+robot_obs_dim:
+    value: 6
+robot_source:
+    value: obs
+run_name:
+    value: 50StepReturn_ContrastiveMSE_20260304_105806
+rware_config:
+    value: tiny-2ag-hard
+rware_visual_mode:
+    value: both
+samples_per_epoch:
+    value: 100
+save_dir:
+    value: checkpoints_rware
+simplified_critic:
+    value: true
+temporal_dropout:
+    value: 0.1
+temporal_heads:
+    value: 4
+temporal_layers:
+    value: 2
+text_dim:
+    value: 512
+text_mode:
+    value: raw
+text_prompt_template:
+    value: null
+train_shards:
+    value: /home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/RWARE/data_test_rware
+use_moe:
+    value: false
+val_shards:
+    value: ""
+val_split:
+    value: 0.2
+video_channels:
+    value: 3
+video_frames:
+    value: 8
+video_mean:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+video_preprocessed:
+    value: true
+video_std:
+    value:
+        - 0.5
+        - 0.5
+        - 0.5
+vision_lr:
+    value: 1e-05
+vl_backend:
+    value: clip
+vl_dtype:
+    value: bfloat16
+vl_max_text_len:
+    value: 8192
+vl_model_name:
+    value: openai/clip-vit-base-patch32
+weight_decay:
+    value: 0.01

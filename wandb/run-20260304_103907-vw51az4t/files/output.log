@@ -1,0 +1,53 @@
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 490, in __init__
+    self.vision_encoder = CLIPVisionModel.from_pretrained(cfg.vl_model_name)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4012, in from_pretrained
+    config, dtype = _get_dtype(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 785, in _get_dtype
+    state_dict = load_state_dict(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 318, in load_state_dict
+    check_torch_load_is_safe()
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/import_utils.py", line 1216, in check_torch_load_is_safe
+    raise ValueError(
+ValueError: Due to a serious vulnerability issue in `torch.load`, even with `weights_only=True`, we now require users to upgrade torch to at least v2.6 in order to use the function. This version restriction does not apply when loading files with safetensors.
+See the vulnerability report here https://nvd.nist.gov/vuln/detail/CVE-2025-32434
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2598, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2237, in main
+    model = build_model(args, device=accelerator.device)
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 463, in build_model
+    return SimplifiedCriticModel(cfg, device=device)
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 492, in __init__
+    raise ImportError("Failed to load CLIPVisionModel.") from e
+ImportError: Failed to load CLIPVisionModel.
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 490, in __init__
+    self.vision_encoder = CLIPVisionModel.from_pretrained(cfg.vl_model_name)
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 4012, in from_pretrained
+    config, dtype = _get_dtype(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 785, in _get_dtype
+    state_dict = load_state_dict(
+  File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 318, in load_state_dict
+    check_torch_load_is_safe()
+  File "/usr/local/lib/python3.10/dist-packages/transformers/utils/import_utils.py", line 1216, in check_torch_load_is_safe
+    raise ValueError(
+ValueError: Due to a serious vulnerability issue in `torch.load`, even with `weights_only=True`, we now require users to upgrade torch to at least v2.6 in order to use the function. This version restriction does not apply when loading files with safetensors.
+See the vulnerability report here https://nvd.nist.gov/vuln/detail/CVE-2025-32434
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2598, in <module>
+    main()
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 2237, in main
+    model = build_model(args, device=accelerator.device)
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/train.py", line 463, in build_model
+    return SimplifiedCriticModel(cfg, device=device)
+  File "/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/model.py", line 492, in __init__
+    raise ImportError("Failed to load CLIPVisionModel.") from e
+ImportError: Failed to load CLIPVisionModel.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
