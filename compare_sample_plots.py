@@ -12,7 +12,7 @@ def extract_data(df, max_samples):
     n = min(len(df), max_samples)
 
     # 1. Identify target column
-    target_cols = ["return", "true_return", "td_target", "reward"]
+    target_cols = ["td_target", "return", "true_return", "reward"]
     target_col = None
     for col in target_cols:
         if col in df.columns:
@@ -21,7 +21,7 @@ def extract_data(df, max_samples):
     if not target_col:
         target_col = df.columns[-1]
 
-    true_vals = df.loc[: n - 1, target_col].values - 50.0
+    true_vals = df.loc[: n - 1, target_col].values
 
     # 2. Identify prediction columns
     run_cols = [c for c in df.columns if c.startswith("run_")]
@@ -115,7 +115,7 @@ def main():
     )
 
     ax.set_xlabel("Sample Index", fontsize=25)
-    ax.set_ylabel("True Return", fontsize=25)
+    ax.set_ylabel(target_label, fontsize=25)
     ax.set_title(
         f"Per-Sample Comparison: {args.label1} vs {args.label2}",
         fontsize=40,

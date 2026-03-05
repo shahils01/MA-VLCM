@@ -1003,6 +1003,8 @@ class SequenceWebDataset(IterableDataset):
                 def _proc(frames, text):
                     if not isinstance(text, str):
                         text = self.text_prompt_template
+                    if text is None:
+                        text = ""
                     tokenizer = getattr(self.vlm_processor, "tokenizer", None)
                     if tokenizer is not None:
                         vocab = tokenizer.get_vocab()

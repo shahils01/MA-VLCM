@@ -126,6 +126,13 @@ def parse_inference_args():
     )
 
     p.add_argument(
+        "--disable_lora",
+        action="store_true",
+        help="Load the full checkpoint (with LoRA wrappers) but disable the LoRA "
+        "adapter layers at inference time. The forward pass will use only the "
+        "base model weights (LoRA delta zeroed out). Useful for ablation.",
+    )
+    p.add_argument(
         "--run_mc_dropout",
         action="store_true",
         help="Run Monte Carlo dropout runs for prediction intervals on the loaded model and save to CSV.",
@@ -686,7 +693,15 @@ def _generate_multi_comparison_plots(
     print(f"  Saved: {path}")
 
 
-def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
+def run_mc_dropout_flow(
+    cli_args,
+    model,
+    args,
+    device,
+    model_dtype,
+    ema_shadow=None,
+    clip_gamma=None,
+):
     print(
         f"\n--- Running MC Dropout (runs={cli_args.mc_runs}) for currently loaded model ---"
     )
@@ -701,8 +716,15 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=False,
+        dataset_type=getattr(args, "dataset_type", None),
     )
     args.loss_type = saved_loss_type
+
+    # Compute clip_gamma if not provided
+    if clip_gamma is None:
+        gamma = getattr(args, "gamma", 0.95)
+        clip_len = getattr(args, "clip_len", 16)
+        clip_gamma = gamma**clip_len
 
     def _move_and_cast(tensor_dict):
         out = {}
@@ -718,36 +740,79 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
     print(f"Caching up to {cli_args.max_samples} samples into RAM...")
     batches = []
     num_processed = 0
-    true_returns = []
+    all_td_targets = []
+    all_nstep_returns = []
 
-    for batch in test_loader:
-        b_cpu = {}
-        for k, v in batch.items():
-            if torch.is_tensor(v):
-                b_cpu[k] = v.cpu()
-            elif isinstance(v, dict):
-                b_cpu[k] = {
-                    k2: v2.cpu() if torch.is_tensor(v2) else v2 for k2, v2 in v.items()
-                }
+    # ── Cache batches and compute TD targets (matching train.py) ──
+    model.eval()
+    with torch.no_grad():
+        for batch in test_loader:
+            b_cpu = {}
+            for k, v in batch.items():
+                if torch.is_tensor(v):
+                    b_cpu[k] = v.cpu()
+                elif isinstance(v, dict):
+                    b_cpu[k] = {
+                        k2: v2.cpu() if torch.is_tensor(v2) else v2
+                        for k2, v2 in v.items()
+                    }
+                else:
+                    b_cpu[k] = v
+            batches.append(b_cpu)
+
+            b_size = batch["robot_obs"].shape[0]
+
+            # Compute full TD target: nstep_returns + clip_gamma*(1-done)*V_ema(s')
+            done = batch["done"].float()
+            nstep_returns = (
+                batch["returns"].float()
+                if "returns" in batch
+                else batch["reward"].float()
+            )
+            all_nstep_returns.append(nstep_returns.cpu())
+
+            if "next_inputs" in batch:
+                next_inputs = _move_and_cast(batch["next_inputs"])
+                next_robot_obs = batch["next_robot_obs"].to(
+                    device=device, dtype=model_dtype
+                )
+                next_adj = batch["next_adj"].to(device=device, dtype=model_dtype)
+
+                # Swap in EMA weights for bootstrap (matches training)
+                if ema_shadow is not None:
+                    saved_params = {}
+                    for n, p in model.named_parameters():
+                        if n in ema_shadow:
+                            saved_params[n] = p.data.clone()
+                            p.data.copy_(ema_shadow[n].to(p.device))
+                    next_pred = model(next_inputs, next_robot_obs, next_adj)
+                    for n, p in model.named_parameters():
+                        if n in saved_params:
+                            p.data.copy_(saved_params[n])
+                    del saved_params
+                else:
+                    next_pred = model(next_inputs, next_robot_obs, next_adj)
+
+                td_target = (
+                    nstep_returns
+                    + clip_gamma * (1.0 - done) * next_pred.detach().cpu().float()
+                )
             else:
-                b_cpu[k] = v
-        batches.append(b_cpu)
+                # No next state available — use raw returns as target
+                td_target = nstep_returns
 
-        b_size = batch["robot_obs"].shape[0]
-        if "returns" in batch:
-            true_returns.append(batch["returns"].cpu().float())
+            all_td_targets.append(td_target.cpu().view(-1))
 
-        num_processed += b_size
-        if cli_args.max_samples and num_processed >= cli_args.max_samples:
-            break
+            num_processed += b_size
+            if cli_args.max_samples and num_processed >= cli_args.max_samples:
+                break
 
-    if len(true_returns) > 0:
-        true_returns = (
-            torch.cat(true_returns, dim=0).view(-1).numpy()[: cli_args.max_samples]
-        )
-    else:
-        print("Warning: no 'returns' found in batch. Cannot plot true returns!")
-        true_returns = np.zeros(num_processed)[: cli_args.max_samples]
+    td_targets = (
+        torch.cat(all_td_targets, dim=0).view(-1).numpy()[: cli_args.max_samples]
+    )
+    nstep_returns_arr = (
+        torch.cat(all_nstep_returns, dim=0).view(-1).numpy()[: cli_args.max_samples]
+    )
 
     def enable_dropout(m):
         if m.__class__.__name__.startswith("Dropout"):
@@ -780,7 +845,13 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
     plot_dir = cli_args.plot_dir or "inference_plots"
     dataset_name = getattr(args, "dataset_type", "unknown").upper()
     is_lora = getattr(args, "peft", "none") != "none"
-    lora_name = "NoLoRA" if (cli_args.baseline or not is_lora) else "LoRA"
+    lora_name = (
+        "NoLoRA"
+        if (
+            cli_args.baseline or getattr(cli_args, "disable_lora", False) or not is_lora
+        )
+        else "LoRA"
+    )
 
     if plot_dir == "inference_plots":
         plot_dir = os.path.join(plot_dir, dataset_name, lora_name)
@@ -791,7 +862,12 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
 
     import pandas as pd
 
-    df = pd.DataFrame({"true_return": true_returns})
+    df = pd.DataFrame(
+        {
+            "td_target": td_targets,
+            "nstep_return": nstep_returns_arr,
+        }
+    )
     for i in range(runs_array.shape[0]):
         df[f"run_{i}"] = runs_array[i]
 
@@ -799,16 +875,16 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
     df.to_csv(csv_path, index=False)
     print(f"  Saved MC runs to: {csv_path}")
 
-    # Plot Scatter w/ Errorbars
+    # Plot Scatter w/ Prediction Intervals against TD target
     print("\nGenerating prediction interval scatter plot...")
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    lbl = "Predicted returns"
+    lbl = "Predicted value"
     col = "#8DA0CB" if cli_args.baseline else "#E78AC3"
     lbl += " (Baseline)" if cli_args.baseline else " (LoRA)"
 
     ax.scatter(
-        true_returns,
+        td_targets,
         runs_mean,
         color=col,
         alpha=0.6,
@@ -818,11 +894,11 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
         edgecolors="none",
     )
 
-    if len(true_returns) > 2:
+    if len(td_targets) > 2:
         slope, intercept, r_value, p_value, std_err = stats.linregress(
-            true_returns, runs_mean
+            td_targets, runs_mean
         )
-        x_sorted = np.sort(true_returns)
+        x_sorted = np.sort(td_targets)
         y_pred = slope * x_sorted + intercept
         ax.plot(
             x_sorted,
@@ -832,13 +908,13 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
             label=f"{lbl} Fit (slope={slope:.2f})",
         )
 
-        y_pred_for_se = slope * true_returns + intercept
-        n_pts = len(true_returns)
+        y_pred_for_se = slope * td_targets + intercept
+        n_pts = len(td_targets)
         se_estimate = np.sqrt(np.sum((runs_mean - y_pred_for_se) ** 2) / (n_pts - 2))
 
         t_val = stats.t.ppf(0.975, n_pts - 2)
-        x_mean = np.mean(true_returns)
-        ss_x = np.sum((true_returns - x_mean) ** 2)
+        x_mean = np.mean(td_targets)
+        ss_x = np.sum((td_targets - x_mean) ** 2)
         pi_margin = (
             t_val
             * se_estimate
@@ -854,8 +930,8 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
             label=f"{lbl} 95% PI",
         )
 
-    lo = min(true_returns.min(), runs_mean.min())
-    hi = max(true_returns.max(), runs_mean.max())
+    lo = min(td_targets.min(), runs_mean.min())
+    hi = max(td_targets.max(), runs_mean.max())
     margin = (hi - lo) * 0.05
     ax.plot(
         [lo - margin, hi + margin],
@@ -867,8 +943,8 @@ def run_mc_dropout_flow(cli_args, model, args, device, model_dtype):
         label="y = x (Perfect Prediction)",
     )
 
-    ax.set_xlabel("True Return", fontsize=13)
-    ax.set_ylabel("Predicted Return", fontsize=13)
+    ax.set_xlabel("TD Target", fontsize=13)
+    ax.set_ylabel("Predicted Value", fontsize=13)
     ax.set_title(
         f"Prediction Intervals ({lora_name}, MC Runs: {cli_args.mc_runs})",
         fontsize=14,
@@ -968,7 +1044,7 @@ def main():
         args.peft = saved_peft  # restore for logging
 
     else:
-        print(f"Building model (with",args.peft,")...")
+        print(f"Building model (with", args.peft, ")...")
         model = build_model(args, device=device)
         model = _apply_peft(model, args)
 
@@ -1011,6 +1087,36 @@ def main():
     mode_str = "BASELINE (no LoRA)" if baseline_mode else "fine-tuned"
     print(f"  Loaded checkpoint from epoch {epoch} [{mode_str}]")
 
+    # ── 3b. Optionally disable LoRA adapters (ablation) ─────────────────────
+    if getattr(cli_args, "disable_lora", False) and not baseline_mode:
+        try:
+            from peft import PeftModel
+        except ImportError:
+            raise RuntimeError(
+                "--disable_lora requires the `peft` library. " "`pip install peft`."
+            )
+        # Recursively walk the entire model tree to find and disable
+        # ALL PeftModel instances (LLM backbone + vision tower LoRA).
+        disabled_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, PeftModel):
+                module.disable_adapter_layers()
+                disabled_count += 1
+                print(
+                    f"  [DISABLE_LORA] Disabled LoRA adapters on "
+                    f"'{name}' — base weights only."
+                )
+        if disabled_count == 0:
+            print(
+                "  [DISABLE_LORA] WARNING: No PeftModel found. "
+                "The model may not have LoRA adapters."
+            )
+        else:
+            print(
+                f"  [DISABLE_LORA] Total: {disabled_count} adapter "
+                f"layer(s) disabled."
+            )
+
     # Determine dtype for inference
     mp = getattr(args, "mixed_precision", "no")
     if mp == "bf16":
@@ -1023,11 +1129,32 @@ def main():
     model = model.to(device=device, dtype=model_dtype)
     model.eval()
 
+    # ── 4a. Compute clip_gamma and load EMA shadow ──────────────────────────
+    gamma = getattr(args, "gamma", 0.95)
+    clip_len = getattr(args, "clip_len", 16)
+    clip_gamma = gamma**clip_len
+
+    ema_shadow = ckpt.get("ema_shadow", None)
+    if ema_shadow is not None:
+        print(
+            f"  EMA shadow loaded ({len(ema_shadow)} params) — will use for bootstrap V(s')"
+        )
+    else:
+        print("  No EMA shadow in checkpoint — using online weights for bootstrap")
+
     if getattr(cli_args, "run_mc_dropout", False):
-        run_mc_dropout_flow(cli_args, model, args, device, model_dtype)
+        run_mc_dropout_flow(
+            cli_args,
+            model,
+            args,
+            device,
+            model_dtype,
+            ema_shadow=ema_shadow,
+            clip_gamma=clip_gamma,
+        )
         return
 
-    # ── 4. Build test data loader ───────────────────────────────────────────
+    # ── 4b. Build test data loader ──────────────────────────────────────────
     print(f"Loading test data from: {cli_args.test_shards}")
     args.train_shards = cli_args.test_shards  # webdataset_loader reads this indirectly
 
@@ -1046,24 +1173,12 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=False,
+        dataset_type=getattr(args, "dataset_type", None),
     )
 
     # Restore original values for logging
     args.loss_type = saved_loss_type
     args.return_mode = saved_return_mode
-
-    gamma = getattr(args, "gamma", 0.95)
-    clip_len = getattr(args, "clip_len", 16)
-    clip_gamma = gamma**clip_len
-
-    # ── 4b. Optionally load EMA shadow weights for bootstrap ────────────────
-    ema_shadow = ckpt.get("ema_shadow", None)
-    if ema_shadow is not None:
-        print(
-            f"  EMA shadow loaded ({len(ema_shadow)} params) — will use for bootstrap V(s')"
-        )
-    else:
-        print("  No EMA shadow in checkpoint — using online weights for bootstrap")
 
     # ── 5. Inference loop ───────────────────────────────────────────────────
     print("Running inference...")
@@ -1132,13 +1247,11 @@ def main():
                     td_target = (
                         nstep_returns
                         + clip_gamma * (1.0 - done) * next_pred.detach().cpu().float()
-                        - 50.0  
                     )
                 else:
                     td_target = (
                         reward
                         + clip_gamma * (1.0 - done) * next_pred.detach().cpu().float()
-                        - 50.0
                     )
                 all_td_targets.append(td_target.view(-1))
 
@@ -1220,7 +1333,11 @@ def main():
     dataset_name = getattr(args, "dataset_type", "unknown").upper()
 
     is_lora = getattr(args, "peft", "none") != "none"
-    lora_name = "NoLoRA" if (baseline_mode or not is_lora) else "LoRA"
+    lora_name = (
+        "NoLoRA"
+        if (baseline_mode or getattr(cli_args, "disable_lora", False) or not is_lora)
+        else "LoRA"
+    )
 
     plot_dir = cli_args.plot_dir
     output_file = cli_args.output_file
@@ -1308,36 +1425,6 @@ def main():
             plot_dir=plot_dir,
             epoch=epoch,
             target_label=primary_label,
-        )
-
-    # ── 7c. Multi-model comparison (if --compare_csvs provided) ────────────
-    if cli_args.compare_csvs and plot_dir:
-        # Parse 'Label:path.csv' format
-        parsed = []
-        for entry in cli_args.compare_csvs:
-            if ":" in entry and not entry.startswith("/"):
-                parts = entry.split(":", 1)
-                lbl, path = parts[0], parts[1]
-            else:
-                lbl = os.path.splitext(os.path.basename(entry))[0]
-                path = entry
-            parsed.append((lbl, path))
-
-        # Current run label
-        if cli_args.label:
-            curr_label = cli_args.label
-        elif baseline_mode:
-            curr_label = "Baseline (no LoRA)"
-        else:
-            curr_label = "Fine-tuned (LoRA)"
-
-        _generate_multi_comparison_plots(
-            current_preds=preds,
-            current_targets=td_or_returns,
-            current_label=curr_label,
-            compare_csvs=parsed,
-            plot_dir=plot_dir,
-            epoch=epoch,
         )
 
     # ── 8. Optional CSV output ──────────────────────────────────────────────

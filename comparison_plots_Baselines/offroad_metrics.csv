@@ -1,0 +1,3 @@
+Model,Environment,Split,N_Samples,Spearman_Correlation,MSE,MAE,Mean_PI_Width
+0.5B_Baseline,offroad,IID,200,-0.248617,456.448798,18.375898,2.508966
+0.5B_Baseline,offroad,OOD,200,0.126795,560.144959,20.387898,2.376146

@@ -1,0 +1,3 @@
+Model,Environment,Split,N_Samples,Spearman_Correlation,MSE,MAE,Mean_PI_Width
+0.5B_Baseline,rware,IID,200,0.47732,659.564545,25.624066,1.303467
+0.5B_Baseline,rware,OOD,200,0.341052,777.113141,27.85377,0.976771
