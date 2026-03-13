@@ -164,6 +164,7 @@ class SequenceWebDataset(IterableDataset):
         robot_source,
         reward_reduce,
         done_reduce,
+        vl_backend="llava_video",
         vlm_processor=None,
         text_prompt_template=None,
         include_next=False,
@@ -184,6 +185,7 @@ class SequenceWebDataset(IterableDataset):
         self.robot_source = robot_source
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
+        self.vl_backend = str(vl_backend)
         self.vlm_processor = vlm_processor
         self.text_prompt_template = text_prompt_template
         self.include_next = include_next
@@ -354,28 +356,63 @@ class SequenceWebDataset(IterableDataset):
                 def _proc(frames, text):
                     if not isinstance(text, str):
                         text = self.text_prompt_template
+                    text = str(text)
                     tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                    if tokenizer is not None:
-                        vocab = tokenizer.get_vocab()
-                        if "<video>" in vocab and "<video>" not in text and "<image>" not in text:
-                            text = f"<video>\\n{text}"
-                        if "<obs>" in vocab and "<obs>" not in text:
-                            if "<video>" in text:
-                                text = text.replace("<video>\\n", "<video><obs>\\n", 1)
-                            else:
-                                text = f"<obs>\\n{text}"
+                    vocab = tokenizer.get_vocab() if tokenizer is not None else {}
+                    if "<obs>" in vocab and "<obs>" not in text:
+                        text = f"<obs>\n{text}"
+
+                    if self.vl_backend == "internvl" and hasattr(self.vlm_processor, "apply_chat_template"):
+                        # InternVL performs better when prompts follow its chat template.
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "video"},
+                                    {"type": "text", "text": text},
+                                ],
+                            }
+                        ]
+                        try:
+                            text = self.vlm_processor.apply_chat_template(
+                                messages,
+                                tokenize=False,
+                                add_generation_prompt=True,
+                            )
+                        except Exception:
+                            pass
+                    elif tokenizer is not None:
+                        has_media_token = any(tok in text for tok in ("<video>", "<image>", "<img>"))
+                        media_token = None
+                        if self.vl_backend == "llava_video" and "<video>" in vocab:
+                            media_token = "<video>"
+                        elif self.vl_backend == "internvl":
+                            for candidate in ("<video>", "<image>", "<img>"):
+                                if candidate in vocab:
+                                    media_token = candidate
+                                    break
+                        elif "<video>" in vocab:
+                            media_token = "<video>"
+                        elif "<image>" in vocab:
+                            media_token = "<image>"
+
+                        if media_token is not None and not has_media_token:
+                            text = f"{media_token}\n{text}"
+                        if "<obs>" in vocab and media_token is not None and f"{media_token}<obs>\n" not in text:
+                            text = text.replace(f"{media_token}\n", f"{media_token}<obs>\n", 1)
                     try:
                         max_len = self.vlm_max_text_len if self.vlm_truncation else None
-                        inputs = self.vlm_processor(
+                        processor_kwargs = dict(
                             text=text,
-                            videos=frames,
                             return_tensors="pt",
                             padding=self.vlm_padding,
                             truncation=self.vlm_truncation,
                             max_length=max_len,
                         )
+                        processor_kwargs["videos"] = frames
+                        inputs = self.vlm_processor(**processor_kwargs)
                     except TypeError:
-                        inputs = self.vlm_processor(images=frames, return_tensors="pt")
+                        inputs = self.vlm_processor(text=text, images=frames, return_tensors="pt")
 
                     packed = {}
                     for k, v in dict(inputs).items():
@@ -578,7 +615,10 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     if args.preprocess_in_loader:
         from transformers import AutoProcessor
 
-        vlm_processor = AutoProcessor.from_pretrained(args.vl_model_name)
+        vlm_processor = AutoProcessor.from_pretrained(
+            args.vl_model_name,
+            trust_remote_code=(args.vl_backend == "internvl"),
+        )
         tokenizer = getattr(vlm_processor, "tokenizer", None)
         if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
             tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
@@ -591,13 +631,14 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
+        vl_backend=args.vl_backend,
         vlm_processor=vlm_processor,
         text_prompt_template=args.text_prompt_template,
         include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
         include_nstep_bootstrap=(args.loss_type != "contrastive" and args.return_mode == "nstep"),
         vlm_max_text_len=args.vl_max_text_len,
-        vlm_truncation=(args.vl_backend != "llava_video"),
-        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
+        vlm_truncation=(args.vl_backend not in {"llava_video", "internvl"}),
+        vlm_padding=("longest" if args.vl_backend in {"llava_video", "internvl"} else "max_length"),
         gamma=getattr(args, "gamma", 0.99),
         return_horizon=getattr(args, "return_horizon", "clip"),
         n_step=getattr(args, "n_step", 1),
