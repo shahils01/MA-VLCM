@@ -509,7 +509,12 @@ def _collate_sequence_batch(batch):
         for k in keys:
             vals = [d[k] for d in items]
             if torch.is_tensor(vals[0]):
-                out[k] = torch.stack(vals, dim=0)
+                # InternVL returns per-sample frame/image tensors as [N, C, H, W].
+                # Concatenate them across the batch instead of adding a fake batch axis.
+                if k == "pixel_values" and vals[0].dim() == 4:
+                    out[k] = torch.cat(vals, dim=0)
+                else:
+                    out[k] = torch.stack(vals, dim=0)
             else:
                 out[k] = vals
         return out
