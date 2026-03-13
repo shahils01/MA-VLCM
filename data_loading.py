@@ -145,6 +145,16 @@ def _done_from_frame(sample, reduce_mode):
     return _reduce_done(t, reduce_mode)
 
 
+def _done_any_all_from_frame(sample):
+    arr = _as_numpy(sample["dones.npy"])
+    if hasattr(arr, "numpy"):
+        arr = arr.numpy()
+    t = torch.tensor(arr, dtype=torch.float32)
+    done_any = (t > 0).any()
+    done_all = (t > 0).all()
+    return done_any, done_all
+
+
 def _extract_episode_id(key):
     key = str(key)
     if "_step_" in key:
@@ -152,6 +162,73 @@ def _extract_episode_id(key):
     if "_" in key:
         return key.rsplit("_", 1)[0]
     return key
+
+
+def preprocess_vlm_video_inputs(
+    vlm_processor,
+    frames,
+    text,
+    vl_backend="llava_video",
+    text_prompt_template=None,
+    vlm_max_text_len=256,
+    vlm_truncation=False,
+    vlm_padding="longest",
+    obs_token_repeats=1,
+    squeeze_batch_dim=True,
+):
+    if vlm_processor is None:
+        raise RuntimeError("Dataloader processor not set.")
+    if not isinstance(text, str):
+        text = text_prompt_template
+    if not isinstance(text, str):
+        text = ""
+    proc_text = text
+
+    tokenizer = getattr(vlm_processor, "tokenizer", None)
+    if tokenizer is not None:
+        vocab = tokenizer.get_vocab()
+        has_media_token = any(tok in proc_text for tok in ("<video>", "<image>", "<img>"))
+        media_token = None
+        if vl_backend == "llava_video" and "<video>" in vocab:
+            media_token = "<video>"
+        elif vl_backend == "internvl":
+            for candidate in ("<video>", "<image>", "<img>"):
+                if candidate in vocab:
+                    media_token = candidate
+                    break
+        elif "<video>" in vocab:
+            media_token = "<video>"
+        elif "<image>" in vocab:
+            media_token = "<image>"
+        if media_token is not None and not has_media_token:
+            proc_text = f"{media_token}\n{proc_text}"
+        reps = max(1, int(obs_token_repeats))
+        if reps > 1 and "<obs>" in proc_text:
+            proc_text = proc_text.replace("<obs>", " ".join(["<obs>"] * reps), 1)
+
+    # For batched videos (list of list-of-frames), HF processors expect batched text.
+    if isinstance(frames, (list, tuple)) and len(frames) > 0 and isinstance(frames[0], (list, tuple)):
+        proc_text = [proc_text for _ in range(len(frames))]
+
+    try:
+        max_len = vlm_max_text_len if vlm_truncation else None
+        inputs = vlm_processor(
+            text=proc_text,
+            videos=frames,
+            return_tensors="pt",
+            padding=vlm_padding,
+            truncation=vlm_truncation,
+            max_length=max_len,
+        )
+    except TypeError:
+        inputs = vlm_processor(text=proc_text, images=frames, return_tensors="pt")
+
+    packed = {}
+    for k, v in dict(inputs).items():
+        if squeeze_batch_dim and torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
+            v = v.squeeze(0)
+        packed[k] = v
+    return packed
 
 
 class SequenceWebDataset(IterableDataset):
@@ -177,6 +254,7 @@ class SequenceWebDataset(IterableDataset):
         include_nstep_bootstrap=False,
         num_robots=None,
         robot_obs_dim=None,
+        obs_token_repeats=1,
     ):
         self.shards = shards
         self.clip_len = clip_len
@@ -197,6 +275,7 @@ class SequenceWebDataset(IterableDataset):
         self.include_nstep_bootstrap = include_nstep_bootstrap
         self.num_robots = int(num_robots) if num_robots is not None else None
         self.robot_obs_dim = int(robot_obs_dim) if robot_obs_dim is not None else None
+        self.obs_token_repeats = max(1, int(obs_token_repeats))
         if return_horizon not in {"clip", "trajectory"}:
             raise ValueError("return_horizon must be one of {'clip', 'trajectory'}")
         self.return_horizon = return_horizon
@@ -350,57 +429,51 @@ class SequenceWebDataset(IterableDataset):
                     nstep_clip = self._apply_done_termination(buffer[i + self.n_step : i + self.n_step + self.clip_len])
                     raw_nstep_video = [f["image"] for f in nstep_clip]
 
-                if self.vlm_processor is None:
-                    raise RuntimeError("Dataloader processor not set.")
-
-                def _proc(frames, text):
-                    if not isinstance(text, str):
-                        text = self.text_prompt_template
-                    text = str(text)
-                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                    vocab = tokenizer.get_vocab() if tokenizer is not None else {}
-                    if tokenizer is not None:
-                        has_media_token = any(tok in text for tok in ("<video>", "<image>", "<img>"))
-                        media_token = None
-                        if self.vl_backend == "llava_video" and "<video>" in vocab:
-                            media_token = "<video>"
-                        elif self.vl_backend == "internvl":
-                            for candidate in ("<video>", "<image>", "<img>"):
-                                if candidate in vocab:
-                                    media_token = candidate
-                                    break
-                        elif "<video>" in vocab:
-                            media_token = "<video>"
-                        elif "<image>" in vocab:
-                            media_token = "<image>"
-
-                        if media_token is not None and not has_media_token:
-                            text = f"{media_token}\n{text}"
-                    try:
-                        max_len = self.vlm_max_text_len if self.vlm_truncation else None
-                        processor_kwargs = dict(
-                            text=text,
-                            return_tensors="pt",
-                            padding=self.vlm_padding,
-                            truncation=self.vlm_truncation,
-                            max_length=max_len,
-                        )
-                        processor_kwargs["videos"] = frames
-                        inputs = self.vlm_processor(**processor_kwargs)
-                    except TypeError:
-                        inputs = self.vlm_processor(text=text, images=frames, return_tensors="pt")
-
-                    packed = {}
-                    for k, v in dict(inputs).items():
-                        if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
-                            v = v.squeeze(0)
-                        packed[k] = v
-                    return packed
-
                 text = clip[0]["text"]
-                inputs = _proc(raw_video, text)
-                next_inputs = _proc(raw_next_video, text) if self.include_next else None
-                nstep_inputs = _proc(raw_nstep_video, text) if self.include_nstep_bootstrap else None
+                inputs = preprocess_vlm_video_inputs(
+                    vlm_processor=self.vlm_processor,
+                    frames=raw_video,
+                    text=text,
+                    vl_backend=self.vl_backend,
+                    text_prompt_template=self.text_prompt_template,
+                    vlm_max_text_len=self.vlm_max_text_len,
+                    vlm_truncation=self.vlm_truncation,
+                    vlm_padding=self.vlm_padding,
+                    obs_token_repeats=self.obs_token_repeats,
+                    squeeze_batch_dim=True,
+                )
+                next_inputs = (
+                    preprocess_vlm_video_inputs(
+                        vlm_processor=self.vlm_processor,
+                        frames=raw_next_video,
+                        text=text,
+                        vl_backend=self.vl_backend,
+                        text_prompt_template=self.text_prompt_template,
+                        vlm_max_text_len=self.vlm_max_text_len,
+                        vlm_truncation=self.vlm_truncation,
+                        vlm_padding=self.vlm_padding,
+                        obs_token_repeats=self.obs_token_repeats,
+                        squeeze_batch_dim=True,
+                    )
+                    if self.include_next
+                    else None
+                )
+                nstep_inputs = (
+                    preprocess_vlm_video_inputs(
+                        vlm_processor=self.vlm_processor,
+                        frames=raw_nstep_video,
+                        text=text,
+                        vl_backend=self.vl_backend,
+                        text_prompt_template=self.text_prompt_template,
+                        vlm_max_text_len=self.vlm_max_text_len,
+                        vlm_truncation=self.vlm_truncation,
+                        vlm_padding=self.vlm_padding,
+                        obs_token_repeats=self.obs_token_repeats,
+                        squeeze_batch_dim=True,
+                    )
+                    if self.include_nstep_bootstrap
+                    else None
+                )
 
                 robot_obs = torch.stack([f["robot_obs"] for f in clip], dim=0)
                 adj = torch.stack([f["adj"] for f in clip], dim=0)
@@ -470,6 +543,7 @@ class SequenceWebDataset(IterableDataset):
 
             num_nodes = robot_obs.shape[0]
             adj = _edge_index_to_adj(_as_numpy(sample["edge_index.npy"]), num_nodes)
+            # Normalize per-frame graph tensors so mixed-source datasets can still batch.
             robot_obs, adj = self._normalize_robot_tensors(robot_obs, adj)
 
             if self.text_mode == "raw":
@@ -482,6 +556,7 @@ class SequenceWebDataset(IterableDataset):
 
             reward = _reward_from_frame(sample, self.reward_reduce)
             done = _done_from_frame(sample, self.done_reduce)
+            done_any, done_all = _done_any_all_from_frame(sample)
 
             buffer.append(
                 {
@@ -491,6 +566,8 @@ class SequenceWebDataset(IterableDataset):
                     "text": text,
                     "reward": reward,
                     "done": done,
+                    "done_any": done_any,
+                    "done_all": done_all,
                     "shard_id": shard_id,
                 }
             )
@@ -505,8 +582,6 @@ def _collate_sequence_batch(batch):
         for k in keys:
             vals = [d[k] for d in items]
             if torch.is_tensor(vals[0]):
-                # InternVL returns per-sample frame/image tensors as [N, C, H, W].
-                # Concatenate them across the batch instead of adding a fake batch axis.
                 if k == "pixel_values" and vals[0].dim() == 4:
                     out[k] = torch.cat(vals, dim=0)
                 else:
@@ -522,6 +597,10 @@ def _collate_sequence_batch(batch):
         "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
         "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
     }
+    if "done_any" in batch[0]:
+        out["done_any"] = torch.stack([b["done_any"] for b in batch], dim=0).view(-1)
+    if "done_all" in batch[0]:
+        out["done_all"] = torch.stack([b["done_all"] for b in batch], dim=0).view(-1)
     if "next_inputs" in batch[0]:
         out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
         out["next_robot_obs"] = torch.stack([b["next_robot_obs"] for b in batch], dim=0)
@@ -601,10 +680,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
             trust_remote_code=(args.vl_backend == "internvl"),
         )
         if args.vl_backend == "internvl":
-            cfg_hf = AutoConfig.from_pretrained(
-                args.vl_model_name,
-                trust_remote_code=True,
-            )
+            cfg_hf = AutoConfig.from_pretrained(args.vl_model_name, trust_remote_code=True)
             vision_cfg = getattr(cfg_hf, "vision_config", None)
             image_size = getattr(vision_cfg, "image_size", None) if vision_cfg is not None else None
             if isinstance(image_size, (tuple, list)):
@@ -620,7 +696,6 @@ def webdataset_loader(args, shards, batch_size, num_workers):
                 media_size = {"height": size, "width": size}
             else:
                 media_size = None
-
             if media_size is not None:
                 for proc_name in ("image_processor", "video_processor"):
                     proc = getattr(vlm_processor, proc_name, None)
@@ -655,6 +730,7 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         n_step=getattr(args, "n_step", 1),
         num_robots=getattr(args, "num_robots", None),
         robot_obs_dim=getattr(args, "robot_obs_dim", None),
+        obs_token_repeats=getattr(args, "obs_summary_tokens", 1),
     )
     if getattr(args, "shard_aware_batching", False):
         dataset = UniqueShardBatchDataset(
