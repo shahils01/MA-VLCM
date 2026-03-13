@@ -60,6 +60,10 @@ class ModelConfig:
     value_pooling: str = "hidden_mean"
     # If the backend forward supports it, keep logits only for last K tokens.
     logits_to_keep: int = 1
+    # Multi-depth contrastive supervision settings.
+    contrastive_multidepth: bool = False
+    # Offsets from final hidden layer (0=last, 1=one before, ...).
+    contrastive_depth_offsets: tuple = (0,)
 
 
 
@@ -341,6 +345,7 @@ class MultimodalValueModel(nn.Module):
             self._backbone_forward_params = set()
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
+        self.token_attn_pool = nn.Linear(lm_hidden, 1)
 
         try:
             from gat import GNN_Model
@@ -382,6 +387,43 @@ class MultimodalValueModel(nn.Module):
         else:
             vl_feat_dim = lm_hidden
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
+
+    def _backbone_uses_gradient_checkpointing(self) -> bool:
+        model = self.backbone.model
+        if bool(getattr(model, "is_gradient_checkpointing", False)):
+            return True
+        if bool(getattr(model, "gradient_checkpointing", False)):
+            return True
+        cfg = getattr(model, "config", None)
+        return bool(getattr(cfg, "gradient_checkpointing", False))
+
+    def _attention_max_pool(self, hidden: torch.Tensor, attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        scores = self.token_attn_pool(hidden).squeeze(-1)
+        if attn_mask is not None and attn_mask.shape[:2] == hidden.shape[:2]:
+            valid = attn_mask.bool()
+            scores = scores.masked_fill(~valid, -1e9)
+        else:
+            valid = None
+        attn = F.softmax(scores, dim=1)
+        weighted = hidden * attn.unsqueeze(-1)
+        if valid is not None:
+            weighted = weighted.masked_fill(~valid.unsqueeze(-1), float("-inf"))
+        pooled = weighted.max(dim=1).values
+        bad = ~torch.isfinite(pooled).all(dim=1)
+        if bad.any():
+            pooled = pooled.clone()
+            pooled[bad] = hidden[bad].mean(dim=1)
+        return pooled
+
+    @staticmethod
+    def _clone_nondiff_inputs(inputs: dict) -> dict:
+        cloned = {}
+        for key, value in inputs.items():
+            if torch.is_tensor(value) and not torch.is_floating_point(value):
+                cloned[key] = value.clone()
+            else:
+                cloned[key] = value
+        return cloned
 
     def _maybe_save_debug_video_from_inputs(self, inputs: dict):
         if (not self.debug_save_video) or self._debug_video_saved:
@@ -536,6 +578,7 @@ class MultimodalValueModel(nn.Module):
         text_mask=None,
         image_sizes=None,
         return_debug: bool = False,
+        return_features: bool = False,
         debug_max_tokens: int = 32,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
@@ -569,10 +612,11 @@ class MultimodalValueModel(nn.Module):
         robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
-        inputs = self.backbone._move_inputs_to_device(inputs)
+        inputs = self._clone_nondiff_inputs(self.backbone._move_inputs_to_device(inputs))
         self._maybe_save_debug_video_from_inputs(inputs)
         input_ids = inputs["input_ids"]
         attn_mask = inputs.get("attention_mask")
+        attn_for_pool = attn_mask.clone() if attn_mask is not None else None
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool team graph features to one token and inject at <obs>.
@@ -599,13 +643,20 @@ class MultimodalValueModel(nn.Module):
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
                     )
 
-        inputs.pop("input_ids", None)
-        inputs["inputs_embeds"] = inputs_embeds
+        model_inputs = {k: v for k, v in inputs.items() if k != "input_ids"}
+        if attn_mask is not None:
+            model_inputs["attention_mask"] = attn_mask.clone()
+        if not inputs_embeds.requires_grad and self._backbone_uses_gradient_checkpointing():
+            inputs_embeds = inputs_embeds.requires_grad_(True)
+        model_inputs["inputs_embeds"] = inputs_embeds
         forward_kwargs = {"return_dict": True}
         if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
             # KV cache is only useful for autoregressive generation, not value regression training.
             forward_kwargs["use_cache"] = False
-        if self.cfg.value_pooling == "hidden_mean":
+        need_hidden_states = self.cfg.value_pooling == "hidden_mean" or (
+            return_features and bool(getattr(self.cfg, "contrastive_multidepth", False))
+        )
+        if need_hidden_states:
             forward_kwargs["output_hidden_states"] = True
         if self.cfg.logits_to_keep > 0:
             # Some transformers versions expose either logits_to_keep or num_logits_to_keep.
@@ -614,11 +665,12 @@ class MultimodalValueModel(nn.Module):
             elif "num_logits_to_keep" in self._backbone_forward_params:
                 forward_kwargs["num_logits_to_keep"] = self.cfg.logits_to_keep
 
-        output = self.backbone.model(**inputs, **forward_kwargs)
+        output = self.backbone.model(**model_inputs, **forward_kwargs)
 
+        hidden_states = getattr(output, "hidden_states", None)
         final_hidden = None
-        if self.cfg.value_pooling == "hidden_mean":
-            final_hidden = output.hidden_states[-1]
+        if hidden_states is not None and len(hidden_states) > 0:
+            final_hidden = hidden_states[-1]
         debug_text = None
         if return_debug:
             logits = getattr(output, "logits", None)
@@ -627,9 +679,9 @@ class MultimodalValueModel(nn.Module):
                 if lm_head is None:
                     raise RuntimeError("Unable to decode debug text: no LM logits or output embeddings available.")
                 logits = lm_head(final_hidden)
-            debug_text = self._decode_debug_text(logits, inputs.get("attention_mask"), max_tokens=debug_max_tokens)
+            debug_text = self._decode_debug_text(logits, attn_for_pool, max_tokens=debug_max_tokens)
 
-        attn = inputs.get("attention_mask")
+        attn = attn_for_pool
         if self.cfg.value_pooling == "hidden_mean":
             if final_hidden is None:
                 raise RuntimeError("hidden_mean value pooling requested but hidden states were not returned.")
@@ -645,9 +697,26 @@ class MultimodalValueModel(nn.Module):
             pooled = logits[:, -1, :]
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
+        vlm_multidepth_features = None
+        if return_features and bool(getattr(self.cfg, "contrastive_multidepth", False)):
+            if hidden_states is None or len(hidden_states) == 0:
+                raise RuntimeError(
+                    "Multi-depth contrastive supervision requested but hidden states were not returned by the backbone."
+                )
+            depth_feats = []
+            offsets = tuple(getattr(self.cfg, "contrastive_depth_offsets", (0,)))
+            for off in offsets:
+                idx = max(0, len(hidden_states) - 1 - max(0, int(off)))
+                depth_feats.append(self._attention_max_pool(hidden_states[idx], attn_for_pool))
+            vlm_multidepth_features = depth_feats
 
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
-        if return_debug:
-            return {"value": value, "debug_text": debug_text}
+        if return_debug or return_features:
+            out = {"value": value, "vlm_feature": pooled}
+            if vlm_multidepth_features is not None:
+                out["vlm_multidepth_features"] = vlm_multidepth_features
+            if return_debug:
+                out["debug_text"] = debug_text
+            return out
         return value

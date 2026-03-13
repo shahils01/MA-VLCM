@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import torch
 
 from data_loading import webdataset_loader
-from train import _apply_peft, _resolve_vl_model_preset, build_model
+from train import _apply_peft, _resolve_contrastive_depth_args, _resolve_vl_model_preset, build_model
 
 
 def parse_args():
@@ -36,8 +36,15 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="nstep", choices=["td", "nstep"])
     p.add_argument("--return_horizon", type=str, default="clip", choices=["clip", "trajectory"])
-    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
     p.add_argument("--n_step", type=int, default=50)
+    p.add_argument("--contrastive_objective", type=str, default="infonce", choices=["point_to_set", "infonce"])
+    p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--infonce_temperature", type=float, default=0.1)
+    p.add_argument("--infonce_topk_pos", type=int, default=0)
+    p.add_argument("--contrastive_multidepth", action="store_true")
+    p.add_argument("--contrastive_depth_offsets", type=str, default="0")
+    p.add_argument("--contrastive_depth_weights", type=str, default="")
     p.add_argument(
         "--vl_backend",
         type=str,
@@ -149,6 +156,13 @@ def _args_from_cli(cli_args):
         "return_horizon",
         "loss_type",
         "n_step",
+        "contrastive_objective",
+        "contrastive_margin",
+        "infonce_temperature",
+        "infonce_topk_pos",
+        "contrastive_multidepth",
+        "contrastive_depth_offsets",
+        "contrastive_depth_weights",
         "vl_backend",
         "vl_model_name",
         "vl_model_preset",
@@ -343,6 +357,7 @@ def main():
     else:
         train_args = _args_from_cli(args)
 
+    _resolve_contrastive_depth_args(train_args)
     _resolve_vl_model_preset(train_args)
     _init_quant_config_if_needed(train_args)
 
