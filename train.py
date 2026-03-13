@@ -557,6 +557,15 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
+                next_pred = None
+                nstep_bootstrap_pred = None
+                if args.loss_type in {"td", "td_contrastive"} and args.return_mode == "td":
+                    with torch.no_grad():
+                        next_pred = model(next_inputs, next_robot_obs, next_adj)
+                elif args.loss_type in {"td", "td_contrastive"} and args.return_mode == "nstep":
+                    with torch.no_grad():
+                        nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
+
                 should_decode = (
                     args.debug_decode_text
                     and accelerator.is_main_process
@@ -599,12 +608,8 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     loss = args.lambda_c * vlm_contrastive_loss + args.lambda_value_c * value_contrastive_loss
                 else:
                     if args.return_mode == "td":
-                        with torch.no_grad():
-                            next_pred = model(next_inputs, next_robot_obs, next_adj)
                         target = reward + gamma * (1.0 - done) * next_pred
                     elif args.return_mode == "nstep":
-                        with torch.no_grad():
-                            nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
                         gamma_n = gamma ** int(args.n_step)
                         target = nstep_returns + gamma_n * (1.0 - nstep_done) * nstep_bootstrap_pred
                     else:
