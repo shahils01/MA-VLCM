@@ -519,6 +519,7 @@ def _compute_multidepth_contrastive_loss(main_embeddings, depth_embeddings, rewa
 
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
     model.train() if train else model.eval()
+    raw_model = accelerator.unwrap_model(model)
 
     loss_fn = nn.MSELoss()
     total_loss = 0.0
@@ -561,10 +562,10 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 nstep_bootstrap_pred = None
                 if args.loss_type in {"td", "td_contrastive"} and args.return_mode == "td":
                     with torch.no_grad():
-                        next_pred = model(next_inputs, next_robot_obs, next_adj)
+                        next_pred = raw_model(next_inputs, next_robot_obs, next_adj)
                 elif args.loss_type in {"td", "td_contrastive"} and args.return_mode == "nstep":
                     with torch.no_grad():
-                        nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
+                        nstep_bootstrap_pred = raw_model(nstep_inputs, nstep_robot_obs, nstep_adj)
 
                 should_decode = (
                     args.debug_decode_text
