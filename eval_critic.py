@@ -13,6 +13,75 @@ from train import (
     build_model,
 )
 
+DEFAULT_TEXT_PROMPT = (
+    "You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per "
+    "timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a "
+    "single scalar judgment."
+)
+
+EVAL_FALLBACK_ARG_KEYS = (
+    "batch_size",
+    "num_workers",
+    "clip_len",
+    "clip_stride",
+    "text_mode",
+    "text_prompt_template",
+    "robot_source",
+    "reward_reduce",
+    "done_reduce",
+    "preprocess_in_loader",
+    "vl_max_text_len",
+    "gamma",
+    "return_mode",
+    "return_horizon",
+    "loss_type",
+    "n_step",
+    "contrastive_objective",
+    "contrastive_margin",
+    "infonce_temperature",
+    "infonce_topk_pos",
+    "contrastive_multidepth",
+    "contrastive_depth_offsets",
+    "contrastive_depth_weights",
+    "vl_backend",
+    "vl_model_name",
+    "vl_model_preset",
+    "vl_dtype",
+    "freeze_vl",
+    "value_pooling",
+    "vl_logits_to_keep",
+    "obs_summary_tokens",
+    "video_channels",
+    "video_height",
+    "video_width",
+    "video_frames",
+    "video_preprocessed",
+    "video_mean",
+    "video_std",
+    "num_robots",
+    "robot_obs_dim",
+    "text_dim",
+    "d_model",
+    "temporal_layers",
+    "temporal_heads",
+    "temporal_dropout",
+    "gnn_layers",
+    "fusion_hidden",
+    "use_moe",
+    "moe_experts",
+    "moe_top_k",
+    "debug_save_video",
+    "peft",
+    "lora_r",
+    "lora_alpha",
+    "lora_dropout",
+    "lora_target_modules",
+    "lora_bias",
+    "gradient_checkpointing",
+    "disable_vl_cache",
+    "allow_tf32",
+)
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Evaluate MA-VLCM critic predictions against return targets.")
@@ -37,7 +106,7 @@ def parse_args():
     p.add_argument(
         "--text_prompt_template",
         type=str,
-        default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.",
+        default=DEFAULT_TEXT_PROMPT,
     )
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
@@ -152,69 +221,7 @@ def _load_train_args(ckpt):
 
 
 def _args_from_cli(cli_args):
-    keys = [
-        "batch_size",
-        "num_workers",
-        "clip_len",
-        "clip_stride",
-        "text_mode",
-        "text_prompt_template",
-        "robot_source",
-        "reward_reduce",
-        "done_reduce",
-        "preprocess_in_loader",
-        "vl_max_text_len",
-        "gamma",
-        "return_mode",
-        "return_horizon",
-        "loss_type",
-        "n_step",
-        "contrastive_objective",
-        "contrastive_margin",
-        "infonce_temperature",
-        "infonce_topk_pos",
-        "contrastive_multidepth",
-        "contrastive_depth_offsets",
-        "contrastive_depth_weights",
-        "vl_backend",
-        "vl_model_name",
-        "vl_model_preset",
-        "vl_dtype",
-        "freeze_vl",
-        "value_pooling",
-        "vl_logits_to_keep",
-        "obs_summary_tokens",
-        "video_channels",
-        "video_height",
-        "video_width",
-        "video_frames",
-        "video_preprocessed",
-        "video_mean",
-        "video_std",
-        "num_robots",
-        "robot_obs_dim",
-        "text_dim",
-        "d_model",
-        "temporal_layers",
-        "temporal_heads",
-        "temporal_dropout",
-        "gnn_layers",
-        "fusion_hidden",
-        "use_moe",
-        "moe_experts",
-        "moe_top_k",
-        "debug_save_video",
-        "peft",
-        "lora_r",
-        "lora_alpha",
-        "lora_dropout",
-        "lora_target_modules",
-        "lora_bias",
-        "gradient_checkpointing",
-        "disable_vl_cache",
-        "allow_tf32",
-    ]
-    return SimpleNamespace(**{k: getattr(cli_args, k) for k in keys})
+    return SimpleNamespace(**{k: getattr(cli_args, k) for k in EVAL_FALLBACK_ARG_KEYS})
 
 
 def _backfill_train_args(train_args, cli_args):
@@ -373,15 +380,9 @@ def _good_bad_pair_accuracy(good_scores: torch.Tensor, bad_scores: torch.Tensor)
     return float(cmp.mean())
 
 
-def main():
-    args = parse_args()
-    torch.manual_seed(args.seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = None
-    if args.checkpoint:
-        ckpt = torch.load(args.checkpoint, map_location="cpu")
-        train_args = _backfill_train_args(_load_train_args(ckpt), args)
+def _load_or_build_train_args(args, checkpoint):
+    if checkpoint is not None:
+        train_args = _backfill_train_args(_load_train_args(checkpoint), args)
         if args.num_robots is not None and int(args.num_robots) != int(getattr(train_args, "num_robots", args.num_robots)):
             print(f"Overriding checkpoint num_robots: {int(train_args.num_robots)} -> {int(args.num_robots)}")
             train_args.num_robots = int(args.num_robots)
@@ -392,10 +393,30 @@ def main():
 
     _resolve_vl_model_preset(train_args)
     _init_quant_config_if_needed(train_args)
-
-    # Keep eval stream size configurable from CLI.
     train_args.batch_size = args.batch_size
     train_args.num_workers = args.num_workers
+    return train_args
+
+
+def _evaluate_and_report(model, device, train_args, shards, max_samples, print_samples, seed, name):
+    loader = webdataset_loader(train_args, shards, train_args.batch_size, train_args.num_workers)
+    pred, ret, aligned = run_stream(model, loader, device, max_samples, train_args)
+    if ret.numel() > 0:
+        _print_sample_table(pred, ret, print_samples, seed, "true_return")
+        _print_core_metrics(f"{name}/returns_target", pred, ret)
+    if aligned.numel() > 0:
+        _print_sample_table(pred, aligned, print_samples, seed + 1, "train_aligned_target")
+        _print_core_metrics(f"{name}/train_aligned_target", pred, aligned)
+    return pred, ret, aligned
+
+
+def main():
+    args = parse_args()
+    torch.manual_seed(args.seed)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ckpt = torch.load(args.checkpoint, map_location="cpu") if args.checkpoint else None
+    train_args = _load_or_build_train_args(args, ckpt)
 
     model = build_model(train_args, device=device)
     model = _apply_peft(model, train_args)
@@ -411,28 +432,38 @@ def main():
     model.to(device)
 
     if args.eval_shards:
-        eval_loader = webdataset_loader(train_args, args.eval_shards, args.batch_size, args.num_workers)
-        pred, ret, aligned = run_stream(model, eval_loader, device, args.max_samples, train_args)
-        if ret.numel() > 0:
-            _print_sample_table(pred, ret, args.print_samples, args.seed, "true_return")
-            _print_core_metrics("eval_shards/returns_target", pred, ret)
-        if aligned.numel() > 0:
-            _print_sample_table(pred, aligned, args.print_samples, args.seed + 1, "train_aligned_target")
-            _print_core_metrics("eval_shards/train_aligned_target", pred, aligned)
+        _evaluate_and_report(
+            model,
+            device,
+            train_args,
+            args.eval_shards,
+            args.max_samples,
+            args.print_samples,
+            args.seed,
+            "eval_shards",
+        )
 
     if args.good_shards and args.bad_shards:
-        good_loader = webdataset_loader(train_args, args.good_shards, args.batch_size, args.num_workers)
-        bad_loader = webdataset_loader(train_args, args.bad_shards, args.batch_size, args.num_workers)
-        good_pred, good_ret, good_aligned = run_stream(model, good_loader, device, args.max_samples, train_args)
-        bad_pred, bad_ret, bad_aligned = run_stream(model, bad_loader, device, args.max_samples, train_args)
-        if good_ret.numel() > 0:
-            _print_core_metrics("good_shards/returns_target", good_pred, good_ret)
-        if bad_ret.numel() > 0:
-            _print_core_metrics("bad_shards/returns_target", bad_pred, bad_ret)
-        if good_aligned.numel() > 0:
-            _print_core_metrics("good_shards/train_aligned_target", good_pred, good_aligned)
-        if bad_aligned.numel() > 0:
-            _print_core_metrics("bad_shards/train_aligned_target", bad_pred, bad_aligned)
+        good_pred, good_ret, good_aligned = _evaluate_and_report(
+            model,
+            device,
+            train_args,
+            args.good_shards,
+            args.max_samples,
+            0,
+            args.seed,
+            "good_shards",
+        )
+        bad_pred, bad_ret, bad_aligned = _evaluate_and_report(
+            model,
+            device,
+            train_args,
+            args.bad_shards,
+            args.max_samples,
+            0,
+            args.seed,
+            "bad_shards",
+        )
         gb_acc = _good_bad_pair_accuracy(good_pred, bad_pred)
         print("\n[good_vs_bad]")
         print(f"  PairwiseProb(score_good > score_bad)={gb_acc:.6f}")
