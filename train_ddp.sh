@@ -22,7 +22,7 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
   --reward_reduce mean \
   --done_reduce all \
   --gamma 0.95 \
-  --loss_type td_contrastive \
+  --loss_type contrastive \
   --contrastive_multidepth \
   --contrastive_depth_offsets "0,2,4,8" \
   --contrastive_depth_weights "1.0, 0.99, 0.97, 0.95" \
