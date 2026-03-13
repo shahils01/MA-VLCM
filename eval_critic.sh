@@ -5,7 +5,7 @@ accelerate launch --num_processes 1 eval_critic.py \
   --max_samples 10 \
   --print_samples 10 \
   --value_pooling hidden_mean \
-  --checkpoint checkpoints/ckpt_epoch_1.pt \
+  --checkpoint checkpoints/ckpt_epoch_29.pt \
   --num_robots 3 \
 
 

@@ -2,9 +2,9 @@
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000250}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000150}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000120}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000110}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/OFFROAD/dataset_2/shard-{000000..000030}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
-VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_next_video_7b}"  # llava_onevision_0p5b / llava_next_video_7b
+VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
-accelerate launch --num_processes 2 train.py \
+accelerate launch --num_processes 8 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 16 \
   --num_workers 1 \
@@ -24,8 +24,8 @@ accelerate launch --num_processes 2 train.py \
   --gamma 0.95 \
   --loss_type td_contrastive \
   --contrastive_multidepth \
-  --contrastive_depth_offsets "0" \
-  --contrastive_depth_weights "1.0" \
+  --contrastive_depth_offsets "0,2,4,8" \
+  --contrastive_depth_weights "1.0, 0.99, 0.97, 0.95" \
   --text_mode raw \
   --return_mode nstep \
   --n_step 64 \
@@ -41,7 +41,7 @@ accelerate launch --num_processes 2 train.py \
   --wandb_project ma-vlcm \
   --wandb_run_name ma-vlcm-ddp \
   --peft qlora \
-  # --resume_checkpoint checkpoints/ckpt_epoch_3.pt \
+  --resume_checkpoint /scratch/shahils/MA-VLCM/checkpoints/ckpt_epoch_29.pt \
   # --disable_vl_cache \
   # --lora_r 16 \
   # --lora_alpha 32 \

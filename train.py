@@ -205,7 +205,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
-    p.add_argument("--save_dir", type=str, default="checkpoints")
+    p.add_argument("--save_dir", type=str, default="checkpoints_new")
     p.add_argument("--resume_checkpoint", type=str, default="", help="Path to checkpoint .pt to resume training")
     p.add_argument("--load_model_only", action="store_true", help="Load only model weights from checkpoint")
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging via Accelerate trackers")
