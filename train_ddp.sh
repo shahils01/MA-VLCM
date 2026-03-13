@@ -3,7 +3,7 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_0/shard-{000000..000040}.tar
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b / internvl3_5_{1b,2b,4b,8b}
 
-accelerate launch --num_processes 2 train.py \
+accelerate launch --num_processes 8 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
   --num_workers 16 \
