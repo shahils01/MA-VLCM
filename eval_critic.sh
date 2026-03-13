@@ -5,6 +5,7 @@ python eval_critic.py \
   --num_workers 2 \
   --max_samples 20 \
   --print_samples 20 \
+  --peft qlora \
   --value_pooling last_token_logits \
   --checkpoint checkpoints_new/ckpt_epoch_2.pt \
 
