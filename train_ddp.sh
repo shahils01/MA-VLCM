@@ -3,7 +3,7 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/s
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-internvl3_5_4b}"  # llava_onevision_0p5b / llava_next_video_7b / internvl3_5_{1b,2b,4b,8b}
 
-CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
+CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 2 train.py \
   --detect_anomaly \
   --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
