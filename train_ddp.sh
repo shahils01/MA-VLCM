@@ -4,7 +4,10 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/s
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
-accelerate launch --num_processes 8 train.py \
+
+CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
+  --peft none \
+  --detect_anomaly \
   --train_shards $TRAIN_SHARDS \
   --batch_size 16 \
   --num_workers 1 \
@@ -40,8 +43,8 @@ accelerate launch --num_processes 8 train.py \
   --wandb \
   --wandb_project ma-vlcm \
   --wandb_run_name ma-vlcm-ddp \
-  --peft qlora \
-  --resume_checkpoint /scratch/shahils/MA-VLCM/checkpoints/ckpt_epoch_29.pt \
+  # --peft qlora \
+  # --resume_checkpoint /scratch/shahils/MA-VLCM/checkpoints/ckpt_epoch_29.pt \
   # --disable_vl_cache \
   # --lora_r 16 \
   # --lora_alpha 32 \
