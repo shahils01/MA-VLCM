@@ -1,16 +1,16 @@
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_new_pt_0/shard-{000000..000040}.tar::/scratch/shahils/data/gotogoal_new_pt_15/shard-{000000..000110}.tar::/scratch/shahils/data/gotogoal_new_pt_30/shard-{000000..000290}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000260}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/OFFROAD/dataset_2/shard-{000000..000030}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
-VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b / internvl3_5_{1b,2b,4b,8b}
+VL_MODEL_PRESET="${VL_MODEL_PRESET:-internvl3_5_4b}"  # llava_onevision_0p5b / llava_next_video_7b / internvl3_5_{1b,2b,4b,8b}
 
 accelerate launch --num_processes 8 train.py \
   --train_shards $TRAIN_SHARDS \
-  --batch_size 2 \
+  --batch_size 16 \
   --num_workers 4 \
   --grad_accum_steps 16 \
   --mixed_precision bf16 \
   --allow_tf32 \
-  --value_pooling last_token_logits \
+  --value_pooling hidden_mean \
   --vl_logits_to_keep 128 \
   --epochs 500 \
   --clip_len 20 \
@@ -20,7 +20,7 @@ accelerate launch --num_processes 8 train.py \
   --reward_reduce mean \
   --done_reduce any \
   --gamma 0.99 \
-  --loss_type td \
+  --loss_type contrastive \
   --text_mode raw \
   --return_mode nstep \
   --n_step 20 \
