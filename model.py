@@ -71,7 +71,36 @@ class ModelConfig:
 
 
 class LLaVAVideoBackbone(nn.Module):
-    """Backbone wrapper for LLaVA-style video models using HF interfaces."""
+    """Backbone wrapper for HF multimodal backbones used by this project."""
+
+    @staticmethod
+    def _normalize_media_size(image_size):
+        if isinstance(image_size, (tuple, list)):
+            if len(image_size) >= 2:
+                return {"height": int(image_size[0]), "width": int(image_size[1])}
+            if len(image_size) == 1:
+                size = int(image_size[0])
+                return {"height": size, "width": size}
+        if image_size is None:
+            return None
+        size = int(image_size)
+        return {"height": size, "width": size}
+
+    def _configure_processor_media_size(self, cfg_hf):
+        vision_cfg = getattr(cfg_hf, "vision_config", None)
+        image_size = getattr(vision_cfg, "image_size", None) if vision_cfg is not None else None
+        media_size = self._normalize_media_size(image_size)
+        if media_size is None:
+            return
+
+        for proc_name in ("image_processor", "video_processor"):
+            proc = getattr(self.processor, proc_name, None)
+            if proc is None:
+                continue
+            if hasattr(proc, "size"):
+                proc.size = dict(media_size)
+            if hasattr(proc, "crop_size"):
+                proc.crop_size = dict(media_size)
 
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
@@ -93,6 +122,10 @@ class LLaVAVideoBackbone(nn.Module):
             except Exception:
                 AutoModelForVision2Seq = None
             try:
+                from transformers.models.auto.modeling_auto import AutoModelForImageTextToText
+            except Exception:
+                AutoModelForImageTextToText = None
+            try:
                 from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
             except Exception:
                 LlavaNextVideoForConditionalGeneration = None
@@ -101,15 +134,21 @@ class LLaVAVideoBackbone(nn.Module):
             except Exception:
                 LlavaOnevisionForConditionalGeneration = None
         except Exception as e:
-            raise ImportError("LLaVA video backends require transformers installed.") from e
+            raise ImportError("HF multimodal backends require transformers installed.") from e
 
-        cfg_hf = AutoConfig.from_pretrained(cfg.vl_model_name)
+        trust_remote_code = cfg.vl_backend == "internvl"
+        cfg_hf = AutoConfig.from_pretrained(cfg.vl_model_name, trust_remote_code=trust_remote_code)
         model_type = str(getattr(cfg_hf, "model_type", "")).lower()
 
-        self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
-        self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
-            cfg.vl_model_name
+        self.processor = AutoProcessor.from_pretrained(
+            cfg.vl_model_name,
+            trust_remote_code=trust_remote_code,
         )
+        self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
+            cfg.vl_model_name,
+            trust_remote_code=trust_remote_code,
+        )
+        self._configure_processor_media_size(cfg_hf)
         if "<obs>" not in self.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
@@ -117,7 +156,15 @@ class LLaVAVideoBackbone(nn.Module):
         if cfg.quantization_config is not None:
             model_kwargs["quantization_config"] = cfg.quantization_config
         load_info = None
-        if model_type == "llava_next_video":
+        if cfg.vl_backend == "internvl":
+            model_kwargs["trust_remote_code"] = trust_remote_code
+            if AutoModelForImageTextToText is not None:
+                self.model = AutoModelForImageTextToText.from_pretrained(cfg.vl_model_name, **model_kwargs)
+            elif AutoModelForVision2Seq is not None:
+                self.model = AutoModelForVision2Seq.from_pretrained(cfg.vl_model_name, **model_kwargs)
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(cfg.vl_model_name, **model_kwargs)
+        elif model_type == "llava_next_video":
             if LlavaNextVideoForConditionalGeneration is None:
                 raise ImportError("This transformers build does not provide LlavaNextVideoForConditionalGeneration.")
             self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
@@ -188,14 +235,20 @@ class LLaVAVideoBackbone(nn.Module):
         # Only pass max_length when truncation is explicitly enabled.
         if truncation and max_length is None:
             max_length = self.cfg.vl_max_text_len
-        inputs = self.processor(
+        processor_kwargs = dict(
             text=text,
-            videos=videos,
             return_tensors="pt",
             padding=padding,
             truncation=truncation,
             max_length=max_length,
         )
+        try:
+            processor_kwargs["videos"] = videos
+            inputs = self.processor(**processor_kwargs)
+        except TypeError:
+            processor_kwargs.pop("videos", None)
+            processor_kwargs["images"] = videos
+            inputs = self.processor(**processor_kwargs)
         return self._move_inputs_to_device(inputs)
 
 

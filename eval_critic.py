@@ -130,13 +130,26 @@ def parse_args():
     p.add_argument("--contrastive_multidepth", action="store_true")
     p.add_argument("--contrastive_depth_offsets", type=str, default="0")
     p.add_argument("--contrastive_depth_weights", type=str, default="")
-    p.add_argument("--vl_backend", type=str, default="llava_video", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
+    p.add_argument(
+        "--vl_backend",
+        type=str,
+        default="llava_video",
+        choices=["deepseek_vl", "deepseek_vl2", "llava_video", "internvl"],
+    )
     p.add_argument("--vl_model_name", type=str, default="llava-hf/llava-onevision-qwen2-0.5b-ov-hf")
     p.add_argument(
         "--vl_model_preset",
         type=str,
         default="llava_onevision_0p5b",
-        choices=["custom", "llava_next_video_7b", "llava_onevision_0p5b"],
+        choices=[
+            "custom",
+            "llava_next_video_7b",
+            "llava_onevision_0p5b",
+            "internvl3_5_1b",
+            "internvl3_5_2b",
+            "internvl3_5_4b",
+            "internvl3_5_8b",
+        ],
     )
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--freeze_vl", action="store_true")

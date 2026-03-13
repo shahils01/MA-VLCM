@@ -148,14 +148,27 @@ def parse_args():
     )
 
     # VLM backbone
-    p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
+    p.add_argument(
+        "--vl_backend",
+        type=str,
+        default="deepseek_vl",
+        choices=["deepseek_vl", "deepseek_vl2", "llava_video", "internvl"],
+    )
     p.add_argument("--vl_model_name", type=str, default="deepseek-community/deepseek-vl-1.3b-base")
     p.add_argument(
         "--vl_model_preset",
         type=str,
         default="custom",
-        choices=["custom", "llava_next_video_7b", "llava_onevision_0p5b"],
-        help="Convenience preset for known LLaVA video-capable checkpoints.",
+        choices=[
+            "custom",
+            "llava_next_video_7b",
+            "llava_onevision_0p5b",
+            "internvl3_5_1b",
+            "internvl3_5_2b",
+            "internvl3_5_4b",
+            "internvl3_5_8b",
+        ],
+        help="Convenience preset for known VLM checkpoints.",
     )
     p.add_argument("--vl_dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"])
     p.add_argument("--vl_max_text_len", type=int, default=256)
@@ -324,6 +337,18 @@ def _resolve_vl_model_preset(args):
     elif args.vl_model_preset == "llava_onevision_0p5b":
         args.vl_backend = "llava_video"
         args.vl_model_name = "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
+    elif args.vl_model_preset == "internvl3_5_1b":
+        args.vl_backend = "internvl"
+        args.vl_model_name = "OpenGVLab/InternVL3_5-1B-HF"
+    elif args.vl_model_preset == "internvl3_5_2b":
+        args.vl_backend = "internvl"
+        args.vl_model_name = "OpenGVLab/InternVL3_5-2B-HF"
+    elif args.vl_model_preset == "internvl3_5_4b":
+        args.vl_backend = "internvl"
+        args.vl_model_name = "OpenGVLab/InternVL3_5-4B-HF"
+    elif args.vl_model_preset == "internvl3_5_8b":
+        args.vl_backend = "internvl"
+        args.vl_model_name = "OpenGVLab/InternVL3_5-8B-HF"
 
 
 def _parse_lora_targets(args):

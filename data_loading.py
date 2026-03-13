@@ -168,6 +168,7 @@ def preprocess_vlm_video_inputs(
     vlm_processor,
     frames,
     text,
+    vl_backend="llava_video",
     text_prompt_template=None,
     vlm_max_text_len=256,
     vlm_truncation=False,
@@ -186,13 +187,21 @@ def preprocess_vlm_video_inputs(
     tokenizer = getattr(vlm_processor, "tokenizer", None)
     if tokenizer is not None:
         vocab = tokenizer.get_vocab()
-        if "<video>" in vocab and "<video>" not in proc_text and "<image>" not in proc_text:
-            proc_text = f"<video>\n{proc_text}"
-        if "<obs>" in vocab and "<obs>" not in proc_text:
-            if "<video>" in proc_text:
-                proc_text = proc_text.replace("<video>\n", "<video><obs>\n", 1)
-            else:
-                proc_text = f"<obs>\n{proc_text}"
+        has_media_token = any(tok in proc_text for tok in ("<video>", "<image>", "<img>"))
+        media_token = None
+        if vl_backend == "llava_video" and "<video>" in vocab:
+            media_token = "<video>"
+        elif vl_backend == "internvl":
+            for candidate in ("<video>", "<image>", "<img>"):
+                if candidate in vocab:
+                    media_token = candidate
+                    break
+        elif "<video>" in vocab:
+            media_token = "<video>"
+        elif "<image>" in vocab:
+            media_token = "<image>"
+        if media_token is not None and not has_media_token:
+            proc_text = f"{media_token}\n{proc_text}"
         reps = max(1, int(obs_token_repeats))
         if reps > 1 and "<obs>" in proc_text:
             proc_text = proc_text.replace("<obs>", " ".join(["<obs>"] * reps), 1)
@@ -212,7 +221,7 @@ def preprocess_vlm_video_inputs(
             max_length=max_len,
         )
     except TypeError:
-        inputs = vlm_processor(images=frames, return_tensors="pt")
+        inputs = vlm_processor(text=proc_text, images=frames, return_tensors="pt")
 
     packed = {}
     for k, v in dict(inputs).items():
@@ -232,6 +241,7 @@ class SequenceWebDataset(IterableDataset):
         robot_source,
         reward_reduce,
         done_reduce,
+        vl_backend="llava_video",
         vlm_processor=None,
         text_prompt_template=None,
         include_next=False,
@@ -253,6 +263,7 @@ class SequenceWebDataset(IterableDataset):
         self.robot_source = robot_source
         self.reward_reduce = reward_reduce
         self.done_reduce = done_reduce
+        self.vl_backend = str(vl_backend)
         self.vlm_processor = vlm_processor
         self.text_prompt_template = text_prompt_template
         self.include_next = include_next
@@ -423,6 +434,7 @@ class SequenceWebDataset(IterableDataset):
                     vlm_processor=self.vlm_processor,
                     frames=raw_video,
                     text=text,
+                    vl_backend=self.vl_backend,
                     text_prompt_template=self.text_prompt_template,
                     vlm_max_text_len=self.vlm_max_text_len,
                     vlm_truncation=self.vlm_truncation,
@@ -435,6 +447,7 @@ class SequenceWebDataset(IterableDataset):
                         vlm_processor=self.vlm_processor,
                         frames=raw_next_video,
                         text=text,
+                        vl_backend=self.vl_backend,
                         text_prompt_template=self.text_prompt_template,
                         vlm_max_text_len=self.vlm_max_text_len,
                         vlm_truncation=self.vlm_truncation,
@@ -450,6 +463,7 @@ class SequenceWebDataset(IterableDataset):
                         vlm_processor=self.vlm_processor,
                         frames=raw_nstep_video,
                         text=text,
+                        vl_backend=self.vl_backend,
                         text_prompt_template=self.text_prompt_template,
                         vlm_max_text_len=self.vlm_max_text_len,
                         vlm_truncation=self.vlm_truncation,
@@ -568,7 +582,10 @@ def _collate_sequence_batch(batch):
         for k in keys:
             vals = [d[k] for d in items]
             if torch.is_tensor(vals[0]):
-                out[k] = torch.stack(vals, dim=0)
+                if k == "pixel_values" and vals[0].dim() == 4:
+                    out[k] = torch.cat(vals, dim=0)
+                else:
+                    out[k] = torch.stack(vals, dim=0)
             else:
                 out[k] = vals
         return out
@@ -656,9 +673,38 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     shards = resolve_shards_spec(shards)
     vlm_processor = None
     if args.preprocess_in_loader:
-        from transformers import AutoProcessor
+        from transformers import AutoConfig, AutoProcessor
 
-        vlm_processor = AutoProcessor.from_pretrained(args.vl_model_name)
+        vlm_processor = AutoProcessor.from_pretrained(
+            args.vl_model_name,
+            trust_remote_code=(args.vl_backend == "internvl"),
+        )
+        if args.vl_backend == "internvl":
+            cfg_hf = AutoConfig.from_pretrained(args.vl_model_name, trust_remote_code=True)
+            vision_cfg = getattr(cfg_hf, "vision_config", None)
+            image_size = getattr(vision_cfg, "image_size", None) if vision_cfg is not None else None
+            if isinstance(image_size, (tuple, list)):
+                if len(image_size) >= 2:
+                    media_size = {"height": int(image_size[0]), "width": int(image_size[1])}
+                elif len(image_size) == 1:
+                    size = int(image_size[0])
+                    media_size = {"height": size, "width": size}
+                else:
+                    media_size = None
+            elif image_size is not None:
+                size = int(image_size)
+                media_size = {"height": size, "width": size}
+            else:
+                media_size = None
+            if media_size is not None:
+                for proc_name in ("image_processor", "video_processor"):
+                    proc = getattr(vlm_processor, proc_name, None)
+                    if proc is None:
+                        continue
+                    if hasattr(proc, "size"):
+                        proc.size = dict(media_size)
+                    if hasattr(proc, "crop_size"):
+                        proc.crop_size = dict(media_size)
         tokenizer = getattr(vlm_processor, "tokenizer", None)
         if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
             tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
@@ -671,13 +717,14 @@ def webdataset_loader(args, shards, batch_size, num_workers):
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
         done_reduce=args.done_reduce,
+        vl_backend=args.vl_backend,
         vlm_processor=vlm_processor,
         text_prompt_template=args.text_prompt_template,
         include_next=(args.loss_type != "contrastive" and args.return_mode == "td"),
         include_nstep_bootstrap=(args.loss_type != "contrastive" and args.return_mode == "nstep"),
         vlm_max_text_len=args.vl_max_text_len,
-        vlm_truncation=(args.vl_backend != "llava_video"),
-        vlm_padding=("longest" if args.vl_backend == "llava_video" else "max_length"),
+        vlm_truncation=(args.vl_backend not in {"llava_video", "internvl"}),
+        vlm_padding=("longest" if args.vl_backend in {"llava_video", "internvl"} else "max_length"),
         gamma=getattr(args, "gamma", 0.99),
         return_horizon=getattr(args, "return_horizon", "clip"),
         n_step=getattr(args, "n_step", 1),
