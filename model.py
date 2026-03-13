@@ -347,6 +347,15 @@ class MultimodalValueModel(nn.Module):
             vl_feat_dim = lm_hidden
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
 
+    def _backbone_uses_gradient_checkpointing(self) -> bool:
+        model = self.backbone.model
+        if bool(getattr(model, "is_gradient_checkpointing", False)):
+            return True
+        if bool(getattr(model, "gradient_checkpointing", False)):
+            return True
+        cfg = getattr(model, "config", None)
+        return bool(getattr(cfg, "gradient_checkpointing", False))
+
     def _attention_max_pool(self, hidden: torch.Tensor, attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
         # hidden: [B, S, D] -> [B, D] via attention-weighted max pooling over sequence tokens.
         scores = self.token_attn_pool(hidden).squeeze(-1)  # [B, S]
@@ -648,6 +657,11 @@ class MultimodalValueModel(nn.Module):
         if attn_mask is not None:
             # Keep model mask separate from the copy used for value pooling/debug text.
             model_inputs["attention_mask"] = attn_mask.clone()
+        if not inputs_embeds.requires_grad and self._backbone_uses_gradient_checkpointing():
+            # We feed `inputs_embeds` directly, so the usual embedding-layer hook that
+            # marks checkpoint inputs as requiring grad does not fire. Without this,
+            # LoRA/QLoRA weights inside checkpointed blocks can appear unused to DDP.
+            inputs_embeds = inputs_embeds.requires_grad_(True)
         model_inputs["inputs_embeds"] = inputs_embeds
         forward_kwargs = {"return_dict": True}
         if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
