@@ -369,6 +369,16 @@ class MultimodalValueModel(nn.Module):
             pooled[bad] = fallback
         return pooled
 
+    @staticmethod
+    def _clone_nondiff_inputs(inputs: dict) -> dict:
+        cloned = {}
+        for key, value in inputs.items():
+            if torch.is_tensor(value) and not torch.is_floating_point(value):
+                cloned[key] = value.clone()
+            else:
+                cloned[key] = value
+        return cloned
+
     def _maybe_save_debug_video_from_inputs(self, inputs: dict):
         # if (not self.debug_save_video) or self._debug_video_saved:
         #     return
@@ -583,11 +593,11 @@ class MultimodalValueModel(nn.Module):
         robot_team_feat = robot_summary_tokens.mean(dim=1)  # [B, d_model]
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
-        inputs = self.backbone._move_inputs_to_device(inputs)
+        inputs = self._clone_nondiff_inputs(self.backbone._move_inputs_to_device(inputs))
         if debug_video:
             self._maybe_save_debug_video_from_inputs(inputs)
-        # Avoid autograd versioning issues from in-place mutations on index/mask tensors.
-        input_ids = inputs["input_ids"].clone()
+        # Keep token metadata isolated from any in-place mutations inside the HF forward.
+        input_ids = inputs["input_ids"]
         attn_mask = inputs.get("attention_mask")
         attn_for_pool = attn_mask.clone() if attn_mask is not None else None
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
