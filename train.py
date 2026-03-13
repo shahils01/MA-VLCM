@@ -733,10 +733,13 @@ def main():
 
     ddp_kwargs = None
     if not args.fsdp and DistributedDataParallelKwargs is not None:
-        # Full fine-tuning can leave some backbone params outside the loss graph
-        # (for example modality-specific heads or untied LM/output weights), which
-        # causes standard DDP reduction errors. LoRA/QLoRA keep those frozen.
-        find_unused = bool(args.ddp_find_unused_parameters or args.peft == "none")
+        # Full fine-tuning can leave some backbone params outside the loss graph.
+        # PEFT with gradient checkpointing can also trip DDP unused-parameter
+        # detection when the checkpointed graph is partially pruned on a step.
+        auto_find_unused = (args.peft == "none") or (
+            args.peft in {"lora", "qlora"} and args.gradient_checkpointing
+        )
+        find_unused = bool(args.ddp_find_unused_parameters or auto_find_unused)
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
     accelerator_kwargs = dict(
@@ -781,10 +784,15 @@ def main():
         f"peft={args.peft}"
     )
     if not args.fsdp and DistributedDataParallelKwargs is not None:
-        effective_find_unused = bool(args.ddp_find_unused_parameters or args.peft == "none")
+        effective_find_unused = bool(
+            args.ddp_find_unused_parameters
+            or (args.peft == "none")
+            or (args.peft in {"lora", "qlora"} and args.gradient_checkpointing)
+        )
         accelerator.print(
             "DDP find_unused_parameters="
-            f"{effective_find_unused} (auto-enabled for full fine-tuning when --peft none)"
+            f"{effective_find_unused} "
+            "(auto-enabled for full fine-tuning and for PEFT with gradient checkpointing)"
         )
 
     if args.fsdp:
