@@ -8,7 +8,7 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
   --num_workers 1 \
-  --grad_accum_steps 32 \
+  --grad_accum_steps 2 \
   --mixed_precision bf16 \
   --allow_tf32 \
   --value_pooling hidden_mean \
@@ -36,7 +36,7 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
   without colliding with one another. They also have to be efficient by taking the shortest parth. How Good or Bad are \
   the team of robots doing to accomplish the given task?" \
   --return_horizon trajectory \
-  --peft lora \
+  --peft qlora \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
