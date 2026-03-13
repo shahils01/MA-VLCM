@@ -359,8 +359,6 @@ class SequenceWebDataset(IterableDataset):
                     text = str(text)
                     tokenizer = getattr(self.vlm_processor, "tokenizer", None)
                     vocab = tokenizer.get_vocab() if tokenizer is not None else {}
-                    if "<obs>" in vocab and "<obs>" not in text:
-                        text = f"<obs>\n{text}"
                     if tokenizer is not None:
                         has_media_token = any(tok in text for tok in ("<video>", "<image>", "<img>"))
                         media_token = None
@@ -378,8 +376,6 @@ class SequenceWebDataset(IterableDataset):
 
                         if media_token is not None and not has_media_token:
                             text = f"{media_token}\n{text}"
-                        if "<obs>" in vocab and media_token is not None and f"{media_token}<obs>\n" not in text:
-                            text = text.replace(f"{media_token}\n", f"{media_token}<obs>\n", 1)
                     try:
                         max_len = self.vlm_max_text_len if self.vlm_truncation else None
                         processor_kwargs = dict(
