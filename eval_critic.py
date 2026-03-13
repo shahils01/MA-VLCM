@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import torch
 
 from data_loading import webdataset_loader
-from train import _apply_peft, _resolve_vl_model_preset, build_model
+from train import (
+    _apply_peft,
+    _configure_memory_optimizations,
+    _resolve_contrastive_depth_args,
+    _resolve_vl_model_preset,
+    build_model,
+)
 
 
 def parse_args():
@@ -28,6 +34,11 @@ def parse_args():
     p.add_argument("--clip_len", type=int, default=20)
     p.add_argument("--clip_stride", type=int, default=20)
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
+    p.add_argument(
+        "--text_prompt_template",
+        type=str,
+        default="You are a critic model. You are given video frames, robot state sequences, and a graph adjacency per timestep for a robot team. Assess how good or bad the current policy is at the task and respond with a single scalar judgment.",
+    )
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
     p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
@@ -36,8 +47,20 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--return_mode", type=str, default="nstep", choices=["td", "nstep"])
     p.add_argument("--return_horizon", type=str, default="clip", choices=["clip", "trajectory"])
-    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive"])
+    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
     p.add_argument("--n_step", type=int, default=50)
+    p.add_argument(
+        "--contrastive_objective",
+        type=str,
+        default="infonce",
+        choices=["point_to_set", "infonce"],
+    )
+    p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--infonce_temperature", type=float, default=0.1)
+    p.add_argument("--infonce_topk_pos", type=int, default=0)
+    p.add_argument("--contrastive_multidepth", action="store_true")
+    p.add_argument("--contrastive_depth_offsets", type=str, default="0")
+    p.add_argument("--contrastive_depth_weights", type=str, default="")
     p.add_argument("--vl_backend", type=str, default="llava_video", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
     p.add_argument("--vl_model_name", type=str, default="llava-hf/llava-onevision-qwen2-0.5b-ov-hf")
     p.add_argument(
@@ -50,6 +73,7 @@ def parse_args():
     p.add_argument("--freeze_vl", action="store_true")
     p.add_argument("--value_pooling", type=str, default="last_token_logits", choices=["last_token_logits", "hidden_mean"])
     p.add_argument("--vl_logits_to_keep", type=int, default=1)
+    p.add_argument("--obs_summary_tokens", type=int, default=2)
     p.add_argument("--video_channels", type=int, default=3)
     p.add_argument("--video_height", type=int, default=224)
     p.add_argument("--video_width", type=int, default=224)
@@ -81,6 +105,9 @@ def parse_args():
     p.add_argument("--lora_dropout", type=float, default=0.05)
     p.add_argument("--lora_target_modules", type=str, default="")
     p.add_argument("--lora_bias", type=str, default="none", choices=["none", "all", "lora_only"])
+    p.add_argument("--gradient_checkpointing", action="store_true")
+    p.add_argument("--disable_vl_cache", action="store_true")
+    p.add_argument("--allow_tf32", action="store_true")
     return p.parse_args()
 
 
@@ -131,6 +158,7 @@ def _args_from_cli(cli_args):
         "clip_len",
         "clip_stride",
         "text_mode",
+        "text_prompt_template",
         "robot_source",
         "reward_reduce",
         "done_reduce",
@@ -141,6 +169,13 @@ def _args_from_cli(cli_args):
         "return_horizon",
         "loss_type",
         "n_step",
+        "contrastive_objective",
+        "contrastive_margin",
+        "infonce_temperature",
+        "infonce_topk_pos",
+        "contrastive_multidepth",
+        "contrastive_depth_offsets",
+        "contrastive_depth_weights",
         "vl_backend",
         "vl_model_name",
         "vl_model_preset",
@@ -148,6 +183,7 @@ def _args_from_cli(cli_args):
         "freeze_vl",
         "value_pooling",
         "vl_logits_to_keep",
+        "obs_summary_tokens",
         "video_channels",
         "video_height",
         "video_width",
@@ -174,8 +210,22 @@ def _args_from_cli(cli_args):
         "lora_dropout",
         "lora_target_modules",
         "lora_bias",
+        "gradient_checkpointing",
+        "disable_vl_cache",
+        "allow_tf32",
     ]
     return SimpleNamespace(**{k: getattr(cli_args, k) for k in keys})
+
+
+def _backfill_train_args(train_args, cli_args):
+    defaults = _args_from_cli(cli_args)
+    for key, value in vars(defaults).items():
+        if not hasattr(train_args, key):
+            setattr(train_args, key, value)
+    if getattr(train_args, "preprocess_in_loader", False):
+        train_args.video_preprocessed = True
+    _resolve_contrastive_depth_args(train_args)
+    return train_args
 
 
 def _init_quant_config_if_needed(args):
@@ -331,14 +381,14 @@ def main():
     ckpt = None
     if args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location="cpu")
-        train_args = _load_train_args(ckpt)
+        train_args = _backfill_train_args(_load_train_args(ckpt), args)
         if args.num_robots is not None and int(args.num_robots) != int(getattr(train_args, "num_robots", args.num_robots)):
             print(f"Overriding checkpoint num_robots: {int(train_args.num_robots)} -> {int(args.num_robots)}")
             train_args.num_robots = int(args.num_robots)
     else:
         if args.num_robots is None:
             args.num_robots = 5
-        train_args = _args_from_cli(args)
+        train_args = _backfill_train_args(_args_from_cli(args), args)
 
     _resolve_vl_model_preset(train_args)
     _init_quant_config_if_needed(train_args)
@@ -349,6 +399,7 @@ def main():
 
     model = build_model(train_args, device=device)
     model = _apply_peft(model, train_args)
+    _configure_memory_optimizations(model, train_args)
     if ckpt is not None and not args.skip_checkpoint_weights:
         _load_checkpoint_state(model, ckpt["model"], getattr(train_args, "peft", "none"))
         print("Evaluation mode: checkpoint-loaded model weights.")
