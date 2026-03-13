@@ -141,6 +141,11 @@ def parse_args():
     p.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing on VLM backbone")
     p.add_argument("--disable_vl_cache", action="store_true", help="Disable VLM KV cache during training for lower memory")
     p.add_argument("--allow_tf32", action="store_true", help="Enable TF32 matmul/cuDNN kernels on Ampere+ GPUs")
+    p.add_argument(
+        "--detect_anomaly",
+        action="store_true",
+        help="Enable torch autograd anomaly detection for debugging in-place/backward errors.",
+    )
 
     # VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
@@ -653,6 +658,9 @@ def main():
     _resolve_vl_model_preset(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
+    if args.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
+
     if args.preprocess_in_loader:
         args.video_preprocessed = True
 
@@ -730,6 +738,9 @@ def main():
     if args.wandb:
         accelerator_kwargs["log_with"] = ["wandb"]
     accelerator = Accelerator(**accelerator_kwargs)
+
+    if args.detect_anomaly:
+        accelerator.print("Autograd anomaly detection enabled. Expect slower training and a more specific stack trace.")
 
     if args.wandb:
         tags = [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
