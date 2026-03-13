@@ -361,27 +361,7 @@ class SequenceWebDataset(IterableDataset):
                     vocab = tokenizer.get_vocab() if tokenizer is not None else {}
                     if "<obs>" in vocab and "<obs>" not in text:
                         text = f"<obs>\n{text}"
-
-                    if self.vl_backend == "internvl" and hasattr(self.vlm_processor, "apply_chat_template"):
-                        # InternVL performs better when prompts follow its chat template.
-                        messages = [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "video"},
-                                    {"type": "text", "text": text},
-                                ],
-                            }
-                        ]
-                        try:
-                            text = self.vlm_processor.apply_chat_template(
-                                messages,
-                                tokenize=False,
-                                add_generation_prompt=True,
-                            )
-                        except Exception:
-                            pass
-                    elif tokenizer is not None:
+                    if tokenizer is not None:
                         has_media_token = any(tok in text for tok in ("<video>", "<image>", "<img>"))
                         media_token = None
                         if self.vl_backend == "llava_video" and "<video>" in vocab:
