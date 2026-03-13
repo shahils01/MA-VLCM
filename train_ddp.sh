@@ -5,7 +5,7 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/s
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
 
 
-CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
+CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   --peft none \
   --detect_anomaly \
   --train_shards $TRAIN_SHARDS \
