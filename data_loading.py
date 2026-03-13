@@ -598,12 +598,42 @@ def webdataset_loader(args, shards, batch_size, num_workers):
     shards = resolve_shards_spec(shards)
     vlm_processor = None
     if args.preprocess_in_loader:
-        from transformers import AutoProcessor
+        from transformers import AutoConfig, AutoProcessor
 
         vlm_processor = AutoProcessor.from_pretrained(
             args.vl_model_name,
             trust_remote_code=(args.vl_backend == "internvl"),
         )
+        if args.vl_backend == "internvl":
+            cfg_hf = AutoConfig.from_pretrained(
+                args.vl_model_name,
+                trust_remote_code=True,
+            )
+            vision_cfg = getattr(cfg_hf, "vision_config", None)
+            image_size = getattr(vision_cfg, "image_size", None) if vision_cfg is not None else None
+            if isinstance(image_size, (tuple, list)):
+                if len(image_size) >= 2:
+                    media_size = {"height": int(image_size[0]), "width": int(image_size[1])}
+                elif len(image_size) == 1:
+                    size = int(image_size[0])
+                    media_size = {"height": size, "width": size}
+                else:
+                    media_size = None
+            elif image_size is not None:
+                size = int(image_size)
+                media_size = {"height": size, "width": size}
+            else:
+                media_size = None
+
+            if media_size is not None:
+                for proc_name in ("image_processor", "video_processor"):
+                    proc = getattr(vlm_processor, proc_name, None)
+                    if proc is None:
+                        continue
+                    if hasattr(proc, "size"):
+                        proc.size = dict(media_size)
+                    if hasattr(proc, "crop_size"):
+                        proc.crop_size = dict(media_size)
         tokenizer = getattr(vlm_processor, "tokenizer", None)
         if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
             tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})

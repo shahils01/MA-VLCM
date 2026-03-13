@@ -67,6 +67,35 @@ class ModelConfig:
 class LLaVAVideoBackbone(nn.Module):
     """Backbone wrapper for HF multimodal backbones used by this project."""
 
+    @staticmethod
+    def _normalize_media_size(image_size):
+        if isinstance(image_size, (tuple, list)):
+            if len(image_size) >= 2:
+                return {"height": int(image_size[0]), "width": int(image_size[1])}
+            if len(image_size) == 1:
+                size = int(image_size[0])
+                return {"height": size, "width": size}
+        if image_size is None:
+            return None
+        size = int(image_size)
+        return {"height": size, "width": size}
+
+    def _configure_processor_media_size(self, cfg_hf):
+        vision_cfg = getattr(cfg_hf, "vision_config", None)
+        image_size = getattr(vision_cfg, "image_size", None) if vision_cfg is not None else None
+        media_size = self._normalize_media_size(image_size)
+        if media_size is None:
+            return
+
+        for proc_name in ("image_processor", "video_processor"):
+            proc = getattr(self.processor, proc_name, None)
+            if proc is None:
+                continue
+            if hasattr(proc, "size"):
+                proc.size = dict(media_size)
+            if hasattr(proc, "crop_size"):
+                proc.crop_size = dict(media_size)
+
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
         self.cfg = cfg
@@ -113,6 +142,7 @@ class LLaVAVideoBackbone(nn.Module):
             cfg.vl_model_name,
             trust_remote_code=trust_remote_code,
         )
+        self._configure_processor_media_size(cfg_hf)
         if "<obs>" not in self.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
 
