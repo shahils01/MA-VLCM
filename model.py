@@ -60,6 +60,12 @@ class ModelConfig:
     value_pooling: str = "hidden_mean"
     # If the backend forward supports it, keep logits only for last K tokens.
     logits_to_keep: int = 1
+    # Number of learned graph-summary tokens to inject at <obs> positions.
+    obs_summary_tokens: int = 2
+    # Multi-depth contrastive supervision settings.
+    contrastive_multidepth: bool = False
+    # Offsets from final hidden layer (0=last, 1=one before, ...).
+    contrastive_depth_offsets: tuple = (0,)
 
 
 
@@ -288,6 +294,17 @@ class MultimodalValueModel(nn.Module):
             self._backbone_forward_params = set()
         lm_hidden = self.backbone.get_input_embeddings().embedding_dim
         self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
+        self.token_attn_pool = nn.Linear(lm_hidden, 1)
+        self.robot_temporal = TemporalTransformer(
+            d_model=cfg.d_model,
+            layers=cfg.temporal_layers,
+            heads=cfg.temporal_heads,
+            dropout=cfg.temporal_dropout,
+        )
+        if int(cfg.obs_summary_tokens) < 1:
+            raise ValueError("obs_summary_tokens must be >= 1")
+        self.obs_summary_tokens = int(cfg.obs_summary_tokens)
+        self.obs_queries = nn.Parameter(torch.randn(self.obs_summary_tokens, cfg.d_model) * (cfg.d_model ** -0.5))
 
         try:
             from gat import GNN_Model
@@ -330,9 +347,50 @@ class MultimodalValueModel(nn.Module):
             vl_feat_dim = lm_hidden
         self.value_head = nn.Linear(vl_feat_dim + cfg.d_model, 1)
 
+    def _backbone_uses_gradient_checkpointing(self) -> bool:
+        model = self.backbone.model
+        if bool(getattr(model, "is_gradient_checkpointing", False)):
+            return True
+        if bool(getattr(model, "gradient_checkpointing", False)):
+            return True
+        cfg = getattr(model, "config", None)
+        return bool(getattr(cfg, "gradient_checkpointing", False))
+
+    def _attention_max_pool(self, hidden: torch.Tensor, attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        # hidden: [B, S, D] -> [B, D] via attention-weighted max pooling over sequence tokens.
+        scores = self.token_attn_pool(hidden).squeeze(-1)  # [B, S]
+        if attn_mask is not None and attn_mask.shape[:2] == hidden.shape[:2]:
+            valid = attn_mask.bool()
+            scores = scores.masked_fill(~valid, -1e9)
+        else:
+            valid = None
+        attn = F.softmax(scores, dim=1)  # [B, S]
+        weighted = hidden * attn.unsqueeze(-1)  # [B, S, D]
+        if valid is not None:
+            weighted = weighted.masked_fill(~valid.unsqueeze(-1), float("-inf"))
+        pooled = weighted.max(dim=1).values  # [B, D]
+
+        # Fallback for rows that became all -inf due to masking.
+        bad = ~torch.isfinite(pooled).all(dim=1)
+        if bad.any():
+            fallback = hidden[bad].mean(dim=1)
+            pooled = pooled.clone()
+            pooled[bad] = fallback
+        return pooled
+
+    @staticmethod
+    def _clone_nondiff_inputs(inputs: dict) -> dict:
+        cloned = {}
+        for key, value in inputs.items():
+            if torch.is_tensor(value) and not torch.is_floating_point(value):
+                cloned[key] = value.clone()
+            else:
+                cloned[key] = value
+        return cloned
+
     def _maybe_save_debug_video_from_inputs(self, inputs: dict):
-        if (not self.debug_save_video) or self._debug_video_saved:
-            return
+        # if (not self.debug_save_video) or self._debug_video_saved:
+        #     return
         if not isinstance(inputs, dict):
             return
 
@@ -472,6 +530,27 @@ class MultimodalValueModel(nn.Module):
         flat_dst = batch_idx * num_nodes + dst
         return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
 
+    def _encode_robot_temporal(self, robot_obs: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
+        # robot_obs: [B, T, N, robot_node_dim], adj: [B, T, N, N] -> [B, K, d_model]
+        bsz, tlen = robot_obs.shape[0], robot_obs.shape[1]
+        step_team = []
+        for t in range(tlen):
+            robot_t = robot_obs[:, t, :, :].contiguous()  # [B, N, robot_node_dim]
+            adj_t = adj[:, t, :, :].contiguous()  # [B, N, N]
+            edge_index = self._adj_to_batched_edge_index(adj_t).to(device=robot_t.device)
+            node_feats = self.robot_gnn(robot_t, edge_index)  # [B, N, d_model]
+            step_team.append(node_feats.mean(dim=1))  # [B, d_model]
+
+        team_seq = torch.stack(step_team, dim=1)  # [B, T, d_model]
+        team_seq = self.robot_temporal(team_seq)  # [B, T, d_model]
+
+        # Learned query pooling over time to produce K summary tokens.
+        queries = self.obs_queries.unsqueeze(0).expand(bsz, -1, -1)  # [B, K, d_model]
+        attn_logits = torch.einsum("bkd,btd->bkt", queries, team_seq) / math.sqrt(float(self.cfg.d_model))
+        attn = F.softmax(attn_logits, dim=-1)
+        summary = torch.einsum("bkt,btd->bkd", attn, team_seq)  # [B, K, d_model]
+        return summary
+
     def forward(
         self,
         video,
@@ -483,7 +562,9 @@ class MultimodalValueModel(nn.Module):
         text_mask=None,
         image_sizes=None,
         return_debug: bool = False,
+        return_features: bool = False,
         debug_max_tokens: int = 32,
+        debug_video=False,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
@@ -494,6 +575,13 @@ class MultimodalValueModel(nn.Module):
         video_list = None
         if isinstance(video, dict):
             inputs = video
+
+        # Keep graph tensors on the same device as the robot GNN weights.
+        gnn_device = next(self.robot_gnn.parameters()).device
+        if robot_obs.device != gnn_device:
+            robot_obs = robot_obs.to(gnn_device)
+        if adj.device != gnn_device:
+            adj = adj.to(gnn_device)
         
         bsz = robot_obs.shape[0]
         # # print('robot_obs shape = ', robot_obs.shape)
@@ -508,51 +596,81 @@ class MultimodalValueModel(nn.Module):
                 "Set --num_robots to match your dataset."
             )
 
-        # Use only the last-step robot obs and encode team structure with GNN.
-        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
-        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
-        edge_index = self._adj_to_batched_edge_index(adj_last)
-        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
-        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
+        # Encode per-step graph features, then summarize temporally into K tokens.
+        robot_seq = robot_obs[:, :, :, : self.robot_node_dim].contiguous()  # [B, T, N, robot_node_dim]
+        robot_summary_tokens = self._encode_robot_temporal(robot_seq, adj)  # [B, K, d_model]
+        robot_team_feat = robot_summary_tokens.mean(dim=1)  # [B, d_model]
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
-        inputs = self.backbone._move_inputs_to_device(inputs)
-        self._maybe_save_debug_video_from_inputs(inputs)
+        inputs = self._clone_nondiff_inputs(self.backbone._move_inputs_to_device(inputs))
+        if debug_video:
+            self._maybe_save_debug_video_from_inputs(inputs)
+        # Keep token metadata isolated from any in-place mutations inside the HF forward.
         input_ids = inputs["input_ids"]
         attn_mask = inputs.get("attention_mask")
+        attn_for_pool = attn_mask.clone() if attn_mask is not None else None
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
-        # Pool team graph features to one token and inject at <obs>.
-        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
-        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+        # Project K graph-summary tokens to LM space and inject at <obs> positions.
+        obs_token = self.obs_to_lm(robot_summary_tokens)
+        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)  # [B, K, H]
 
         obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
 
             if obs_mask.any():
-                # Avoid dense broadcast replacements over the full sequence.
-                inputs_embeds = inputs_embeds.clone()
                 if input_ids.shape[0] == bsz:
                     # input_ids: [B, S]
-                    b_idx, s_idx = obs_mask.nonzero(as_tuple=True)
-                    inputs_embeds[b_idx, s_idx, :] = obs_token[b_idx, 0, :]
+                    replaced = inputs_embeds.clone()
+                    k = obs_token.size(1)
+                    for b in range(bsz):
+                        pos = obs_mask[b].nonzero(as_tuple=False).view(-1)
+                        if pos.numel() == 0:
+                            continue
+                        use_n = min(int(pos.numel()), int(k))
+                        replaced[b, pos[:use_n], :] = obs_token[b, :use_n, :]
+                        if pos.numel() > use_n:
+                            tail = obs_token[b, use_n - 1 : use_n, :].expand(pos.numel() - use_n, -1)
+                            replaced[b, pos[use_n:], :] = tail
+                    inputs_embeds = replaced
                 elif input_ids.shape[1] == bsz:
                     # input_ids: [S, B]
-                    s_idx, b_idx = obs_mask.nonzero(as_tuple=True)
-                    inputs_embeds[s_idx, b_idx, :] = obs_token[b_idx, 0, :]
+                    replaced = inputs_embeds.clone()
+                    k = obs_token.size(1)
+                    for b in range(bsz):
+                        pos = obs_mask[:, b].nonzero(as_tuple=False).view(-1)
+                        if pos.numel() == 0:
+                            continue
+                        use_n = min(int(pos.numel()), int(k))
+                        replaced[pos[:use_n], b, :] = obs_token[b, :use_n, :]
+                        if pos.numel() > use_n:
+                            tail = obs_token[b, use_n - 1 : use_n, :].expand(pos.numel() - use_n, -1)
+                            replaced[pos[use_n:], b, :] = tail
+                    inputs_embeds = replaced
                 else:
                     raise RuntimeError(
                         f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
                     )
 
-        inputs.pop("input_ids", None)
-        inputs["inputs_embeds"] = inputs_embeds
+        model_inputs = {k: v for k, v in inputs.items() if k != "input_ids"}
+        if attn_mask is not None:
+            # Keep model mask separate from the copy used for value pooling/debug text.
+            model_inputs["attention_mask"] = attn_mask.clone()
+        if not inputs_embeds.requires_grad and self._backbone_uses_gradient_checkpointing():
+            # We feed `inputs_embeds` directly, so the usual embedding-layer hook that
+            # marks checkpoint inputs as requiring grad does not fire. Without this,
+            # LoRA/QLoRA weights inside checkpointed blocks can appear unused to DDP.
+            inputs_embeds = inputs_embeds.requires_grad_(True)
+        model_inputs["inputs_embeds"] = inputs_embeds
         forward_kwargs = {"return_dict": True}
         if hasattr(self.backbone.model, "config") and hasattr(self.backbone.model.config, "use_cache"):
             # KV cache is only useful for autoregressive generation, not value regression training.
             forward_kwargs["use_cache"] = False
-        if self.cfg.value_pooling == "hidden_mean":
+        need_hidden_states = self.cfg.value_pooling == "hidden_mean" or (
+            return_features and bool(getattr(self.cfg, "contrastive_multidepth", False))
+        )
+        if need_hidden_states:
             forward_kwargs["output_hidden_states"] = True
         if self.cfg.logits_to_keep > 0:
             # Some transformers versions expose either logits_to_keep or num_logits_to_keep.
@@ -561,11 +679,12 @@ class MultimodalValueModel(nn.Module):
             elif "num_logits_to_keep" in self._backbone_forward_params:
                 forward_kwargs["num_logits_to_keep"] = self.cfg.logits_to_keep
 
-        output = self.backbone.model(**inputs, **forward_kwargs)
+        output = self.backbone.model(**model_inputs, **forward_kwargs)
 
+        hidden_states = getattr(output, "hidden_states", None)
         final_hidden = None
-        if self.cfg.value_pooling == "hidden_mean":
-            final_hidden = output.hidden_states[-1]
+        if hidden_states is not None and len(hidden_states) > 0:
+            final_hidden = hidden_states[-1]
         debug_text = None
         if return_debug:
             logits = getattr(output, "logits", None)
@@ -574,9 +693,9 @@ class MultimodalValueModel(nn.Module):
                 if lm_head is None:
                     raise RuntimeError("Unable to decode debug text: no LM logits or output embeddings available.")
                 logits = lm_head(final_hidden)
-            debug_text = self._decode_debug_text(logits, inputs.get("attention_mask"), max_tokens=debug_max_tokens)
+            debug_text = self._decode_debug_text(logits, attn_for_pool, max_tokens=debug_max_tokens)
 
-        attn = inputs.get("attention_mask")
+        attn = attn_for_pool
         if self.cfg.value_pooling == "hidden_mean":
             if final_hidden is None:
                 raise RuntimeError("hidden_mean value pooling requested but hidden states were not returned.")
@@ -593,8 +712,28 @@ class MultimodalValueModel(nn.Module):
 
         pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
 
+        vlm_multidepth_features = None
+        if return_features and bool(getattr(self.cfg, "contrastive_multidepth", False)):
+            if hidden_states is None or len(hidden_states) == 0:
+                raise RuntimeError(
+                    "Multi-depth contrastive supervision requested but hidden states were not returned by the backbone."
+                )
+            depth_feats = []
+            offsets = tuple(getattr(self.cfg, "contrastive_depth_offsets", (0,)))
+            for off in offsets:
+                off_i = max(0, int(off))
+                idx = max(0, len(hidden_states) - 1 - off_i)
+                feat = self._attention_max_pool(hidden_states[idx], attn_for_pool)
+                depth_feats.append(feat)
+            vlm_multidepth_features = depth_feats
+
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
         value = self.value_head(value_head_input).squeeze(-1)
-        if return_debug:
-            return {"value": value, "debug_text": debug_text}
+        if return_debug or return_features:
+            out = {"value": value, "vlm_feature": pooled}
+            if vlm_multidepth_features is not None:
+                out["vlm_multidepth_features"] = vlm_multidepth_features
+            if return_debug:
+                out["debug_text"] = debug_text
+            return out
         return value

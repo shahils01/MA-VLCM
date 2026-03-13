@@ -58,7 +58,7 @@ def parse_args():
     p.add_argument("--clip_stride", type=int, default=1)
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument("--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"])
-    p.add_argument("--done_reduce", type=str, default="any", choices=["any", "all", "mean", "sum", "first"])
+    p.add_argument("--done_reduce", type=str, default="all", choices=["any", "all", "mean", "sum", "first"])
     p.add_argument("--preprocess_in_loader", default=True, action="store_true", help="Use VLM image processor in dataloader")
     p.add_argument("--debug_save_video", action="store_true", help="Save one video sample for debugging")
     p.add_argument("--debug_out_dir", type=str, default="debug_samples")
@@ -77,10 +77,47 @@ def parse_args():
         help="For nstep-style targets: discounted return over clip or from clip start to terminal state in episode.",
     )
     p.add_argument("--n_step", type=int, default=50)
-    p.add_argument("--loss_type", type=str, default="contrastive", choices=["td", "contrastive", "td_contrastive"])
+    p.add_argument("--loss_type", type=str, default="td_contrastive", choices=["td", "contrastive", "td_contrastive"])
+    p.add_argument(
+        "--contrastive_objective",
+        type=str,
+        default="infonce",
+        choices=["point_to_set", "infonce"],
+        help="Contrastive objective used when loss_type includes contrastive.",
+    )
     p.add_argument("--contrastive_margin", type=float, default=0.0)
+    p.add_argument("--infonce_temperature", type=float, default=0.1, help="Temperature for InfoNCE contrastive loss.")
+    p.add_argument(
+        "--infonce_topk_pos",
+        type=int,
+        default=0,
+        help="Top-K high-reward samples used as positive pool for InfoNCE (0 => B//2).",
+    )
+    p.add_argument(
+        "--contrastive_multidepth",
+        action="store_true",
+        help="Apply contrastive supervision on multiple hidden depths using attention-max pooled features.",
+    )
+    p.add_argument(
+        "--contrastive_depth_offsets",
+        type=str,
+        default="0",
+        help="Comma-separated hidden-layer offsets from final layer for multidepth contrastive (e.g., '0,4,8').",
+    )
+    p.add_argument(
+        "--contrastive_depth_weights",
+        type=str,
+        default="",
+        help="Optional comma-separated weights for multidepth losses. Empty => uniform.",
+    )
     p.add_argument("--lambda_td", type=float, default=1.0, help="Weight for TD loss when using td_contrastive")
     p.add_argument("--lambda_c", type=float, default=1.0, help="Weight for contrastive loss when using td_contrastive")
+    p.add_argument(
+        "--lambda_value_c",
+        type=float,
+        default=1.0,
+        help="Weight for value-head pairwise contrastive loss when loss_type=contrastive.",
+    )
     p.add_argument(
         "--shard_aware_batching",
         action="store_true",
@@ -104,6 +141,11 @@ def parse_args():
     p.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing on VLM backbone")
     p.add_argument("--disable_vl_cache", action="store_true", help="Disable VLM KV cache during training for lower memory")
     p.add_argument("--allow_tf32", action="store_true", help="Enable TF32 matmul/cuDNN kernels on Ampere+ GPUs")
+    p.add_argument(
+        "--detect_anomaly",
+        action="store_true",
+        help="Enable torch autograd anomaly detection for debugging in-place/backward errors.",
+    )
 
     # VLM backbone
     p.add_argument("--vl_backend", type=str, default="deepseek_vl", choices=["deepseek_vl", "deepseek_vl2", "llava_video"])
@@ -126,6 +168,7 @@ def parse_args():
         help="Feature pooling strategy for value head; last_token_logits is more memory efficient.",
     )
     p.add_argument("--vl_logits_to_keep", type=int, default=0, help="If supported, keep logits for only last K tokens")
+    p.add_argument("--obs_summary_tokens", type=int, default=2, help="Number of temporal graph summary tokens injected as <obs>.")
 
     # PEFT / LoRA
     p.add_argument("--peft", type=str, default="none", choices=["none", "lora", "qlora"])
@@ -167,7 +210,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--log_every", type=int, default=50)
-    p.add_argument("--save_dir", type=str, default="checkpoints")
+    p.add_argument("--save_dir", type=str, default="checkpoints_new")
     p.add_argument("--resume_checkpoint", type=str, default="", help="Path to checkpoint .pt to resume training")
     p.add_argument("--load_model_only", action="store_true", help="Load only model weights from checkpoint")
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging via Accelerate trackers")
@@ -177,6 +220,42 @@ def parse_args():
     p.add_argument("--wandb_tags", type=str, default="", help="Comma-separated W&B tags (optional)")
 
     return p.parse_args()
+
+
+def _parse_int_csv(value: str):
+    if value is None:
+        return []
+    items = [x.strip() for x in str(value).split(",") if x.strip()]
+    out = []
+    for x in items:
+        out.append(int(x))
+    return out
+
+
+def _parse_float_csv(value: str):
+    if value is None or str(value).strip() == "":
+        return []
+    items = [x.strip() for x in str(value).split(",") if x.strip()]
+    out = []
+    for x in items:
+        out.append(float(x))
+    return out
+
+
+def _resolve_contrastive_depth_args(args):
+    offsets = _parse_int_csv(args.contrastive_depth_offsets)
+    if not offsets:
+        offsets = [0]
+    offsets = [max(0, int(o)) for o in offsets]
+    args.contrastive_depth_offsets_list = offsets
+
+    weights = _parse_float_csv(args.contrastive_depth_weights)
+    if weights and len(weights) != len(offsets):
+        raise ValueError(
+            "contrastive_depth_weights length must match contrastive_depth_offsets. "
+            f"Got {len(weights)} vs {len(offsets)}."
+        )
+    args.contrastive_depth_weights_list = weights
 
 
 def build_model(args, device):
@@ -209,6 +288,9 @@ def build_model(args, device):
         debug_save_video=args.debug_save_video,
         value_pooling=args.value_pooling,
         logits_to_keep=args.vl_logits_to_keep,
+        obs_summary_tokens=args.obs_summary_tokens,
+        contrastive_multidepth=args.contrastive_multidepth,
+        contrastive_depth_offsets=tuple(getattr(args, "contrastive_depth_offsets_list", [0])),
     )
     return MultimodalValueModel(cfg, device=device)
 
@@ -238,7 +320,7 @@ def _configure_memory_optimizations(model, args):
 def _resolve_vl_model_preset(args):
     if args.vl_model_preset == "llava_next_video_7b":
         args.vl_backend = "llava_video"
-        args.vl_model_name = "llava-hf/LLaVA-NeXT-Video-7B-hf"
+        args.vl_model_name = "llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
     elif args.vl_model_preset == "llava_onevision_0p5b":
         args.vl_backend = "llava_video"
         args.vl_model_name = "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
@@ -274,6 +356,17 @@ def _apply_peft(model, args):
     )
     model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
     return model
+
+
+def _count_parameters(model):
+    total = 0
+    trainable = 0
+    for p in model.parameters():
+        n = p.numel()
+        total += n
+        if p.requires_grad:
+            trainable += n
+    return total, trainable
 
 
 def _save_debug_video(batch, args, accelerator, tag="train"):
@@ -329,8 +422,115 @@ def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
     return loss[mask].mean()
 
 
+def _contrastive_point_to_set_loss(embeddings, rewards, margin=0.0):
+    if embeddings.ndim != 2:
+        embeddings = embeddings.view(embeddings.shape[0], -1)
+    if embeddings.shape[0] < 2:
+        return embeddings.sum() * 0.0
+
+    bsz = embeddings.shape[0]
+    k = max(1, bsz // 2)
+    topk_idx = torch.topk(rewards.view(-1), k=k, largest=True).indices
+    desirable_set = embeddings[topk_idx]
+
+    dists = torch.cdist(embeddings, desirable_set, p=2)
+    scores = -dists.min(dim=1).values
+    return _contrastive_pairwise_loss(scores, rewards.view(-1), margin=margin)
+
+
+def _contrastive_infonce_loss(embeddings, rewards, temperature=0.1, topk_pos=0):
+    if embeddings.ndim != 2:
+        embeddings = embeddings.view(embeddings.shape[0], -1)
+    bsz = int(embeddings.shape[0])
+    if bsz < 3:
+        return embeddings.sum() * 0.0
+
+    if temperature <= 0:
+        raise ValueError("infonce_temperature must be > 0")
+
+    rewards = rewards.view(-1)
+    k = int(topk_pos) if int(topk_pos) > 0 else max(1, bsz // 2)
+    k = min(max(1, k), bsz)
+
+    # Reward-defined desirable pool.
+    topk_idx = torch.topk(rewards, k=k, largest=True).indices
+    desirable_mask = torch.zeros(bsz, dtype=torch.bool, device=embeddings.device)
+    desirable_mask[topk_idx] = True
+
+    z = F.normalize(embeddings, dim=-1)
+    sim = torch.matmul(z, z.t()) / float(temperature)  # [B, B]
+
+    losses = []
+    for i in range(bsz):
+        valid_neg_mask = torch.ones(bsz, dtype=torch.bool, device=embeddings.device)
+        valid_neg_mask[i] = False  # remove self from denominator
+        if valid_neg_mask.sum() == 0:
+            continue
+
+        pos_mask = desirable_mask.clone()
+        pos_mask[i] = False  # avoid trivial self-positive
+        if pos_mask.sum() == 0:
+            continue
+
+        # Select one positive from desirable pool: most similar desirable sample.
+        pos_candidates = pos_mask.nonzero(as_tuple=False).view(-1)
+        pos_sim = sim[i, pos_candidates]
+        pos_idx = pos_candidates[pos_sim.argmax()]
+
+        denom_idx = valid_neg_mask.nonzero(as_tuple=False).view(-1)
+        logits = sim[i, denom_idx]
+        target = (denom_idx == pos_idx).nonzero(as_tuple=False)
+        if target.numel() == 0:
+            continue
+        target = target.view(-1)[0]
+        losses.append(F.cross_entropy(logits.unsqueeze(0), target.unsqueeze(0)))
+
+    if not losses:
+        return embeddings.sum() * 0.0
+    return torch.stack(losses).mean()
+
+
+def _compute_contrastive_loss(embeddings, rewards, args):
+    if args.contrastive_objective == "infonce":
+        return _contrastive_infonce_loss(
+            embeddings,
+            rewards,
+            temperature=args.infonce_temperature,
+            topk_pos=args.infonce_topk_pos,
+        )
+    return _contrastive_point_to_set_loss(embeddings, rewards, margin=args.contrastive_margin)
+
+
+def _compute_multidepth_contrastive_loss(main_embeddings, depth_embeddings, rewards, args):
+    feats = []
+    if depth_embeddings:
+        feats.extend(depth_embeddings)
+    else:
+        feats.append(main_embeddings)
+
+    if args.contrastive_depth_weights_list:
+        weights = args.contrastive_depth_weights_list
+    else:
+        weights = [1.0 for _ in feats]
+
+    total_w = 0.0
+    total_loss = None
+    for w, feat in zip(weights, feats):
+        w = float(w)
+        if w <= 0.0:
+            continue
+        l = _compute_contrastive_loss(feat, rewards, args)
+        total_w += w
+        total_loss = (w * l) if total_loss is None else (total_loss + w * l)
+
+    if total_loss is None or total_w <= 0:
+        return main_embeddings.sum() * 0.0
+    return total_loss / total_w
+
+
 def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, train=True, global_step=0):
     model.train() if train else model.eval()
+    raw_model = accelerator.unwrap_model(model)
 
     loss_fn = nn.MSELoss()
     total_loss = 0.0
@@ -369,6 +569,15 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
+                next_pred = None
+                nstep_bootstrap_pred = None
+                if args.loss_type in {"td", "td_contrastive"} and args.return_mode == "td":
+                    with torch.no_grad():
+                        next_pred = raw_model(next_inputs, next_robot_obs, next_adj)
+                elif args.loss_type in {"td", "td_contrastive"} and args.return_mode == "nstep":
+                    with torch.no_grad():
+                        nstep_bootstrap_pred = raw_model(nstep_inputs, nstep_robot_obs, nstep_adj)
+
                 should_decode = (
                     args.debug_decode_text
                     and accelerator.is_main_process
@@ -380,13 +589,18 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                     robot_obs,
                     adj,
                     return_debug=should_decode,
+                    return_features=args.loss_type in {"contrastive", "td_contrastive"},
                     debug_max_tokens=args.debug_decode_max_tokens,
                 )
                 if isinstance(model_out, dict):
                     pred = model_out["value"]
+                    vlm_feature = model_out.get("vlm_feature")
+                    vlm_multidepth_features = model_out.get("vlm_multidepth_features")
                     debug_text = model_out.get("debug_text")
                 else:
                     pred = model_out
+                    vlm_feature = None
+                    vlm_multidepth_features = None
                     debug_text = None
                 contrastive_targets = (
                     batch["returns"].to(accelerator.device)
@@ -395,26 +609,29 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
                 )
 
                 if args.loss_type == "contrastive":
-                    contrastive_loss = _contrastive_pairwise_loss(
+                    if vlm_feature is None:
+                        raise RuntimeError("Contrastive loss requires model features; got None from model forward.")
+                    vlm_contrastive_loss = _compute_multidepth_contrastive_loss(
+                        vlm_feature, vlm_multidepth_features, contrastive_targets.view(-1), args
+                    )
+                    value_contrastive_loss = _contrastive_pairwise_loss(
                         pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
                     )
-                    loss = contrastive_loss
+                    loss = args.lambda_c * vlm_contrastive_loss + args.lambda_value_c * value_contrastive_loss
                 else:
                     if args.return_mode == "td":
-                        with torch.no_grad():
-                            next_pred = model(next_inputs, next_robot_obs, next_adj)
                         target = reward + gamma * (1.0 - done) * next_pred
                     elif args.return_mode == "nstep":
-                        with torch.no_grad():
-                            nstep_bootstrap_pred = model(nstep_inputs, nstep_robot_obs, nstep_adj)
                         gamma_n = gamma ** int(args.n_step)
                         target = nstep_returns + gamma_n * (1.0 - nstep_done) * nstep_bootstrap_pred
                     else:
                         target = batch["returns"].to(accelerator.device)
                     td_loss = loss_fn(pred, target)
                     if args.loss_type == "td_contrastive":
-                        contrastive_loss = _contrastive_pairwise_loss(
-                            pred.view(-1), contrastive_targets.view(-1), margin=args.contrastive_margin
+                        if vlm_feature is None:
+                            raise RuntimeError("td_contrastive loss requires model features; got None from model forward.")
+                        contrastive_loss = _compute_multidepth_contrastive_loss(
+                            vlm_feature, vlm_multidepth_features, contrastive_targets.view(-1), args
                         )
                         loss = args.lambda_td * td_loss + args.lambda_c * contrastive_loss
                     else:
@@ -454,8 +671,12 @@ def run_epoch(model, loader, optimizer, accelerator, log_every, gamma, args, tra
 
 def main():
     args = parse_args()
+    _resolve_contrastive_depth_args(args)
     _resolve_vl_model_preset(args)
     os.makedirs(args.save_dir, exist_ok=True)
+
+    if args.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
 
     if args.preprocess_in_loader:
         args.video_preprocessed = True
@@ -512,8 +733,13 @@ def main():
 
     ddp_kwargs = None
     if not args.fsdp and DistributedDataParallelKwargs is not None:
-        # Keep this explicit: default False for speed, enable only when needed.
-        find_unused = args.ddp_find_unused_parameters
+        # Full fine-tuning can leave some backbone params outside the loss graph.
+        # PEFT with gradient checkpointing can also trip DDP unused-parameter
+        # detection when the checkpointed graph is partially pruned on a step.
+        auto_find_unused = (args.peft == "none") or (
+            args.peft in {"lora", "qlora"} and args.gradient_checkpointing
+        )
+        find_unused = bool(args.ddp_find_unused_parameters or auto_find_unused)
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
     accelerator_kwargs = dict(
@@ -535,6 +761,9 @@ def main():
         accelerator_kwargs["log_with"] = ["wandb"]
     accelerator = Accelerator(**accelerator_kwargs)
 
+    if args.detect_anomaly:
+        accelerator.print("Autograd anomaly detection enabled. Expect slower training and a more specific stack trace.")
+
     if args.wandb:
         tags = [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
         wandb_kwargs = {}
@@ -549,6 +778,22 @@ def main():
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
     _configure_memory_optimizations(model, args)
+    total_params, trainable_params = _count_parameters(model)
+    accelerator.print(
+        f"parameters total={total_params:,} trainable={trainable_params:,} "
+        f"peft={args.peft}"
+    )
+    if not args.fsdp and DistributedDataParallelKwargs is not None:
+        effective_find_unused = bool(
+            args.ddp_find_unused_parameters
+            or (args.peft == "none")
+            or (args.peft in {"lora", "qlora"} and args.gradient_checkpointing)
+        )
+        accelerator.print(
+            "DDP find_unused_parameters="
+            f"{effective_find_unused} "
+            "(auto-enabled for full fine-tuning and for PEFT with gradient checkpointing)"
+        )
 
     if args.fsdp:
         if args.mixed_precision == "bf16":
@@ -565,7 +810,11 @@ def main():
             if torch.is_floating_point(b) and b.dtype != target_dtype:
                 b.data = b.data.to(dtype=target_dtype)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
     val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers) if args.val_shards else None
