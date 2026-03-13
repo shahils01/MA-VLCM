@@ -5,7 +5,7 @@ TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/s
 VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_next_video_7b}"  # llava_onevision_0p5b / llava_next_video_7b
 
 
-CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
+CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 8 train.py \
   --peft none \
   --detect_anomaly \
   --train_shards $TRAIN_SHARDS \
@@ -18,8 +18,8 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   --obs_summary_tokens 1 \
   --vl_logits_to_keep 128 \
   --epochs 500 \
-  --clip_len 5 \
-  --clip_stride 5 \
+  --clip_len 15 \
+  --clip_stride 15 \
   --log_every 50 \
   --robot_source obs \
   --reward_reduce mean \
@@ -35,11 +35,16 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   --vl_backend llava_video \
   --vl_model_preset $VL_MODEL_PRESET \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\
-  with heading denoted by an arrow) is: <video>, and the robot team observations over ten episodes is <obs>.\
+  with heading denoted by an arrow) is: <video>.\
   The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal \
   without colliding with one another. They also have to be efficient by taking the shortest parth. How Good or Bad are \
   the team of robots doing to accomplish the given task?" \
   --return_horizon trajectory \
+  --peft lora \
+  --lora_r 16 \
+  --lora_alpha 32 \
+  --lora_dropout 0.05 \
+  --gradient_checkpointing \
   # --wandb \
   # --wandb_project ma-vlcm \
   # --wandb_run_name ma-vlcm-ddp \
@@ -49,7 +54,6 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   # --lora_r 16 \
   # --lora_alpha 32 \
   # --lora_dropout 0.05 \
-  # --gradient_checkpointing \
   # --lora_target_modules "q_proj,v_proj" \
 
   # --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\
