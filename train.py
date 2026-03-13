@@ -320,7 +320,7 @@ def _configure_memory_optimizations(model, args):
 def _resolve_vl_model_preset(args):
     if args.vl_model_preset == "llava_next_video_7b":
         args.vl_backend = "llava_video"
-        args.vl_model_name = "llava-hf/LLaVA-NeXT-Video-7B-hf"
+        args.vl_model_name = "llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
     elif args.vl_model_preset == "llava_onevision_0p5b":
         args.vl_backend = "llava_video"
         args.vl_model_name = "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"

@@ -2,14 +2,14 @@
 TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000250}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000150}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000120}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000110}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/OFFROAD/dataset_2/shard-{000000..000030}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
-VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b
+VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_next_video_7b}"  # llava_onevision_0p5b / llava_next_video_7b
 
 
 CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   --peft none \
   --detect_anomaly \
   --train_shards $TRAIN_SHARDS \
-  --batch_size 16 \
+  --batch_size 2 \
   --num_workers 1 \
   --grad_accum_steps 32 \
   --mixed_precision bf16 \
@@ -18,8 +18,8 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   --obs_summary_tokens 1 \
   --vl_logits_to_keep 128 \
   --epochs 500 \
-  --clip_len 15 \
-  --clip_stride 15 \
+  --clip_len 5 \
+  --clip_stride 5 \
   --log_every 50 \
   --robot_source obs \
   --reward_reduce mean \
@@ -40,9 +40,9 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 6 train.py \
   without colliding with one another. They also have to be efficient by taking the shortest parth. How Good or Bad are \
   the team of robots doing to accomplish the given task?" \
   --return_horizon trajectory \
-  --wandb \
-  --wandb_project ma-vlcm \
-  --wandb_run_name ma-vlcm-ddp \
+  # --wandb \
+  # --wandb_project ma-vlcm \
+  # --wandb_run_name ma-vlcm-ddp \
   # --peft qlora \
   # --resume_checkpoint /scratch/shahils/MA-VLCM/checkpoints/ckpt_epoch_29.pt \
   # --disable_vl_cache \
