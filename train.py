@@ -358,6 +358,17 @@ def _apply_peft(model, args):
     return model
 
 
+def _count_parameters(model):
+    total = 0
+    trainable = 0
+    for p in model.parameters():
+        n = p.numel()
+        total += n
+        if p.requires_grad:
+            trainable += n
+    return total, trainable
+
+
 def _save_debug_video(batch, args, accelerator, tag="train"):
     if not accelerator.is_main_process:
         return
@@ -722,8 +733,10 @@ def main():
 
     ddp_kwargs = None
     if not args.fsdp and DistributedDataParallelKwargs is not None:
-        # Keep this explicit: default False for speed, enable only when needed.
-        find_unused = args.ddp_find_unused_parameters
+        # Full fine-tuning can leave some backbone params outside the loss graph
+        # (for example modality-specific heads or untied LM/output weights), which
+        # causes standard DDP reduction errors. LoRA/QLoRA keep those frozen.
+        find_unused = bool(args.ddp_find_unused_parameters or args.peft == "none")
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
     accelerator_kwargs = dict(
@@ -762,6 +775,17 @@ def main():
     model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
     _configure_memory_optimizations(model, args)
+    total_params, trainable_params = _count_parameters(model)
+    accelerator.print(
+        f"parameters total={total_params:,} trainable={trainable_params:,} "
+        f"peft={args.peft}"
+    )
+    if not args.fsdp and DistributedDataParallelKwargs is not None:
+        effective_find_unused = bool(args.ddp_find_unused_parameters or args.peft == "none")
+        accelerator.print(
+            "DDP find_unused_parameters="
+            f"{effective_find_unused} (auto-enabled for full fine-tuning when --peft none)"
+        )
 
     if args.fsdp:
         if args.mixed_precision == "bf16":
@@ -778,7 +802,11 @@ def main():
             if torch.is_floating_point(b) and b.dtype != target_dtype:
                 b.data = b.data.to(dtype=target_dtype)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
 
     train_loader = webdataset_loader(args, args.train_shards, args.batch_size, args.num_workers)
     val_loader = webdataset_loader(args, args.val_shards, args.batch_size, args.num_workers) if args.val_shards else None
