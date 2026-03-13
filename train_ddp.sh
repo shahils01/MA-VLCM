@@ -6,7 +6,7 @@ VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p
 accelerate launch --num_processes 8 train.py \
   --train_shards $TRAIN_SHARDS \
   --batch_size 2 \
-  --num_workers 16 \
+  --num_workers 4 \
   --grad_accum_steps 16 \
   --mixed_precision bf16 \
   --allow_tf32 \
