@@ -151,7 +151,7 @@ def parse_args():
     p.add_argument(
         "--vl_backend",
         type=str,
-        default="deepseek_vl",
+        default="llava_video",
         choices=["deepseek_vl", "deepseek_vl2", "llava_video", "internvl"],
     )
     p.add_argument("--vl_model_name", type=str, default="deepseek-community/deepseek-vl-1.3b-base")

@@ -1,7 +1,7 @@
-TRAIN_SHARDS="/scratch/shahils/data/gotogoal_pt_0/shard-{000000..000280}.tar::/scratch/shahils/data/gotogoal_pt_15/shard-{000000..000250}.tar::/scratch/shahils/data/gotogoal_pt_30/shard-{000000..000150}.tar::/scratch/shahils/data/gotogoal_new_pt_45/shard-{000000..000120}.tar::/scratch/shahils/data/gotogoal_new_pt_225/shard-{000000..000110}.tar"
+TRAIN_SHARDS="/scratch/shahils/OFFROAD/Full_Traversability/gotogoal_pt_0/shard-{000000..000280}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/OFFROAD/dataset_2/shard-{000000..000030}.tar"
 # TRAIN_SHARDS="/scratch/shahils/VLCM_Data_Collection/RWARE/rware:rware-tiny-2ag-hard-v2/2026-02-01/trajectory_{112930..113153}_success.tar"
-VL_MODEL_PRESET="${VL_MODEL_PRESET:-internvl3_5_4b}"  # llava_onevision_0p5b / llava_next_video_7b / internvl3_5_{1b,2b,4b,8b}
+VL_MODEL_PRESET="${VL_MODEL_PRESET:-llava_onevision_0p5b}"  # llava_onevision_0p5b / llava_next_video_7b / internvl3_5_{1b,2b,4b,8b}
 
 CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 2 train.py \
   --detect_anomaly \
@@ -31,7 +31,7 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 2 train.py \
   --n_step 64 \
   --vl_model_preset $VL_MODEL_PRESET \
   --text_prompt_template "You are a critic model. The video of a team of robots (denoted as circular dots\
-  with heading denoted by an arrow) is: <video>.\
+  with heading denoted by an arrow) is given in the video: <video>.\
   The goal for each robot is denoted by the same color square box. The robots have to go to their designated goal \
   without colliding with one another. They also have to be efficient by taking the shortest parth. How Good or Bad are \
   the team of robots doing to accomplish the given task?" \
@@ -40,8 +40,8 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --num_processes 2 train.py \
   --lora_r 16 \
   --lora_alpha 32 \
   --lora_dropout 0.05 \
-  --gradient_checkpointing
-
+  --gradient_checkpointing \
+  --resume_checkpoint /scratch/shahils/MA-VLCM/checkpoints/0.5B_Final.pt
 # Optional flags:
 #   --disable_vl_cache
 #   --wandb
