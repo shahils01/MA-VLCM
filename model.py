@@ -571,17 +571,18 @@ class MultimodalValueModel(nn.Module):
         # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
         bsz, num_nodes, _ = adj.shape
         nz = (adj > 0).nonzero(as_tuple=False)
+        base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
+        self_loops = torch.stack([base, base], dim=0)
         if nz.numel() == 0:
-            # Fallback to self-loops when there are no edges.
-            base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
-            return torch.stack([base, base], dim=0)
+            return self_loops
 
         batch_idx = nz[:, 0]
         src = nz[:, 1]
         dst = nz[:, 2]
         flat_src = batch_idx * num_nodes + src
         flat_dst = batch_idx * num_nodes + dst
-        return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
+        edge_index = torch.stack([flat_src.long(), flat_dst.long()], dim=0)
+        return torch.cat([edge_index, self_loops], dim=1)
 
     def _encode_robot_temporal(self, robot_obs: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
         # robot_obs: [B, T, N, robot_node_dim], adj: [B, T, N, N] -> [B, K, d_model]

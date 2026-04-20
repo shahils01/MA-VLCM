@@ -183,10 +183,8 @@ class GNN_Model(MessagePassing):
         row, col = edge_index_batch[0], edge_index_batch[1]
         num_flat_nodes = int(edge_index_batch.max().item()) + 1
         deg = scatter_add(a_ij, col, dim=0, dim_size=num_flat_nodes)
-        deg_inv_sqrt = deg.pow(-0.5)  
-        deg_inv_sqrt = torch.where(
-            torch.isinf(deg_inv_sqrt), torch.zeros_like(deg_inv_sqrt), deg_inv_sqrt
-        )  # Handle zero degrees
+        deg = deg.clamp_min(1e-12)
+        deg_inv_sqrt = deg.pow(-0.5)
         a_ij = deg_inv_sqrt[row] * a_ij * deg_inv_sqrt[col]        
 
         if torch.isnan(a_ij).any():
