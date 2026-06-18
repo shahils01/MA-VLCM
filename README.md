@@ -54,6 +54,49 @@ The current default launcher uses:
 
 There are alternate launchers in `scripts/` for contrastive and LoRA-specific runs.
 
+### TurtleBot3 Lab LoRA Fine Tuning
+
+The TurtleBot3 lab WebDataset shards live in:
+
+```bash
+/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/data/tb3_lab
+```
+
+The shard names are expected to be numeric and contiguous. After the June 18,
+2026 lab collection, the dataset is organized as `0.tar` through `200.tar`.
+
+Fine tune the saved MA-VLCM checkpoint on the TB3 lab data with:
+
+```bash
+cd /home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM
+bash scripts/lora_run_train_tb3_lab.sh \
+  data/tb3_lab \
+  checkpoints/NewFinal_0.5B.pt
+```
+
+`scripts/lora_run_train_tb3_lab.sh` defaults to `data/tb3_lab` and
+`checkpoints/NewFinal_0.5B.pt`, so the same run can be shortened to:
+
+```bash
+bash scripts/lora_run_train_tb3_lab.sh
+```
+
+To resume from a different pretrained or intermediate checkpoint, pass it as
+the second argument or set `RESUME_CHECKPOINT`:
+
+```bash
+RESUME_CHECKPOINT=checkpoints/0.5B_LoRA_epoch_3.pt \
+  bash scripts/lora_run_train_tb3_lab.sh data/tb3_lab
+```
+
+Outputs are written to `outputs/checkpoints/tb3_lab` unless `SAVE_DIR` is set.
+
+On Slurm:
+
+```bash
+sbatch scripts/lora_submit_train_tb3_lab.sh
+```
+
 ## Inference
 
 Run evaluation with:
@@ -76,6 +119,35 @@ By default, inference outputs now go under:
 - `outputs/plots/inference/`
 
 The native fallback path in the inference launcher still uses `--baseline`; remove that flag if you want native fine-tuned LoRA inference instead of the pretrained-backbone baseline.
+
+### Live TurtleBot3 MA-VLCM Monitor
+
+To run the physical TurtleBot3 MARL policy and monitor it with MA-VLCM live:
+
+```bash
+cd /home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM
+bash scripts/run_tb3_vlcm_live_monitor.sh \
+  checkpoints/NewFinal_0.5B.pt
+```
+
+The script launches:
+
+- `ros2 launch cv_localization cv_rl_direct.launch.py`
+- `python3 -m ma_vlcm.tb3_live_inference`
+- `python3 -m ma_vlcm.tb3_live_monitor`
+
+The live inference node listens to the TurtleBot workspace topics already used
+for collection:
+
+- `/fleet_vlcm/overhead/compressed`
+- `/tb_N/cv_pose`
+- `/tb_N/cmd_vel`
+- `/tb_N/cv_measured_velocity`
+- `/tb_N/mppi_goal`
+
+It publishes JSON predictions to `/fleet_vlcm/vlcm_prediction` and writes
+`outputs/results/tb3_live_predictions.csv`. The plot monitor shows MA-VLCM
+predictions against live cumulative reward.
 
 ## MA-VLCM Inputs And Output
 

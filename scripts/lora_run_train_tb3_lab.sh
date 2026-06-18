@@ -10,13 +10,19 @@ echo "Starting TB3 lab MA-VLCM LoRA job on $(hostname)"
 echo "Date: $(date)"
 
 DATA_DIR="${1:-$REPO_ROOT/data/tb3_lab}"
-RESUME_CHECKPOINT="${2:-}"
+DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CHECKPOINT:-$REPO_ROOT/checkpoints/NewFinal_0.5B.pt}"
+RESUME_CHECKPOINT="${2:-${RESUME_CHECKPOINT:-$DEFAULT_RESUME_CHECKPOINT}}"
 SAVE_DIR="${SAVE_DIR:-$REPO_ROOT/outputs/checkpoints/tb3_lab}"
 CONTAINER_PATH="${CONTAINER_PATH:-$REPO_ROOT/ma_vlcm.sif}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
 
 if [ ! -d "$DATA_DIR" ]; then
     echo "ERROR: TB3 lab dataset directory not found: $DATA_DIR"
+    exit 1
+fi
+
+if [ -n "$RESUME_CHECKPOINT" ] && [ ! -f "$RESUME_CHECKPOINT" ]; then
+    echo "ERROR: resume checkpoint not found: $RESUME_CHECKPOINT"
     exit 1
 fi
 

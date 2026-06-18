@@ -70,6 +70,38 @@ Submit with:
 sbatch --mail-type=BEGIN,END,FAIL scripts/submit_train.sh
 ```
 
+### TurtleBot3 Lab LoRA Fine Tuning
+
+The TB3 lab dataset is stored under `data/tb3_lab` and should contain numeric
+WebDataset shards from `0.tar` through `200.tar`.
+
+The TB3-specific launcher resumes from the saved MA-VLCM checkpoint
+`checkpoints/NewFinal_0.5B.pt` by default:
+
+```bash
+bash scripts/lora_run_train_tb3_lab.sh
+```
+
+Submit the Slurm job with:
+
+```bash
+sbatch scripts/lora_submit_train_tb3_lab.sh
+```
+
+To use a different pretrained or intermediate checkpoint:
+
+```bash
+RESUME_CHECKPOINT=/path/to/checkpoint.pt \
+  sbatch scripts/lora_submit_train_tb3_lab.sh
+```
+
+To change the output directory:
+
+```bash
+SAVE_DIR=/scratch/$USER/ma_vlcm_tb3_checkpoints \
+  sbatch scripts/lora_submit_train_tb3_lab.sh
+```
+
 ## 4. Running Inference
 
 ```bash
@@ -80,6 +112,16 @@ Inference results now default to:
 
 - `outputs/results/`
 - `outputs/plots/inference/`
+
+For physical TurtleBot3 live monitoring, run this on the operator machine with
+the ROS 2 workspace sourced or available at `/home/adi2440/turtlebot_ws`:
+
+```bash
+bash scripts/run_tb3_vlcm_live_monitor.sh checkpoints/NewFinal_0.5B.pt
+```
+
+This starts the MARL policy launch, MA-VLCM live inference, and the live plot of
+prediction versus cumulative reward.
 
 ## 5. Key Launcher Arguments
 
