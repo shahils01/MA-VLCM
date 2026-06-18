@@ -1,7 +1,14 @@
 {
-    "folders": [
-        {
-            "path": "."
-        }
-    ]
+	"folders": [
+		{
+			"path": "../../../turtlebot_ws"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../VLCM_Data_Collection"
+		}
+	],
+	"settings": {}
 }

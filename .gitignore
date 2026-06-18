@@ -10,7 +10,17 @@ checkpoints/
 outputs/
 logs/
 .wandb/
+wandb/
 .DS_Store
 *.sif
 llava-hf/
 */train_sample/*
+root.aux
+root.fdb_latexmk
+root.fls
+root.log
+docs/paper/*.aux
+docs/paper/*.fdb_latexmk
+docs/paper/*.fls
+docs/paper/*.log
+data/

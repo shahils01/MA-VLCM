@@ -1,73 +1,171 @@
-# MA-VLCM: RWARE Training with LLaVA-NeXT-Video
+# MA-VLCM
 
-This branch is configured for training a Multimodal Value Model on the Robot Warehouse (RWARE) environment using **LLaVA-NeXT-Video** as the vision-language backbone.
+MA-VLCM is a multi-agent vision-language critic that predicts a scalar return estimate for a policy from a short video clip, a structured prompt, and per-agent state/action features.
 
-## Quick Start
-To run the training, use the provided shell script:
-```bash
-./run_train_vlcm.sh
-```
-This script handles:
-1. Data directory checks (expects data in `VLCM_Data_Collection/RWARE/data_scratch` or defined via environment variables).
-2. Automatic detection of RWARE configuration and number of robots from directory names.
-3. Setting up cache directories on scratch space.
-4. Launching the training inside an Apptainer/Singularity container.
+## Workspace Layout
 
-## Experiment Configuration
+- `src/ma_vlcm/`: core package code
+- `scripts/`: shell launchers for training and inference
+- `tools/`: analysis and debugging utilities
+- `outputs/`: generated plots, CSVs, videos, and other run artifacts
+- `train_sample/`: example trajectory data kept with the repo
 
-### 1. Model Architecture
-- **VLM Backbone**: `llava-hf/LLaVA-NeXT-Video-7B-32K-hf` (via `llava_video` backend)
-- **Robot Encoder**: 2-layer GNN (Graph Neural Network) processing robot states.
-- **Fusion**: Multimodal fusion of video embeddings, text instruction embeddings, and robot graph embeddings.
-- **Value Head**: Estimates state value $V(s)$ trained with TD(0) loss.
+Current core files:
 
-### 2. Observation Structure
-The model processes a sequence of observations (video clip + state history).
-- **Video**: 8 frames per clip (`--clip_len 8`).
-- **RWARE State**: A 6-dimensional vector for each robot, derived from `state.json`:
-  - `[0, 1]`: Position (x, y)
-  - `[2, 3]`: Direction vector (dx, dy) - e.g., (0, 1) for North
-  - `[4]`: Carrying status (1.0 if carrying a shelf, 0.0 otherwise)
-  - `[5]`: Last Action (mapped to integer: NOOP=0, FORWARD=1, LEFT=2, RIGHT=3, TOGGLE_LOAD=4)
-- **OFFROAD State**: An 8-dimensional vector per agent, representing continuous navigation commands:
-  - `[0, 1]`: Position (x, y)
-  - `[2, 3]`: Heading (cos(yaw), sin(yaw))
-  - `[4, 5]`: Velocity commands (v_cmd, w_cmd)
-  - `[6]`: Distance to Goal
-  - `[7]`: Traversability of current position
-- **Graph**: Fully connected graph between agents (unless `adj.npy` is provided), allowing the GNN to model agent interactions.
+- [src/ma_vlcm/train.py](/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/src/ma_vlcm/train.py)
+- [src/ma_vlcm/inference.py](/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/src/ma_vlcm/inference.py)
+- [src/ma_vlcm/model.py](/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/src/ma_vlcm/model.py)
+- [scripts/run_train_vlcm.sh](/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/scripts/run_train_vlcm.sh)
+- [scripts/run_inference_vlcm.sh](/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/scripts/run_inference_vlcm.sh)
 
-### 3. Reward Structure
-The reward function is a combination of the environment reward and a custom safety penalty:
-- **Base Reward**: Taken from `reward.json` (sparse reward for successful delivery).
-- **Collision Penalty**: A penalty of **-1.0** is added if any two agents are within **3.0 meters** of each other (`dist < 3.0`).
-- **Distance Reward**: A dense shaping reward equal to the **negative average minimum distance** from each agent to any requested box.
-  - If an agent is already carrying a requested box, its distance cost is 0.
-  - Otherwise, it is the Euclidean distance to the nearest requested box.
-- **Formula**: $R_{total} = R_{env} + (-1.0 \text{ if collision}) - \frac{1}{N} \sum_{i=1}^{N} \min_{j} \text{dist}(\text{agent}_i, \text{box}_j)$
+## Install
 
-### 4. Language Prompt
-A dynamic text prompt is generated for every step to ground the VLM:
-
-**RWARE Template:**
-> "Analyze the robotic warehouse state. Agents must pick up requested boxes and avoid collisions (distance < 3m). Step: {step}. Requested boxes: {requests}. Agent {id}: at {pos}, facing {dir}, action {action}, carrying {yes/no}. ..."
-
-**OFFROAD Template:**
-> "You are a vision-language critic model that evaluates multi-agent trajectories by estimating the expected cumulative return. This is an offroad navigation environment with {n_ag} agents traversing rough terrain. Each agent must reach its color-matched goal while minimizing traversability cost and avoiding inter-agent collisions. Given the video frames and agent states below, assess the quality of the current policy. Timestep: {step}. Agent {id} ({color}): position ({x}, {y}), heading {yaw} rad, speed {v} m/s, dist_to_goal {d}m, traversability {t}, reached: {yes/no}, collision: {yes/no}."
-
-## Training Script Arguments
-The `run_train_vlcm.sh` script passes the following key arguments to `train.py`:
-- `--train_shards`: Primary dataset path (typically RWARE).
-- `--offroad_shards`: Optional secondary dataset path to enable Multi-Dataset interleaving training.
-- `--dataset_type rware`: Enables the specific RWARE state parsing logic (will round-robin with "offroad" if multi-dataset enabled).
-- `--rware_config`: The specific map configuration (e.g., `tiny-2ag-hard`).
-- `--vl_backend llava_video`: Selects the LLaVA-NeXT-Video backend.
-- `--num_robots`: Automatically detected, or artificially padded to max across datasets (e.g. 5 if mixing RWARE and OFFROAD).
-- `--robot_obs_dim 8`: Updated to 8 to accommodate the larger feature set of OFFROAD when training jointly.
-- `--batch_size 4`, `--epochs 2`, `--num_workers 1`.
-
-## Installation
 ```bash
 pip install -r requirements.txt
+pip install -e .
 ```
-*Note: The training script assumes a specific environment setup with Apptainer/Singularity for HPC usage.*
+
+If you do not want an editable install, use:
+
+```bash
+export PYTHONPATH="$PWD/src"
+```
+
+The shell launchers in `scripts/` already set `PYTHONPATH` for you.
+
+## Training
+
+Launch training with:
+
+```bash
+bash scripts/run_train_vlcm.sh
+```
+
+The current default launcher uses:
+
+- `--vl_backend llava_onevision`
+- `--vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf`
+- `clip_len=16`
+- `num_robots=8`
+- `robot_obs_dim=8`
+- `gamma=0.95`
+- `max_return_horizon=64`
+- LoRA with `contrastive_mse`
+
+There are alternate launchers in `scripts/` for contrastive and LoRA-specific runs.
+
+## Inference
+
+Run evaluation with:
+
+```bash
+bash scripts/run_inference_vlcm.sh
+```
+
+Edit these variables in [scripts/run_inference_vlcm.sh](/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/scripts/run_inference_vlcm.sh) before running:
+
+- `CHECKPOINT`
+- `TEST_DATA_DIR`
+- `OUTPUT_FILE`
+- `PLOT_DIR`
+- `CONTAINER_PATH`
+
+By default, inference outputs now go under:
+
+- `outputs/results/`
+- `outputs/plots/inference/`
+
+The native fallback path in the inference launcher still uses `--baseline`; remove that flag if you want native fine-tuned LoRA inference instead of the pretrained-backbone baseline.
+
+## MA-VLCM Inputs And Output
+
+For a clip starting at timestep `t`, the dataloader builds:
+
+`x_t = (V_t, p_t, O_t, A_t)`
+
+where:
+
+- `V_t = (I_t, I_{t+1}, ..., I_{t+T-1})` is the video clip
+- `p_t` is the text prompt built from the first frame in the clip
+- `O_t in R^(T x N x D)` is the per-agent observation tensor
+- `A_t in R^(T x N x N)` is the adjacency tensor
+
+### Robot Observations
+
+For RWARE, each agent row is:
+
+`o_i = [x_i, y_i, dx_i, dy_i, carry_i, a_i, 0, 0]`
+
+with `a_i in {0,1,2,3,4}` for `NOOP`, `FORWARD`, `LEFT`, `RIGHT`, `TOGGLE_LOAD`.
+
+For OFFROAD, each agent row is:
+
+`o_i = [x_i, y_i, cos(yaw_i), sin(yaw_i), v_i, w_i, dist_i, trav_i]`
+
+### Prompt
+
+The prompt is generated from structured state metadata:
+
+- RWARE: timestep, requested shelves, and per-agent position/direction/action/carrying
+- OFFROAD: timestep, and per-agent position/yaw/speed/dist-to-goal/traversability/reached/collision
+
+### What The Forward Pass Uses
+
+Although the loader passes the full `O_t` and `A_t`, the model uses only the last robot state and last graph in the clip:
+
+- `O_t[-1]`
+- `A_t[-1]`
+
+The robot team feature is:
+
+`g_t = MeanPool(GNN(O_t[-1][:, :8], A_t[-1]))`
+
+That feature is projected into the language-model embedding space and injected at the `<obs>` token. The VLM pooled feature `z_t` is concatenated with `g_t`, and the value head returns:
+
+`yhat_t = w^T [z_t ; g_t] + b`
+
+So the model output is one scalar per clip:
+
+`yhat_t in R`
+
+## Training Target
+
+The loader first computes the n-step clipped return:
+
+`G_t^(H) = sum_(k=0)^(H-1) gamma^k r_(t+k) prod_(j=0)^(k-1) (1 - d_(t+j))`
+
+Then training bootstraps from the overlapping next clip:
+
+`target_t = G_t^(H) + gamma^T (1 - d_(t+T-1)) yhat^-_(t+1)`
+
+where `yhat^-_(t+1)` is the EMA target-model prediction on the shifted clip.
+
+## Outputs
+
+The repo is now organized so generated artifacts are not mixed into the root:
+
+- `outputs/plots/reward_analysis/`
+- `outputs/plots/comparison/`
+- `outputs/plots/inference/`
+- `outputs/results/`
+- `outputs/videos/`
+
+## Useful Commands
+
+Training as a module:
+
+```bash
+PYTHONPATH=src accelerate launch -m ma_vlcm.train ...
+```
+
+Inference as a module:
+
+```bash
+PYTHONPATH=src python -m ma_vlcm.inference ...
+```
+
+Single-shard visualization:
+
+```bash
+PYTHONPATH=src python tools/visualize_shard.py ...
+```
