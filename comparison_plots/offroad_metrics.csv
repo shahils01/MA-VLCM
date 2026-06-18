@@ -1,0 +1,3 @@
+Model,Environment,Split,N_Samples,Spearman_Correlation,MSE,MAE,Mean_PI_Width
+7B_LoRA,offroad,IID,200,-0.079421,155.037724,11.053967,10.258466
+7B_LoRA,offroad,OOD,200,0.414216,135.194647,10.462407,12.162976

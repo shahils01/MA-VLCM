@@ -16,10 +16,9 @@ echo "Starting Inference on $(hostname)"
 echo "Date: $(date)"
 
 # ── Paths (edit these) ──────────────────────────────────────────────────────
-CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/7B_qlora_20260301_201410_epoch_1.pt"
-TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/data_test"
-OUTPUT_FILE="$REPO_ROOT/outputs/results/inference_results.csv"
-PLOT_DIR="$REPO_ROOT/outputs/plots/inference"
+CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/50StepReturn_ContrastiveMSE_20260304_025223_epoch_10.pt"
+TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_test_iid"
+OUTPUT_FILE="inference_results.csv"
 
 # ── Environment ─────────────────────────────────────────────────────────────
 export HF_TOKEN=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
@@ -44,8 +43,18 @@ if [ -n "$CONTAINER_PATH" ] && [ -f "$CONTAINER_PATH" ]; then
     echo "Running via Apptainer container: $CONTAINER_PATH"
     apptainer exec --nv -B "$REPO_ROOT:$REPO_ROOT" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
       --env HF_TOKEN="$HF_TOKEN" \
-      --env PYTHONPATH="$PYTHONPATH" \
-      "$CONTAINER_PATH" python3 -m ma_vlcm.inference \
+      "$CONTAINER_PATH" python3 inference.py \
+        --checkpoint "$CHECKPOINT" \
+        --test_shards "$TEST_DATA_DIR" \
+        --batch_size 4 \
+        --num_workers 8 \
+        --max_samples 200\
+        --dataset_type rware\
+        --plot_dir "0.5B_b_rware_iid"\
+        --run_mc_dropout
+else
+    echo "Running natively (no container)"
+    python3 inference.py \
         --checkpoint "$CHECKPOINT" \
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \

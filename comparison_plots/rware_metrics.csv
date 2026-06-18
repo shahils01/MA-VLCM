@@ -1,0 +1,3 @@
+Model,Environment,Split,N_Samples,Spearman_Correlation,MSE,MAE,Mean_PI_Width
+7B_LoRA,rware,IID,200,0.14774,3.216408,1.523048,1.582975
+7B_LoRA,rware,OOD,200,0.263054,1.64085,0.949101,1.474849
