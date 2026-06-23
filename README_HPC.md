@@ -72,11 +72,14 @@ sbatch --mail-type=BEGIN,END,FAIL scripts/submit_train.sh
 
 ### TurtleBot3 Lab LoRA Fine Tuning
 
-The TB3 lab dataset is stored under `data/tb3_lab` and should contain numeric
-WebDataset shards from `0.tar` through `200.tar`.
+The TB3 lab LoRA launcher now reads the shard set from Hugging Face by default:
 
-The TB3-specific launcher resumes from the saved MA-VLCM checkpoint
-`checkpoints/NewFinal_0.5B.pt` by default:
+```bash
+hf://datasets/adi2440/tb3-lab/*.tar
+```
+
+The TB3-specific launcher resumes from `NewFinal_0.5B.pt` if it can find that
+checkpoint in scratch first, otherwise it falls back to `checkpoints/NewFinal_0.5B.pt`:
 
 ```bash
 bash scripts/lora_run_train_tb3_lab.sh
@@ -88,18 +91,33 @@ Submit the Slurm job with:
 sbatch scripts/lora_submit_train_tb3_lab.sh
 ```
 
+Hugging Face downloads, Transformers model files, Torch cache files, temporary
+files, wandb files, and TB3 checkpoints are placed under scratch. Scratch
+defaults to `$SCRATCH/ma_vlcm`, then `/scratch/$USER/ma_vlcm`, then
+`$SLURM_TMPDIR/ma_vlcm`; set `MA_VLCM_SCRATCH_ROOT` to override it.
+
+To use a different Hugging Face dataset repo:
+
+```bash
+HF_DATASET_REPO=adi2440/tb3-lab sbatch scripts/lora_submit_train_tb3_lab.sh
+```
+
+To use a local shard directory instead:
+
+```bash
+DATA_DIR=/scratch/$USER/tb3_lab_shards sbatch scripts/lora_submit_train_tb3_lab.sh
+```
+
 To use a different pretrained or intermediate checkpoint:
 
 ```bash
-RESUME_CHECKPOINT=/path/to/checkpoint.pt \
-  sbatch scripts/lora_submit_train_tb3_lab.sh
+RESUME_CHECKPOINT=/path/to/checkpoint.pt sbatch scripts/lora_submit_train_tb3_lab.sh
 ```
 
 To change the output directory:
 
 ```bash
-SAVE_DIR=/scratch/$USER/ma_vlcm_tb3_checkpoints \
-  sbatch scripts/lora_submit_train_tb3_lab.sh
+SAVE_DIR=/scratch/$USER/ma_vlcm_tb3_checkpoints sbatch scripts/lora_submit_train_tb3_lab.sh
 ```
 
 ## 4. Running Inference

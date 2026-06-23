@@ -17,7 +17,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--repo-id",
-        default="adi2440/tb3-lab-vlcm",
+        default="adi2440/tb3-lab",
         help="Hugging Face dataset repo id.",
     )
     parser.add_argument(

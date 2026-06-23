@@ -9,17 +9,89 @@ cd "$REPO_ROOT"
 echo "Starting TB3 lab MA-VLCM LoRA job on $(hostname)"
 echo "Date: $(date)"
 
-DATA_DIR="${1:-$REPO_ROOT/data/tb3_lab}"
-DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CHECKPOINT:-$REPO_ROOT/checkpoints/NewFinal_0.5B.pt}"
+USER_NAME="${USER:-$(id -un 2>/dev/null || echo user)}"
+if [ -n "${MA_VLCM_SCRATCH_ROOT:-}" ]; then
+    SCRATCH_ROOT="$MA_VLCM_SCRATCH_ROOT"
+    BASE_SCRATCH="$SCRATCH_ROOT"
+elif [ -n "${SCRATCH:-}" ]; then
+    BASE_SCRATCH="$SCRATCH"
+    SCRATCH_ROOT="$BASE_SCRATCH/ma_vlcm"
+elif [ -d "/scratch/$USER_NAME" ]; then
+    BASE_SCRATCH="/scratch/$USER_NAME"
+    SCRATCH_ROOT="$BASE_SCRATCH/ma_vlcm"
+elif [ -d "/scratch/aparame" ]; then
+    BASE_SCRATCH="/scratch/aparame"
+    SCRATCH_ROOT="$BASE_SCRATCH/ma_vlcm"
+elif [ -n "${SLURM_TMPDIR:-}" ]; then
+    BASE_SCRATCH="$SLURM_TMPDIR"
+    SCRATCH_ROOT="$BASE_SCRATCH/ma_vlcm"
+else
+    BASE_SCRATCH="$REPO_ROOT/.scratch"
+    SCRATCH_ROOT="$BASE_SCRATCH"
+    echo "WARNING: no scratch directory detected; using $SCRATCH_ROOT for caches and checkpoints."
+fi
+
+export MA_VLCM_SCRATCH_ROOT="$SCRATCH_ROOT"
+export HF_HOME="${HF_HOME:-$SCRATCH_ROOT/cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+export TORCH_HOME="${TORCH_HOME:-$SCRATCH_ROOT/cache/torch}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$SCRATCH_ROOT/cache/xdg}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$SCRATCH_ROOT/cache/triton}"
+export WANDB_DIR="${WANDB_DIR:-$SCRATCH_ROOT/wandb}"
+export TMPDIR="${TMPDIR:-$SCRATCH_ROOT/tmp}"
+export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-$SCRATCH_ROOT/apptainer_tmp}"
+mkdir -p \
+    "$HF_HOME" \
+    "$HF_HUB_CACHE" \
+    "$HF_DATASETS_CACHE" \
+    "$TRANSFORMERS_CACHE" \
+    "$TORCH_HOME" \
+    "$XDG_CACHE_HOME" \
+    "$TRITON_CACHE_DIR" \
+    "$WANDB_DIR" \
+    "$TMPDIR" \
+    "$APPTAINER_TMPDIR"
+
+HF_DATASET_REPO="${HF_DATASET_REPO:-adi2440/tb3-lab-vlcm}"
+DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/*.tar}"
+DATA_DIR="${1:-${DATA_DIR:-$DEFAULT_TB3_DATA}}"
+
+DEFAULT_RESUME_CANDIDATES=(
+    "/scratch/aparame/VLCM_Data_Collection/checkpoints/NewFinal_0.5B.pt"
+    "$SCRATCH_ROOT/checkpoints/NewFinal_0.5B.pt"
+    "$REPO_ROOT/checkpoints/NewFinal_0.5B.pt"
+)
+if [ -z "${DEFAULT_RESUME_CHECKPOINT:-}" ]; then
+    DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CANDIDATES[0]}"
+    for candidate in "${DEFAULT_RESUME_CANDIDATES[@]}"; do
+        if [ -f "$candidate" ]; then
+            DEFAULT_RESUME_CHECKPOINT="$candidate"
+            break
+        fi
+    done
+fi
 RESUME_CHECKPOINT="${2:-${RESUME_CHECKPOINT:-$DEFAULT_RESUME_CHECKPOINT}}"
-SAVE_DIR="${SAVE_DIR:-$REPO_ROOT/outputs/checkpoints/tb3_lab}"
+SAVE_DIR="${SAVE_DIR:-$SCRATCH_ROOT/checkpoints/tb3_lab}"
 CONTAINER_PATH="${CONTAINER_PATH:-$REPO_ROOT/ma_vlcm.sif}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
+TOTAL_EPOCHS="${TOTAL_EPOCHS:-${EPOCHS:-20}}"
+MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
+WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-turtlebot_0.5B}"
 
-if [ ! -d "$DATA_DIR" ]; then
-    echo "ERROR: TB3 lab dataset directory not found: $DATA_DIR"
-    exit 1
-fi
+case "$DATA_DIR" in
+    hf://*|http://*|https://*|pipe:*)
+        echo "Using remote TB3 lab dataset: $DATA_DIR"
+        ;;
+    *)
+        if [ ! -d "$DATA_DIR" ] && [[ "$DATA_DIR" != *"*"* ]] && [[ "$DATA_DIR" != *"?"* ]]; then
+            echo "ERROR: TB3 lab dataset directory or shard pattern not found: $DATA_DIR"
+            exit 1
+        fi
+        echo "Using local TB3 lab dataset: $DATA_DIR"
+        ;;
+esac
 
 if [ -n "$RESUME_CHECKPOINT" ] && [ ! -f "$RESUME_CHECKPOINT" ]; then
     echo "ERROR: resume checkpoint not found: $RESUME_CHECKPOINT"
@@ -32,7 +104,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 TRAIN_CMD=(
-  accelerate launch --num_processes "$NUM_PROCESSES" -m ma_vlcm.train
+  accelerate launch --num_processes "$NUM_PROCESSES" --mixed_precision "$MIXED_PRECISION" -m ma_vlcm.train
   --train_shards "$DATA_DIR"
   --dataset_type tb3_lab
   --batch_size 4
@@ -40,12 +112,12 @@ TRAIN_CMD=(
   --clip_len 16
   --num_robots 3
   --robot_obs_dim 8
-  --epochs 10
+  --epochs "$TOTAL_EPOCHS"
   --vl_backend llava_onevision
   --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf
   --save_dir "$SAVE_DIR"
   --num_workers 4
-  --mixed_precision bf16
+  --mixed_precision "$MIXED_PRECISION"
   --freeze_vl
   --peft lora
   --lora_r 16
@@ -61,6 +133,7 @@ TRAIN_CMD=(
   --max_return_horizon 64
   --ema_decay 0.995
   --vl_max_text_len 4700
+  --run_name_prefix "$WANDB_RUN_PREFIX"
 )
 
 if [ -n "$RESUME_CHECKPOINT" ]; then
@@ -69,25 +142,52 @@ if [ -n "$RESUME_CHECKPOINT" ]; then
 fi
 
 echo "Using TB3 lab dataset: $DATA_DIR"
+echo "Scratch root: $SCRATCH_ROOT"
+echo "Hugging Face cache: $HF_HOME"
+echo "Torch cache: $TORCH_HOME"
 echo "Saving checkpoints to: $SAVE_DIR"
+echo "Total epoch target: $TOTAL_EPOCHS"
+echo "Mixed precision: $MIXED_PRECISION"
+echo "W&B run prefix: $WANDB_RUN_PREFIX"
 
 if command -v apptainer >/dev/null 2>&1 && [ -f "$CONTAINER_PATH" ]; then
-    if [ -n "$SCRATCH" ]; then
-        BASE_SCRATCH="$SCRATCH"
-    elif [ -d "/scratch/$USER" ]; then
-        BASE_SCRATCH="/scratch/$USER"
-    else
-        BASE_SCRATCH="$REPO_ROOT"
+    APPTAINER_BINDS=(-B "$REPO_ROOT:$REPO_ROOT" -B "$BASE_SCRATCH:$BASE_SCRATCH" -B "$SAVE_DIR:$SAVE_DIR")
+    if [ -n "$RESUME_CHECKPOINT" ] && [ -f "$RESUME_CHECKPOINT" ]; then
+        RESUME_DIR=$(dirname "$RESUME_CHECKPOINT")
+        APPTAINER_BINDS+=(-B "$RESUME_DIR:$RESUME_DIR")
+    fi
+    case "$DATA_DIR" in
+        hf://*|http://*|https://*|pipe:*) ;;
+        *)
+            if [ -d "$DATA_DIR" ]; then
+                APPTAINER_BINDS+=(-B "$DATA_DIR:$DATA_DIR")
+            fi
+            ;;
+    esac
+    APPTAINER_ENVS=(
+      --env PYTHONPATH="$PYTHONPATH"
+      --env TOKENIZERS_PARALLELISM="$TOKENIZERS_PARALLELISM"
+      --env PYTORCH_CUDA_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+      --env HF_HOME="$HF_HOME"
+      --env HF_HUB_CACHE="$HF_HUB_CACHE"
+      --env HF_DATASETS_CACHE="$HF_DATASETS_CACHE"
+      --env TRANSFORMERS_CACHE="$TRANSFORMERS_CACHE"
+      --env TORCH_HOME="$TORCH_HOME"
+      --env XDG_CACHE_HOME="$XDG_CACHE_HOME"
+      --env TRITON_CACHE_DIR="$TRITON_CACHE_DIR"
+      --env WANDB_DIR="$WANDB_DIR"
+      --env TMPDIR="$TMPDIR"
+    )
+    if [ -n "${HF_TOKEN:-}" ]; then
+        APPTAINER_ENVS+=(--env HF_TOKEN="$HF_TOKEN")
+    fi
+    if [ -n "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
+        APPTAINER_ENVS+=(--env HUGGING_FACE_HUB_TOKEN="$HUGGING_FACE_HUB_TOKEN")
     fi
     echo "Running inside Apptainer container: $CONTAINER_PATH"
     apptainer exec --nv \
-      -B "$REPO_ROOT:$REPO_ROOT" \
-      -B "$DATA_DIR:$DATA_DIR" \
-      -B "$SAVE_DIR:$SAVE_DIR" \
-      -B "$BASE_SCRATCH:$BASE_SCRATCH" \
-      --env PYTHONPATH="$PYTHONPATH" \
-      --env TOKENIZERS_PARALLELISM="$TOKENIZERS_PARALLELISM" \
-      --env PYTORCH_CUDA_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF" \
+      "${APPTAINER_BINDS[@]}" \
+      "${APPTAINER_ENVS[@]}" \
       "$CONTAINER_PATH" "${TRAIN_CMD[@]}"
 else
     echo "Running natively; set CONTAINER_PATH or install apptainer to use the container."

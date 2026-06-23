@@ -56,40 +56,46 @@ There are alternate launchers in `scripts/` for contrastive and LoRA-specific ru
 
 ### TurtleBot3 Lab LoRA Fine Tuning
 
-The TurtleBot3 lab WebDataset shards live in:
+The TurtleBot3 lab WebDataset shards are expected on Hugging Face by default:
 
 ```bash
-/home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM/data/tb3_lab
+hf://datasets/adi2440/tb3-lab/*.tar
 ```
 
-The shard names are expected to be numeric and contiguous. After the June 18,
-2026 lab collection, the dataset is organized as `0.tar` through `200.tar`.
+The upload helper also defaults to that dataset repo:
+
+```bash
+python scripts/upload_tb3_lab_dataset.py /path/to/tb3_lab_shards
+```
 
 Fine tune the saved MA-VLCM checkpoint on the TB3 lab data with:
 
 ```bash
-cd /home/adi2440/Desktop/MARL_Shahil_Aditya/MA-VLCM
-bash scripts/lora_run_train_tb3_lab.sh \
-  data/tb3_lab \
-  checkpoints/NewFinal_0.5B.pt
+bash scripts/lora_run_train_tb3_lab.sh
 ```
 
-`scripts/lora_run_train_tb3_lab.sh` defaults to `data/tb3_lab` and
-`checkpoints/NewFinal_0.5B.pt`, so the same run can be shortened to:
+The launcher writes Hugging Face downloads, Transformers model files, Torch
+cache files, temporary files, wandb files, and TB3 checkpoints under scratch.
+Scratch defaults to `$SCRATCH/ma_vlcm`, then `/scratch/$USER/ma_vlcm`, then
+`$SLURM_TMPDIR/ma_vlcm`; set `MA_VLCM_SCRATCH_ROOT` to override it.
+
+To use a different dataset repo or local shard directory:
 
 ```bash
-bash scripts/lora_run_train_tb3_lab.sh
+HF_DATASET_REPO=adi2440/tb3-lab bash scripts/lora_run_train_tb3_lab.sh
+
+bash scripts/lora_run_train_tb3_lab.sh /path/to/local/tb3_lab_shards
 ```
 
 To resume from a different pretrained or intermediate checkpoint, pass it as
 the second argument or set `RESUME_CHECKPOINT`:
 
 ```bash
-RESUME_CHECKPOINT=checkpoints/0.5B_LoRA_epoch_3.pt \
-  bash scripts/lora_run_train_tb3_lab.sh data/tb3_lab
+RESUME_CHECKPOINT=/scratch/$USER/ma_vlcm/checkpoints/0.5B_LoRA_epoch_3.pt bash scripts/lora_run_train_tb3_lab.sh
 ```
 
-Outputs are written to `outputs/checkpoints/tb3_lab` unless `SAVE_DIR` is set.
+Outputs are written to `$MA_VLCM_SCRATCH_ROOT/checkpoints/tb3_lab` unless
+`SAVE_DIR` is set.
 
 On Slurm:
 

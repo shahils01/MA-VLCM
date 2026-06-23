@@ -108,6 +108,12 @@ def parse_args():
     )
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
+    p.add_argument(
+        "--run_name_prefix",
+        type=str,
+        default=None,
+        help="Optional prefix for wandb run names and checkpoint filenames.",
+    )
     p.add_argument("--rware_config", type=str, default="tiny-2ag-hard")
     p.add_argument(
         "--rware_visual_mode",
@@ -831,6 +837,61 @@ def _parse_tb3_lab_state(state_json, num_robots=None, robot_obs_dim=8):
     return obs
 
 
+def _expand_hf_dataset_shards(shards):
+    """Download and expand hf://datasets/<owner>/<repo>/<glob> shards locally."""
+    if not isinstance(shards, str):
+        return shards
+    prefix = "hf://datasets/"
+    if not shards.startswith(prefix):
+        return shards
+    if not any(ch in shards for ch in "*?["):
+        return shards
+
+    rest = shards[len(prefix) :]
+    parts = rest.split("/", 2)
+    if len(parts) < 3:
+        return shards
+
+    repo_id = f"{parts[0]}/{parts[1]}"
+    allow_pattern = parts[2] or "*.tar"
+    print(
+        "Resolving Hugging Face dataset shards: "
+        f"repo={repo_id}, pattern={allow_pattern}"
+    )
+
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception as exc:
+        raise RuntimeError(
+            "huggingface_hub is required to expand Hugging Face shard patterns."
+        ) from exc
+
+    try:
+        local_root = snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            allow_patterns=allow_pattern,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to download Hugging Face dataset shards from "
+            f"{repo_id!r} with pattern {allow_pattern!r}. "
+            "Check the repo id, network access, and HF_TOKEN for private datasets."
+        ) from exc
+
+    expanded = sorted(glob.glob(os.path.join(local_root, allow_pattern), recursive=True))
+    if not expanded:
+        expanded = sorted(glob.glob(os.path.join(local_root, "**", "*.tar"), recursive=True))
+    if not expanded:
+        raise RuntimeError(
+            "No .tar shards were found after downloading Hugging Face dataset "
+            f"{repo_id!r} with pattern {allow_pattern!r}."
+        )
+
+    print(f"Resolved {len(expanded)} Hugging Face shards under {local_root}")
+    return expanded
+
+
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -865,9 +926,13 @@ class SequenceWebDataset(IterableDataset):
         max_return_horizon=0,
     ):
         if isinstance(shards, str):
-            if shards.startswith(("hf://", "http://", "https://", "pipe:")):
+            if shards.startswith("hf://datasets/"):
+                shards = _expand_hf_dataset_shards(shards)
+                if isinstance(shards, str):
+                    print(f"Using remote dataset URL: {shards}")
+            if isinstance(shards, str) and shards.startswith(("http://", "https://", "pipe:")):
                 print(f"Using remote dataset URL: {shards}")
-            elif os.path.isdir(shards):
+            elif isinstance(shards, str) and os.path.isdir(shards):
                 print(f"Expanding shard directory: {shards}")
                 # Auto-expand directory to all .tar files recursively
                 expanded = sorted(
@@ -876,7 +941,7 @@ class SequenceWebDataset(IterableDataset):
                 if not expanded:
                     print(f"Warning: No .tar files found in {shards}")
                 shards = expanded
-            elif "*" in shards or "?" in shards or "[" in shards:
+            elif isinstance(shards, str) and ("*" in shards or "?" in shards or "[" in shards):
                 print(f"Expanding shard pattern: {shards}")
                 expanded = sorted(glob.glob(shards, recursive=True))
                 if not expanded:
@@ -1740,8 +1805,12 @@ class SequenceWebDataset(IterableDataset):
 def webdataset_loader(
     args, shards, batch_size, num_workers, shuffle=False, dataset_type=None
 ):
-    # Support glob patterns if passed as shards string
-    if isinstance(shards, str) and "*" in shards:
+    # Support local glob patterns while leaving remote URL patterns to WebDataset.
+    if (
+        isinstance(shards, str)
+        and "*" in shards
+        and not shards.startswith(("hf://", "http://", "https://", "pipe:"))
+    ):
         import glob
 
         expanded = sorted(glob.glob(shards))
@@ -2252,7 +2321,10 @@ def main():
 
     ret_str = f"{args.n_step}StepReturn"
 
-    args.run_name = f"{ret_str}_{loss_str}_{timestamp}"
+    if args.run_name_prefix:
+        args.run_name = f"{args.run_name_prefix}_{timestamp}"
+    else:
+        args.run_name = f"{ret_str}_{loss_str}_{timestamp}"
 
     # ── Performance: enable TF32 for H100 / Ampere+ GPUs ──
     torch.backends.cuda.matmul.allow_tf32 = True
