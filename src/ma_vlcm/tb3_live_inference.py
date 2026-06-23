@@ -611,7 +611,8 @@ class Tb3LiveInferenceNode(Node):
         header = (
             "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
             f"This is a real indoor TurtleBot3 lab environment with {len(agents)} agents observed from a bird's-eye webcam view. "
-            "The agents are color-coded red, blue, and green, and must navigate to fixed floor goals labeled A, B, and C. "
+            "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
+            "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
             f"The reward is the mean progress toward the assigned goals, plus +{self.cli_args.success_reward:g} when an agent reaches its goal for the first time, "
             f"and {self.cli_args.proximity_penalty:g} if any pair of agents comes within {self.cli_args.proximity_penalty_distance_m:.2f}m. "
             "Traversability information is unavailable in this environment. "

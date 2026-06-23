@@ -1733,7 +1733,8 @@ class SequenceWebDataset(IterableDataset):
                     header = (
                         "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
                         f"This is a real indoor TurtleBot3 lab environment with {n_ag} agents observed from a bird's-eye webcam view. "
-                        "The agents are color-coded red, blue, and green, and must navigate to fixed floor goals labeled A, B, and C. "
+                        "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
+                        "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
                         "The reward is the mean progress toward the assigned goals, plus +5 when an agent reaches its goal for the first time, and -1 if any pair of agents comes within 0.25m. "
                         "Traversability information is unavailable in this environment. "
                         "Predict the expected infinite horizon return of the current policy based on these observations: "
