@@ -54,7 +54,7 @@ mkdir -p \
     "$TMPDIR" \
     "$APPTAINER_TMPDIR"
 
-HF_DATASET_REPO="${HF_DATASET_REPO:-adi2440/tb3-lab-vlcm}"
+HF_DATASET_REPO="${HF_DATASET_REPO:-adi2440/tb3-lab-vlcm-progress-v1}"
 DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/*.tar}"
 DATA_DIR="${1:-${DATA_DIR:-$DEFAULT_TB3_DATA}}"
 
@@ -73,6 +73,17 @@ if [ -z "${DEFAULT_RESUME_CHECKPOINT:-}" ]; then
     done
 fi
 RESUME_CHECKPOINT="${2:-${RESUME_CHECKPOINT:-$DEFAULT_RESUME_CHECKPOINT}}"
+TRAIN_FROM_SCRATCH="${TRAIN_FROM_SCRATCH:-0}"
+case "${TRAIN_FROM_SCRATCH,,}" in
+    1|true|yes|y|on)
+        RESUME_CHECKPOINT=""
+        ;;
+esac
+case "${RESUME_CHECKPOINT,,}" in
+    none|null|false|0|scratch|from_scratch)
+        RESUME_CHECKPOINT=""
+        ;;
+esac
 SAVE_DIR="${SAVE_DIR:-$SCRATCH_ROOT/checkpoints/tb3_lab}"
 CONTAINER_PATH="${CONTAINER_PATH:-$REPO_ROOT/ma_vlcm.sif}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
@@ -124,9 +135,11 @@ TRAIN_CMD=(
   --lora_alpha 32
   --lora_dropout 0.05
   --vision_lr 1e-5
-  --loss_type contrastive_mse
+  --loss_type mse
   --return_mode nstep
-  --mse_loss_weight 0.01
+  --target_mode progress
+  --value_output_activation sigmoid
+  --mse_loss_weight 1.0
   --max_grad_norm 1.0
   --samples_per_epoch 5000
   --gamma 0.95
@@ -139,6 +152,8 @@ TRAIN_CMD=(
 if [ -n "$RESUME_CHECKPOINT" ]; then
     TRAIN_CMD+=(--resume_from "$RESUME_CHECKPOINT")
     echo "Will resume from checkpoint: $RESUME_CHECKPOINT"
+else
+    echo "Training from scratch: no --resume_from checkpoint will be used."
 fi
 
 echo "Using TB3 lab dataset: $DATA_DIR"

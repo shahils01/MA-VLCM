@@ -13,11 +13,12 @@ ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-30}"
 WINDOW_SIZE="${WINDOW_SIZE:-16}"
 INFERENCE_RATE_HZ="${INFERENCE_RATE_HZ:-1.0}"
 POLICY_START_DELAY_S="${POLICY_START_DELAY_S:-5}"
-PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/ma_vlcm_matplotlib}"
 
 export ROS_DOMAIN_ID
 export MPLCONFIGDIR
+export PYTHONNOUSERSITE=1
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
@@ -30,10 +31,13 @@ if [ ! -f "$MODEL_DIR" ]; then
     exit 1
 fi
 
+# Temporarily disable unbound variable checks when sourcing third-party ROS setup scripts
+set +u
 source /opt/ros/humble/setup.bash
 if [ -f "$TURTLEBOT_WS/install/setup.bash" ]; then
     source "$TURTLEBOT_WS/install/setup.bash"
 fi
+set -u
 
 export PYTHONPATH="$MA_VLCM_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$(dirname "$OUTPUT_CSV")"

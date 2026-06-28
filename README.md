@@ -1,6 +1,6 @@
 # MA-VLCM
 
-MA-VLCM is a multi-agent vision-language critic that predicts a scalar return estimate for a policy from a short video clip, a structured prompt, and per-agent state/action features.
+MA-VLCM is a multi-agent vision-language critic that predicts a scalar policy-quality signal from a short video clip, a structured prompt, and per-agent state/action features. Generic datasets can train return estimates; the TurtleBot3 lab path now trains bounded task progress in `[0, 1]`.
 
 ## Workspace Layout
 
@@ -56,23 +56,38 @@ There are alternate launchers in `scripts/` for contrastive and LoRA-specific ru
 
 ### TurtleBot3 Lab LoRA Fine Tuning
 
-The TurtleBot3 lab WebDataset shards are expected on Hugging Face by default:
+The current TurtleBot3 lab LoRA launcher expects progression-labeled WebDataset
+shards on Hugging Face by default:
 
 ```bash
-hf://datasets/adi2440/tb3-lab/*.tar
+hf://datasets/adi2440/tb3-lab-vlcm-progress-v1/*.tar
 ```
 
-The upload helper also defaults to that dataset repo:
+If you collected raw TB3 lab shards or already have the older reward-labeled
+dataset, relabel them with `tb3_progress_v1` before training:
 
 ```bash
-python scripts/upload_tb3_lab_dataset.py /path/to/tb3_lab_shards
+python scripts/relabel_tb3_progress_dataset.py \
+  hf://datasets/adi2440/tb3-lab-vlcm/*.tar \
+  --output-dir data/tb3_lab_progress_v1 \
+  --repo-id adi2440/tb3-lab-vlcm-progress-v1
 ```
 
-Fine tune the saved MA-VLCM checkpoint on the TB3 lab data with:
+The relabel command uploads to Hugging Face only when `--repo-id` is present.
+Without `--repo-id`, it only writes relabeled local `.tar` shards to
+`--output-dir`; run it again with `--repo-id` or upload the directory separately
+when you are ready to publish.
+
+Fine tune the saved MA-VLCM checkpoint on the progression-labeled TB3 lab data with:
 
 ```bash
 bash scripts/lora_run_train_tb3_lab.sh
 ```
+
+The TB3 launcher defaults to `--target_mode progress`,
+`--value_output_activation sigmoid`, and `--loss_type mse`. It preserves the
+old dense reward files in the shards, but trains the value head on
+`progress.json` instead of bootstrapped return.
 
 The launcher writes Hugging Face downloads, Transformers model files, Torch
 cache files, temporary files, wandb files, and TB3 checkpoints under scratch.
@@ -82,9 +97,9 @@ Scratch defaults to `$SCRATCH/ma_vlcm`, then `/scratch/$USER/ma_vlcm`, then
 To use a different dataset repo or local shard directory:
 
 ```bash
-HF_DATASET_REPO=adi2440/tb3-lab bash scripts/lora_run_train_tb3_lab.sh
+HF_DATASET_REPO=adi2440/tb3-lab-vlcm-progress-v1 bash scripts/lora_run_train_tb3_lab.sh
 
-bash scripts/lora_run_train_tb3_lab.sh /path/to/local/tb3_lab_shards
+bash scripts/lora_run_train_tb3_lab.sh /path/to/local/tb3_lab_progress_v1
 ```
 
 To resume from a different pretrained or intermediate checkpoint, pass it as
@@ -92,6 +107,25 @@ the second argument or set `RESUME_CHECKPOINT`:
 
 ```bash
 RESUME_CHECKPOINT=/scratch/$USER/ma_vlcm/checkpoints/0.5B_LoRA_epoch_3.pt bash scripts/lora_run_train_tb3_lab.sh
+```
+
+To train from scratch instead of resuming from the default MA-VLCM checkpoint:
+
+```bash
+TRAIN_FROM_SCRATCH=1 bash scripts/lora_run_train_tb3_lab.sh
+```
+
+Equivalent forms are also accepted:
+
+```bash
+RESUME_CHECKPOINT=none bash scripts/lora_run_train_tb3_lab.sh
+bash scripts/lora_run_train_tb3_lab.sh /path/to/local/tb3_lab_progress_v1 none
+```
+
+On Slurm, pass the same environment variable:
+
+```bash
+TRAIN_FROM_SCRATCH=1 sbatch scripts/lora_submit_train_tb3_lab.sh
 ```
 
 Outputs are written to `$MA_VLCM_SCRATCH_ROOT/checkpoints/tb3_lab` unless
@@ -153,7 +187,7 @@ for collection:
 
 It publishes JSON predictions to `/fleet_vlcm/vlcm_prediction` and writes
 `outputs/results/tb3_live_predictions.csv`. The plot monitor shows MA-VLCM
-predictions against live cumulative reward.
+predictions against live bounded task progress.
 
 ## MA-VLCM Inputs And Output
 
@@ -186,6 +220,7 @@ The prompt is generated from structured state metadata:
 
 - RWARE: timestep, requested shelves, and per-agent position/direction/action/carrying
 - OFFROAD: timestep, and per-agent position/yaw/speed/dist-to-goal/traversability/reached/collision
+- TB3 lab: timestep, goals, per-agent pose/velocity/distance-to-goal, neighbor spacing, reached/collision flags, and outcome metadata
 
 ### What The Forward Pass Uses
 
@@ -202,13 +237,15 @@ That feature is projected into the language-model embedding space and injected a
 
 `yhat_t = w^T [z_t ; g_t] + b`
 
-So the model output is one scalar per clip:
+So the model output is one scalar per clip. With
+`--value_output_activation sigmoid`, the reported scalar is bounded to `[0, 1]`:
 
 `yhat_t in R`
 
 ## Training Target
 
-The loader first computes the n-step clipped return:
+For return training (`--target_mode return`), the loader first computes the
+n-step clipped return:
 
 `G_t^(H) = sum_(k=0)^(H-1) gamma^k r_(t+k) prod_(j=0)^(k-1) (1 - d_(t+j))`
 
@@ -217,6 +254,17 @@ Then training bootstraps from the overlapping next clip:
 `target_t = G_t^(H) + gamma^T (1 - d_(t+T-1)) yhat^-_(t+1)`
 
 where `yhat^-_(t+1)` is the EMA target-model prediction on the shifted clip.
+
+For TurtleBot3 lab progress training (`--target_mode progress`), the loader
+reads `progress.json` directly and does not bootstrap from the next clip. The
+`tb3_progress_v1` target is:
+
+`agent_progress_i = clamp((initial_dist_i - max(dist_i - goal_radius, 0)) / max(initial_dist_i - goal_radius, eps), 0, 1)`
+
+`team_progress = mean(agent_progress_i)`
+
+`target = 1.0` for clean success, `0.0` for terminal failure or unsafe
+collision, otherwise `team_progress`.
 
 ## Outputs
 

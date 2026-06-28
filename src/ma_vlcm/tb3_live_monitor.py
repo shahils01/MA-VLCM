@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot live MA-VLCM predictions against live cumulative reward."""
+"""Plot live MA-VLCM predictions against live task progress."""
 
 import argparse
 import json
@@ -51,9 +51,9 @@ class Tb3LiveMonitorNode(Node):
         plt.ion()
         self.fig, (self.ax_values, self.ax_error) = plt.subplots(2, 1, sharex=True)
         self.pred_line, = self.ax_values.plot([], [], label="MA-VLCM prediction")
-        self.target_line, = self.ax_values.plot([], [], label="Cumulative reward")
+        self.target_line, = self.ax_values.plot([], [], label="Progress target")
         self.error_line, = self.ax_error.plot([], [], color="tab:red", label="Absolute error")
-        self.ax_values.set_ylabel("Return")
+        self.ax_values.set_ylabel("Progress")
         self.ax_error.set_ylabel("Abs error")
         self.ax_error.set_xlabel("Live step")
         self.ax_values.legend(loc="upper left")
@@ -71,10 +71,21 @@ class Tb3LiveMonitorNode(Node):
         except json.JSONDecodeError:
             self.get_logger().warning("Ignoring malformed prediction JSON.")
             return
-        self.episode_id = payload.get("episode_id", self.episode_id)
+        new_episode_id = payload.get("episode_id", "")
+        if new_episode_id and new_episode_id != self.episode_id:
+            self.get_logger().info(f"New episode detected: {new_episode_id}. Clearing plot data.")
+            self.episode_id = new_episode_id
+            self.steps.clear()
+            self.predictions.clear()
+            self.targets.clear()
+            self.errors.clear()
+
         self.steps.append(int(payload.get("step", len(self.steps))))
         self.predictions.append(float(payload.get("prediction", 0.0)))
-        target = payload.get("target", payload.get("cumulative_reward", 0.0))
+        target = payload.get(
+            "progress_target",
+            payload.get("target", payload.get("cumulative_reward", 0.0)),
+        )
         self.targets.append(float(target))
         self.errors.append(float(payload.get("abs_error", abs(self.predictions[-1] - self.targets[-1]))))
 

@@ -138,6 +138,11 @@ def main():
             _add_bytes(tar, f"{prefix}.state.json", json.dumps(state).encode("utf-8"))
             _add_bytes(tar, f"{prefix}.reward.json", json.dumps(1.74).encode("utf-8"))
             _add_bytes(tar, f"{prefix}.episode_reward.json", json.dumps(8.2).encode("utf-8"))
+            _add_bytes(
+                tar,
+                f"{prefix}.progress.json",
+                json.dumps({"schema": "tb3_progress_v1", "target": 0.42}).encode("utf-8"),
+            )
             _add_bytes(tar, f"{prefix}.adj.npy", _make_npy_bytes(adj))
             _add_bytes(tar, f"{prefix}.dist.npy", _make_npy_bytes(dist))
 
@@ -157,6 +162,7 @@ def main():
             text_prompt_template=None,
             dataset_type="tb3_lab",
             return_mode="nstep",
+            target_mode="return",
             n_step=1,
             gamma=0.95,
             keep_raw_video=False,
@@ -179,6 +185,41 @@ def main():
         np.testing.assert_allclose(last_robot[:2], np.array([1.0, 0.6], dtype=np.float32))
         assert sample["inputs"]["input_ids"].shape == (3,)
 
+        progress_dataset = SequenceWebDataset(
+            shards=str(tar_path),
+            clip_len=1,
+            clip_stride=1,
+            text_mode="raw",
+            robot_source="state",
+            reward_reduce="mean",
+            done_reduce="any",
+            vlm_processor=_FakeProcessor(),
+            vl_model_name=None,
+            robot_obs_dim=8,
+            num_robots=3,
+            max_num_robots=3,
+            text_prompt_template=None,
+            dataset_type="tb3_lab",
+            return_mode="nstep",
+            target_mode="progress",
+            n_step=1,
+            gamma=0.95,
+            keep_raw_video=False,
+            include_next=False,
+            vlm_max_text_len=256,
+            vlm_truncation=True,
+            vlm_padding="max_length",
+            resize_width=672,
+            resize_height=336,
+            vl_backend="llava_onevision",
+        )
+        progress_sample = next(iter(progress_dataset))
+        np.testing.assert_allclose(
+            progress_sample["progress"].numpy(),
+            np.array([0.42], dtype=np.float32),
+        )
+        assert "returns" not in progress_sample
+
         multi_path = Path(tmpdir) / "tb3_lab_multistep.tar"
         state_done = json.loads(json.dumps(state))
         state_done["episode_meta"]["step"] = 2
@@ -198,12 +239,14 @@ def main():
             _add_bytes(tar, f"{first}.state.json", json.dumps(state).encode("utf-8"))
             _add_bytes(tar, f"{first}.reward.json", json.dumps(1.0).encode("utf-8"))
             _add_bytes(tar, f"{first}.episode_reward.json", json.dumps(1.0).encode("utf-8"))
+            _add_bytes(tar, f"{first}.progress.json", json.dumps({"target": 0.2}).encode("utf-8"))
             _add_bytes(tar, f"{first}.adj.npy", _make_npy_bytes(adj))
             _add_bytes(tar, f"{first}.dist.npy", _make_npy_bytes(dist))
             _add_bytes(tar, f"{second}.overhead.png", _make_png_bytes())
             _add_bytes(tar, f"{second}.state.json", json.dumps(state_done).encode("utf-8"))
             _add_bytes(tar, f"{second}.reward.json", json.dumps(-25.0).encode("utf-8"))
             _add_bytes(tar, f"{second}.episode_reward.json", json.dumps(-24.0).encode("utf-8"))
+            _add_bytes(tar, f"{second}.progress.json", json.dumps({"target": 0.0}).encode("utf-8"))
             _add_bytes(tar, f"{second}.adj.npy", _make_npy_bytes(adj))
             _add_bytes(tar, f"{second}.dist.npy", _make_npy_bytes(dist))
 
@@ -223,6 +266,7 @@ def main():
             text_prompt_template=None,
             dataset_type="tb3_lab",
             return_mode="nstep",
+            target_mode="return",
             n_step=2,
             gamma=0.95,
             keep_raw_video=False,
@@ -257,8 +301,10 @@ def main():
             text_prompt_template=None,
             rware_config="mixed-rware",
             return_mode="nstep",
+            target_mode="progress",
             n_step=1,
             gamma=0.95,
+            value_output_activation="sigmoid",
             vl_max_text_len=256,
             resize_width=672,
             resize_height=336,

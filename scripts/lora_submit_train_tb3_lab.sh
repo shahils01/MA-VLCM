@@ -47,7 +47,7 @@ else
 fi
 
 export MA_VLCM_SCRATCH_ROOT="$SCRATCH_ROOT"
-HF_DATASET_REPO="${HF_DATASET_REPO:-adi2440/tb3-lab-vlcm}"
+HF_DATASET_REPO="${HF_DATASET_REPO:-adi2440/tb3-lab-vlcm-progress-v1}"
 DATA_DIR="${DATA_DIR:-hf://datasets/$HF_DATASET_REPO/*.tar}"
 RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
 SAVE_DIR="${SAVE_DIR:-$SCRATCH_ROOT/checkpoints/tb3_lab}"

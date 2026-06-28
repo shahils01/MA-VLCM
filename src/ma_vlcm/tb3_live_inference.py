@@ -7,6 +7,7 @@ import csv
 import json
 import math
 import time
+import threading
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ except ModuleNotFoundError as exc:
 
 
 ROBOT_COLORS = ("red", "blue", "green")
+TB3_PROGRESS_SCHEMA = "tb3_progress_v1"
 
 
 def parse_args():
@@ -76,6 +78,47 @@ def yaw_from_quat_xyzw(x, y, z, w):
 
 def distance(a, b):
     return float(math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1])))
+
+
+def apply_value_output_activation(value, args):
+    if getattr(args, "value_output_activation", "identity") == "sigmoid":
+        return torch.sigmoid(value)
+    return value
+
+
+def compute_tb3_progress(
+    initial_distances,
+    current_distances,
+    reached_now,
+    done,
+    terminal_failure,
+    collision_failure,
+    goal_radius_m,
+    eps=1e-6,
+):
+    agent_progress = []
+    for initial, current in zip(initial_distances, current_distances):
+        initial_remaining = max(float(initial) - float(goal_radius_m), float(eps))
+        current_remaining = max(float(current) - float(goal_radius_m), 0.0)
+        progress = (initial_remaining - current_remaining) / initial_remaining
+        agent_progress.append(float(np.clip(progress, 0.0, 1.0)))
+    team_progress = float(np.mean(agent_progress) if agent_progress else 0.0)
+    success = bool(done and not terminal_failure and all(reached_now))
+    failed = bool(terminal_failure or collision_failure)
+    target = 1.0 if success else 0.0 if failed else team_progress
+    return {
+        "schema": TB3_PROGRESS_SCHEMA,
+        "target": float(target),
+        "team_progress": team_progress,
+        "agent_progress": agent_progress,
+        "initial_distances": [float(x) for x in initial_distances],
+        "current_distances": [float(x) for x in current_distances],
+        "goal_radius_m": float(goal_radius_m),
+        "success": success,
+        "failure": failed,
+        "collision_failure": bool(collision_failure),
+        "terminal_failure": bool(terminal_failure),
+    }
 
 
 def _tuple_arg(value, default):
@@ -255,6 +298,9 @@ class Tb3LiveInferenceNode(Node):
         self.adj_buffer = deque(maxlen=cli_args.window_size)
         self.prompt_buffer = deque(maxlen=cli_args.window_size)
 
+        self.inference_lock = threading.Lock()
+        self.inference_in_progress = False
+
         self.poses = {name: None for name in self.robot_names}
         self.commands = {name: (0.0, 0.0) for name in self.robot_names}
         self.measured_velocities = {name: (0.0, 0.0) for name in self.robot_names}
@@ -266,8 +312,10 @@ class Tb3LiveInferenceNode(Node):
         self.step_index = 0
         self.cumulative_reward = 0.0
         self.previous_goal_distances = None
+        self.initial_goal_distances = None
         self.reached_once = [False for _ in self.robot_names]
         self.goal_signature = None
+        self.current_progress = None
         self.last_inference_time = 0.0
 
         output_path = Path(cli_args.output_csv).expanduser()
@@ -279,6 +327,7 @@ class Tb3LiveInferenceNode(Node):
                 "episode_id",
                 "step",
                 "prediction",
+                "progress_target",
                 "reward",
                 "cumulative_reward",
                 "target",
@@ -363,7 +412,7 @@ class Tb3LiveInferenceNode(Node):
             self._start_episode(current_signature)
 
         current_step = self.step_index
-        state_json, reward = self._build_state_and_reward()
+        state_json, reward, progress = self._build_state_and_reward()
         self.frame_buffer.append(self.latest_frame.copy())
         self.obs_buffer.append(self._state_to_robot_obs(state_json))
         self.adj_buffer.append(self._state_to_adj(state_json))
@@ -373,41 +422,91 @@ class Tb3LiveInferenceNode(Node):
             self.step_index += 1
             return
 
-        try:
-            prediction = self.run_inference()
-        except Exception as exc:
-            self.get_logger().error(f"MA-VLCM inference failed: {exc}")
-            return
+        with self.inference_lock:
+            if self.inference_in_progress:
+                self.step_index += 1
+                return
+            self.inference_in_progress = True
 
-        target = float(self.cumulative_reward)
-        abs_error = abs(float(prediction) - target)
-        payload = {
-            "episode_id": self.episode_id,
-            "step": int(current_step),
-            "prediction": float(prediction),
-            "reward": float(reward),
-            "cumulative_reward": target,
-            "target": target,
-            "target_label": "cumulative_reward",
-            "abs_error": float(abs_error),
-            "window_size": int(self.cli_args.window_size),
-        }
-        out_msg = String()
-        out_msg.data = json.dumps(payload)
-        self.prediction_pub.publish(out_msg)
-        self.csv_writer.writerow(
-            [
-                self.episode_id,
-                int(current_step),
-                float(prediction),
-                float(reward),
-                target,
-                target,
-                float(abs_error),
-            ]
-        )
-        self.csv_file.flush()
+        frames_snapshot = list(self.frame_buffer)
+        prompt_snapshot = self.prompt_buffer[-1]
+        obs_snapshot = list(self.obs_buffer)
+        adj_snapshot = list(self.adj_buffer)
+        episode_id_snapshot = self.episode_id
+        progress_target_snapshot = float(progress["target"])
+        cumulative_reward_snapshot = float(self.cumulative_reward)
+
+        threading.Thread(
+            target=self._threaded_inference_worker,
+            args=(
+                frames_snapshot,
+                prompt_snapshot,
+                obs_snapshot,
+                adj_snapshot,
+                current_step,
+                reward,
+                progress_target_snapshot,
+                cumulative_reward_snapshot,
+                episode_id_snapshot,
+            ),
+            daemon=True
+        ).start()
+
         self.step_index += 1
+
+    def _threaded_inference_worker(
+        self,
+        frames_snapshot,
+        prompt_snapshot,
+        obs_snapshot,
+        adj_snapshot,
+        current_step,
+        reward,
+        target,
+        cumulative_reward,
+        episode_id,
+    ):
+        try:
+            prediction = self.run_inference(
+                frames_snapshot,
+                prompt_snapshot,
+                obs_snapshot,
+                adj_snapshot,
+            )
+            abs_error = abs(float(prediction) - target)
+            payload = {
+                "episode_id": episode_id,
+                "step": int(current_step),
+                "prediction": float(prediction),
+                "progress_target": float(target),
+                "reward": float(reward),
+                "cumulative_reward": float(cumulative_reward),
+                "target": target,
+                "target_label": "progress",
+                "abs_error": float(abs_error),
+                "window_size": int(self.cli_args.window_size),
+            }
+            out_msg = String()
+            out_msg.data = json.dumps(payload)
+            self.prediction_pub.publish(out_msg)
+            self.csv_writer.writerow(
+                [
+                    episode_id,
+                    int(current_step),
+                    float(prediction),
+                    float(target),
+                    float(reward),
+                    float(cumulative_reward),
+                    target,
+                    float(abs_error),
+                ]
+            )
+            self.csv_file.flush()
+        except Exception as exc:
+            self.get_logger().error(f"MA-VLCM background inference failed: {exc}")
+        finally:
+            with self.inference_lock:
+                self.inference_in_progress = False
 
     def _ready(self):
         return (
@@ -437,10 +536,12 @@ class Tb3LiveInferenceNode(Node):
         self.step_index = 0
         self.cumulative_reward = 0.0
         self.previous_goal_distances = self._goal_distances()
+        self.initial_goal_distances = list(self.previous_goal_distances)
         self.reached_once = [
             d <= self.cli_args.goal_radius_m for d in self.previous_goal_distances
         ]
         self.goal_signature = signature
+        self.current_progress = None
         self.frame_buffer.clear()
         self.obs_buffer.clear()
         self.adj_buffer.clear()
@@ -478,6 +579,22 @@ class Tb3LiveInferenceNode(Node):
             dist_mat,
         )
         self.cumulative_reward += scalar_reward
+        collision_failure = any(
+            float(dist_mat[i, j]) < self.cli_args.proximity_penalty_distance_m
+            for i in range(dist_mat.shape[0])
+            for j in range(i + 1, dist_mat.shape[1])
+        )
+        done = all(reached_now)
+        progress = compute_tb3_progress(
+            self.initial_goal_distances or self.previous_goal_distances or goal_distances,
+            goal_distances,
+            reached_now,
+            done,
+            False,
+            collision_failure,
+            self.cli_args.goal_radius_m,
+        )
+        self.current_progress = progress
 
         agents = []
         for i, name in enumerate(self.robot_names):
@@ -515,7 +632,6 @@ class Tb3LiveInferenceNode(Node):
 
         self.previous_goal_distances = goal_distances
         self.reached_once = [old or new for old, new in zip(self.reached_once, reached_now)]
-        done = all(reached_now)
         return (
             {
                 "episode_meta": {
@@ -531,8 +647,10 @@ class Tb3LiveInferenceNode(Node):
                 "agents": agents,
                 "reward": float(np.mean(agent_rewards) if agent_rewards else 0.0),
                 "cumulative_reward": float(self.cumulative_reward),
+                "progress": progress,
             },
             scalar_reward,
+            progress,
         )
 
     def _compute_step_rewards(self, goal_distances, reached_now, dist_mat):
@@ -609,26 +727,25 @@ class Tb3LiveInferenceNode(Node):
                 f"reached: {reached}, collision: {collision}."
             )
         header = (
-            "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
+            "You are an expert vision language critic model for multi-agent teams able to critique task progress for a multi-agent policy. "
             f"This is a real indoor TurtleBot3 lab environment with {len(agents)} agents observed from a bird's-eye webcam view. "
             "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
             "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
-            f"The reward is the mean progress toward the assigned goals, plus +{self.cli_args.success_reward:g} when an agent reaches its goal for the first time, "
-            f"and {self.cli_args.proximity_penalty:g} if any pair of agents comes within {self.cli_args.proximity_penalty_distance_m:.2f}m. "
+            "The target is bounded task progress from 0 to 1: agents should reach their assigned goals while avoiding collisions and unsafe spacing. "
             "Traversability information is unavailable in this environment. "
-            "Predict the expected infinite horizon return of the current policy based on these observations: "
+            "Predict the current normalized task progress of the policy based on these observations: "
             f"Timestep: {meta.get('step', self.step_index)}. "
             f"Episode outcome token: {meta.get('outcome', 'running')}. "
             f"Termination reason: {meta.get('termination_reason', '') or 'none'}. "
         )
         return header + " ".join(obs_lines)
 
-    def run_inference(self):
+    def run_inference(self, frames_snapshot, prompt_snapshot, obs_snapshot, adj_snapshot):
         frames = [
             Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            for frame in list(self.frame_buffer)
+            for frame in frames_snapshot
         ]
-        prompt = self.prompt_buffer[-1]
+        prompt = prompt_snapshot
         processor = self.model.backbone.processor
         tokenizer = getattr(processor, "tokenizer", None)
         if tokenizer is not None:
@@ -650,22 +767,23 @@ class Tb3LiveInferenceNode(Node):
             max_length=getattr(self.model_args, "vl_max_text_len", 256),
         )
         robot_obs = torch.tensor(
-            np.stack(list(self.obs_buffer), axis=0),
-            dtype=torch.float32,
+            np.stack(obs_snapshot, axis=0),
+            dtype=self.model_dtype,
             device=self.device,
         ).unsqueeze(0)
         adj = torch.tensor(
-            np.stack(list(self.adj_buffer), axis=0),
-            dtype=torch.float32,
+            np.stack(adj_snapshot, axis=0),
+            dtype=self.model_dtype,
             device=self.device,
         ).unsqueeze(0)
         inputs = {
-            k: v.to(self.device) if torch.is_tensor(v) else v
+            k: (v.to(dtype=self.model_dtype, device=self.device) if v.is_floating_point() else v.to(self.device)) if torch.is_tensor(v) else v
             for k, v in dict(inputs).items()
         }
 
         with torch.no_grad():
             pred = self.model(video=inputs, robot_obs=robot_obs, adj=adj)
+            pred = apply_value_output_activation(pred, self.model_args)
         return float(pred.view(-1)[0].detach().cpu().item())
 
 

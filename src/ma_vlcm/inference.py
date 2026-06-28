@@ -34,6 +34,7 @@ from .model import ModelConfig, MultimodalValueModel
 from .train import (
     build_model,
     _apply_peft,
+    _apply_value_output_activation,
     webdataset_loader,
 )
 
@@ -745,6 +746,7 @@ def run_mc_dropout_flow(
     num_processed = 0
     all_td_targets = []
     all_nstep_returns = []
+    target_mode = getattr(args, "target_mode", "return")
 
     # ── Cache batches and compute TD targets (matching train.py) ──
     model.eval()
@@ -765,16 +767,19 @@ def run_mc_dropout_flow(
 
             b_size = batch["robot_obs"].shape[0]
 
-            # Compute full TD target: nstep_returns + clip_gamma*(1-done)*V_ema(s')
+            # Compute the evaluation target matching train.py.
             done = batch["done"].float()
-            nstep_returns = (
-                batch["returns"].float()
-                if "returns" in batch
-                else batch["reward"].float()
-            )
+            if target_mode == "progress" and "progress" in batch:
+                nstep_returns = batch["progress"].float()
+            else:
+                nstep_returns = (
+                    batch["returns"].float()
+                    if "returns" in batch
+                    else batch["reward"].float()
+                )
             all_nstep_returns.append(nstep_returns.cpu())
 
-            if "next_inputs" in batch:
+            if target_mode != "progress" and "next_inputs" in batch:
                 next_inputs = _move_and_cast(batch["next_inputs"])
                 next_robot_obs = batch["next_robot_obs"].to(
                     device=device, dtype=model_dtype
@@ -795,6 +800,7 @@ def run_mc_dropout_flow(
                     del saved_params
                 else:
                     next_pred = model(next_inputs, next_robot_obs, next_adj)
+                next_pred = _apply_value_output_activation(next_pred, args)
 
                 td_target = (
                     nstep_returns
@@ -833,6 +839,7 @@ def run_mc_dropout_flow(
                 robot_obs = batch["robot_obs"].to(device=device, dtype=model_dtype)
                 adj = batch["adj"].to(device=device, dtype=model_dtype)
                 pred = model(inputs, robot_obs, adj)
+                pred = _apply_value_output_activation(pred, args)
                 run_preds.append(pred.detach().cpu().float())
 
         run_preds_flat = (
@@ -865,12 +872,12 @@ def run_mc_dropout_flow(
 
     import pandas as pd
 
-    df = pd.DataFrame(
-        {
-            "td_target": td_targets,
-            "nstep_return": nstep_returns_arr,
-        }
-    )
+    target_col = "progress_target" if target_mode == "progress" else "td_target"
+    target_label = "Progress" if target_mode == "progress" else "TD Target"
+    df_data = {target_col: td_targets}
+    if target_mode != "progress":
+        df_data["nstep_return"] = nstep_returns_arr
+    df = pd.DataFrame(df_data)
     for i in range(runs_array.shape[0]):
         df[f"run_{i}"] = runs_array[i]
 
@@ -878,7 +885,7 @@ def run_mc_dropout_flow(
     df.to_csv(csv_path, index=False)
     print(f"  Saved MC runs to: {csv_path}")
 
-    # Plot Scatter w/ Prediction Intervals against TD target
+    # Plot Scatter w/ Prediction Intervals against the configured target
     print("\nGenerating prediction interval scatter plot...")
     fig, ax = plt.subplots(figsize=(10, 8))
 
@@ -946,7 +953,7 @@ def run_mc_dropout_flow(
         label="y = x (Perfect Prediction)",
     )
 
-    ax.set_xlabel("TD Target", fontsize=13)
+    ax.set_xlabel(target_label, fontsize=13)
     ax.set_ylabel("Predicted Value", fontsize=13)
     ax.set_title(
         f"Prediction Intervals ({lora_name}, MC Runs: {cli_args.mc_runs})",
@@ -1161,10 +1168,10 @@ def main():
     print(f"Loading test data from: {cli_args.test_shards}")
     args.train_shards = cli_args.test_shards  # webdataset_loader reads this indirectly
 
-    # Force include_next=True so we get next-state data for TD target computation
+    # Return checkpoints need next-state data for TD targets; progress checkpoints do not.
     saved_loss_type = getattr(args, "loss_type", "td")
     saved_return_mode = getattr(args, "return_mode", "td")
-    args.loss_type = "td"  # Ensures include_next=True in webdataset_loader
+    args.loss_type = "td"
     if saved_return_mode in ("nstep", "nsteps"):
         args.return_mode = saved_return_mode
     else:
@@ -1192,7 +1199,9 @@ def main():
     all_td_targets = []
     all_rewards = []
     all_returns = []
+    all_progress_targets = []
     num_processed = 0
+    target_mode = getattr(args, "target_mode", "return")
 
     def _move_and_cast(tensor_dict):
         """Move dict of tensors to device and cast floats to model_dtype."""
@@ -1215,14 +1224,17 @@ def main():
             adj = batch["adj"].to(device=device, dtype=model_dtype)
             reward = batch["reward"]  # keep on CPU for collection
             done = batch["done"].float()
+            if target_mode == "progress" and "progress" in batch:
+                all_progress_targets.append(batch["progress"].float())
 
             # Forward pass: V(s)
             pred = model(inputs, robot_obs, adj)
+            pred = _apply_value_output_activation(pred, args)
             pred_cpu = pred.detach().cpu().float()
 
             # Compute bootstrapped TD target matching train.py:
             #   target = nstep_returns + clip_gamma * (1 - done) * V_ema(s')
-            if "next_inputs" in batch:
+            if target_mode != "progress" and "next_inputs" in batch:
                 next_inputs = _move_and_cast(batch["next_inputs"])
                 next_robot_obs = batch["next_robot_obs"].to(
                     device=device, dtype=model_dtype
@@ -1243,6 +1255,7 @@ def main():
                     del saved_params
                 else:
                     next_pred = model(next_inputs, next_robot_obs, next_adj)
+                next_pred = _apply_value_output_activation(next_pred, args)
 
                 # Match train.py: use nstep returns + clip_gamma bootstrap
                 if "returns" in batch:
@@ -1273,10 +1286,13 @@ def main():
     rewards = torch.cat(all_rewards, dim=0).view(-1).numpy()
     has_returns = len(all_returns) > 0
     has_td_targets = len(all_td_targets) > 0
+    has_progress_targets = len(all_progress_targets) > 0
     if has_returns:
         returns = torch.cat(all_returns, dim=0).view(-1).numpy()
     if has_td_targets:
         td_targets = torch.cat(all_td_targets, dim=0).view(-1).numpy()
+    if has_progress_targets:
+        progress_targets = torch.cat(all_progress_targets, dim=0).view(-1).numpy()
 
     if cli_args.max_samples:
         preds = preds[: cli_args.max_samples]
@@ -1285,6 +1301,8 @@ def main():
             returns = returns[: cli_args.max_samples]
         if has_td_targets:
             td_targets = td_targets[: cli_args.max_samples]
+        if has_progress_targets:
+            progress_targets = progress_targets[: cli_args.max_samples]
 
     n = len(preds)
     print(f"\n{'=' * 60}")
@@ -1301,8 +1319,24 @@ def main():
         f"min: {rewards.min():.4f}  max: {rewards.max():.4f}"
     )
 
+    if has_progress_targets:
+        print(
+            f"  Progress — mean: {progress_targets.mean():.4f}  std: {progress_targets.std():.4f}  "
+            f"min: {progress_targets.min():.4f}  max: {progress_targets.max():.4f}"
+        )
+        mse_progress = float(np.mean((preds - progress_targets) ** 2))
+        mae_progress = float(np.mean(np.abs(preds - progress_targets)))
+        print(f"\n  vs Progress Target [PRIMARY]")
+        print(f"    MSE:              {mse_progress:.6f}")
+        print(f"    MAE:              {mae_progress:.6f}")
+        try:
+            spearman_progress = _spearman_corr(preds, progress_targets)
+            print(f"    Spearman corr:    {spearman_progress:.4f}")
+        except ImportError:
+            pass
+
     # Primary comparison: V(s) vs returns (raw sequence values)
-    if has_returns:
+    if target_mode != "progress" and has_returns:
         mse_ret = float(np.mean((preds - returns) ** 2))
         mae_ret = float(np.mean(np.abs(preds - returns)))
         print(f"\n  vs Cumulative Returns (sum of rewards in clip): [PRIMARY]")
@@ -1314,7 +1348,7 @@ def main():
         except ImportError:
             pass
 
-    if has_td_targets:
+    if target_mode != "progress" and has_td_targets:
         print(
             f"\n  TD Tgt — mean: {td_targets.mean():.4f}  std: {td_targets.std():.4f}  "
             f"min: {td_targets.min():.4f}  max: {td_targets.max():.4f}"
@@ -1368,7 +1402,10 @@ def main():
         output_file = f"{base}_{lora_name}{ext}"
 
     # ── 7. Generate plots ───────────────────────────────────────────────────
-    if has_returns:
+    if has_progress_targets:
+        primary_target = progress_targets
+        primary_label = "Progress"
+    elif has_returns:
         primary_target = returns
         primary_label = "Return"
     elif has_td_targets:
@@ -1436,6 +1473,8 @@ def main():
         with open(output_file, "w", newline="") as f:
             writer = csv.writer(f)
             header = ["sample_idx", "prediction", "reward"]
+            if has_progress_targets:
+                header.append("progress_target")
             if has_td_targets:
                 header.append("td_target")
             if has_returns:
@@ -1443,6 +1482,8 @@ def main():
             writer.writerow(header)
             for i in range(n):
                 row = [i, f"{preds[i]:.6f}", f"{rewards[i]:.6f}"]
+                if has_progress_targets:
+                    row.append(f"{progress_targets[i]:.6f}")
                 if has_td_targets:
                     row.append(f"{td_targets[i]:.6f}")
                 if has_returns:
@@ -1460,7 +1501,15 @@ def main():
         "pred_mean": float(preds.mean()),
         "pred_std": float(preds.std()),
     }
-    if has_td_targets:
+    if has_progress_targets:
+        summary["progress_target_mean"] = float(progress_targets.mean())
+        summary["mse_vs_progress_target"] = mse_progress
+        summary["mae_vs_progress_target"] = mae_progress
+        try:
+            summary["spearman_vs_progress_target"] = spearman_progress
+        except NameError:
+            pass
+    if target_mode != "progress" and has_td_targets:
         summary["td_target_mean"] = float(td_targets.mean())
         summary["mse_vs_td_target"] = mse_td
         summary["mae_vs_td_target"] = mae_td

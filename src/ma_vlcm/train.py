@@ -178,6 +178,20 @@ def parse_args():
     # Value targets
     p.add_argument("--gamma", type=float, default=0.95)
     p.add_argument("--return_mode", type=str, default="nstep", choices=["nstep"])
+    p.add_argument(
+        "--target_mode",
+        type=str,
+        default="return",
+        choices=["return", "progress"],
+        help="Scalar supervised target: discounted return or bounded TB3 progress.",
+    )
+    p.add_argument(
+        "--value_output_activation",
+        type=str,
+        default="identity",
+        choices=["identity", "sigmoid"],
+        help="Activation applied to value-head outputs before loss/inference.",
+    )
     p.add_argument("--n_step", type=int, default=50)
     p.add_argument(
         "--max_return_horizon",
@@ -662,6 +676,59 @@ def _reduce_done(x, reduce_mode):
     return (x > 0).any()
 
 
+def _json_from_sample(sample, key):
+    value = sample.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return json.loads(value)
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _progress_target_from_sample(sample, state_json):
+    progress = _json_from_sample(sample, "progress.json")
+    if progress is None:
+        progress = state_json.get("progress")
+    if isinstance(progress, dict):
+        return float(progress.get("target", progress.get("team_progress", 0.0)))
+    if progress is not None:
+        return float(progress)
+    agents = state_json.get("agents", [])
+    agent_progress = [
+        float(ag.get("progress"))
+        for ag in agents
+        if isinstance(ag, dict) and ag.get("progress") is not None
+    ]
+    if agent_progress:
+        return float(np.clip(np.mean(agent_progress), 0.0, 1.0))
+    return 0.0
+
+
+def _apply_value_output_activation(value, args):
+    if getattr(args, "value_output_activation", "identity") == "sigmoid":
+        return torch.sigmoid(value)
+    return value
+
+
+def _ckpt_arg(ckpt, name, default=None):
+    saved_args = ckpt.get("args", {})
+    if isinstance(saved_args, dict):
+        return saved_args.get(name, default)
+    return getattr(saved_args, name, default)
+
+
+def _reset_value_head_for_progress(model, accelerator=None):
+    head = getattr(model, "value_head", None)
+    if head is None:
+        return
+    nn.init.xavier_uniform_(head.weight)
+    nn.init.zeros_(head.bias)
+    if accelerator is not None:
+        accelerator.print("  ✓ Value head reset for sigmoid progress target")
+
+
 def _save_debug_video(batch, args, accelerator, tag="train"):
     if not accelerator.is_main_process:
         return
@@ -910,6 +977,7 @@ class SequenceWebDataset(IterableDataset):
         shuffle_shards=False,
         text_prompt_template=None,
         return_mode="nstep",
+        target_mode="return",
         n_step=50,
         gamma=0.99,
         keep_raw_video=False,
@@ -965,6 +1033,7 @@ class SequenceWebDataset(IterableDataset):
         self.dataset_type = dataset_type
         self.rware_config = rware_config
         self.return_mode = return_mode
+        self.target_mode = target_mode
         self.n_step = n_step
         self.gamma = gamma
         self.keep_raw_video = keep_raw_video
@@ -1164,26 +1233,36 @@ class SequenceWebDataset(IterableDataset):
 
             reward = torch.tensor(float(clip[-1]["reward"]), dtype=torch.float32)
             done = torch.tensor(float(clip[-1]["done"]), dtype=torch.float32)
+            progress = None
+            if self.target_mode == "progress":
+                progress = torch.tensor(
+                    float(clip[-1].get("progress", 0.0)), dtype=torch.float32
+                )
 
             # Calculate discounted return (n-step, capped by max_return_horizon)
-            horizon = len(clip)
-            if hasattr(self, "_max_return_horizon") and self._max_return_horizon > 0:
-                horizon = min(horizon, self._max_return_horizon)
-            returns = 0.0
-            for frame in reversed(clip[:horizon]):
-                returns = (
-                    float(frame["reward"])
-                    + self.gamma * (1.0 - float(frame["done"])) * returns
-                )
-            returns = torch.tensor(returns, dtype=torch.float32)
+            returns = None
+            if self.target_mode != "progress":
+                horizon = len(clip)
+                if hasattr(self, "_max_return_horizon") and self._max_return_horizon > 0:
+                    horizon = min(horizon, self._max_return_horizon)
+                returns = 0.0
+                for frame in reversed(clip[:horizon]):
+                    returns = (
+                        float(frame["reward"])
+                        + self.gamma * (1.0 - float(frame["done"])) * returns
+                    )
+                returns = torch.tensor(returns, dtype=torch.float32)
 
             out = {
                 "robot_obs": robot_obs,
                 "adj": adj,
                 "reward": reward.view(1),
-                "returns": returns.view(1),
                 "done": done.view(1),
             }
+            if returns is not None:
+                out["returns"] = returns.view(1)
+            if progress is not None:
+                out["progress"] = progress.view(1)
             out["inputs"] = inputs
             if next_clip is not None:
                 out["next_inputs"] = next_inputs
@@ -1262,6 +1341,8 @@ class SequenceWebDataset(IterableDataset):
                 rw = self.resize_width if self.resize_width > 0 else tw
                 if (iw, ih) != (rw, th):
                     image = image.resize((rw, th), Image.LANCZOS)
+
+            progress = None
 
             # Apply RWARE topdown to the PREVIOUS buffer frame
             # (rware step N shows same scene as overhead step N-1)
@@ -1677,6 +1758,7 @@ class SequenceWebDataset(IterableDataset):
                     reward = float(
                         np.mean([ag.get("reward", 0.0) for ag in agents]) if agents else 0.0
                     )
+                progress = _progress_target_from_sample(sample, state_json)
 
                 episode_meta = state_json.get("episode_meta", {})
                 agents = state_json.get("agents", [])
@@ -1731,13 +1813,13 @@ class SequenceWebDataset(IterableDataset):
 
                 if self.text_prompt_template is None:
                     header = (
-                        "You are an expert vision language critic model for multi-agent teams able to critize given trajectories of data for their n-step returns, thus critizing the policy. "
+                        "You are an expert vision language critic model for multi-agent teams able to critique task progress for a multi-agent policy. "
                         f"This is a real indoor TurtleBot3 lab environment with {n_ag} agents observed from a bird's-eye webcam view. "
                         "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
                         "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
-                        "The reward is the mean progress toward the assigned goals, plus +5 when an agent reaches its goal for the first time, and -1 if any pair of agents comes within 0.25m. "
+                        "The target is bounded task progress from 0 to 1: agents should reach their assigned goals while avoiding collisions and unsafe spacing. "
                         "Traversability information is unavailable in this environment. "
-                        "Predict the expected infinite horizon return of the current policy based on these observations: "
+                        "Predict the current normalized task progress of the policy based on these observations: "
                         f"Timestep: {step_idx}. Episode outcome token: {outcome}. "
                         f"Termination reason: {termination_reason or 'none'}. "
                     )
@@ -1775,6 +1857,7 @@ class SequenceWebDataset(IterableDataset):
                     "text": text,
                     "reward": reward,
                     "done": done,
+                    "progress": progress,
                 }
             )
             episode_frame_count += 1
@@ -1843,10 +1926,11 @@ def webdataset_loader(
         dataset_type=dataset_type,
         rware_config=args.rware_config,
         return_mode=args.return_mode,
+        target_mode=getattr(args, "target_mode", "return"),
         n_step=args.n_step,
         gamma=args.gamma,
         keep_raw_video=False,
-        include_next=True,  # Always bootstrap with nstep returns
+        include_next=getattr(args, "target_mode", "return") != "progress",
         vlm_max_text_len=args.vl_max_text_len,
         vlm_truncation=True,
         vlm_padding="max_length",
@@ -1895,6 +1979,8 @@ def webdataset_loader(
             out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
         if "returns" in batch[0]:
             out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
+        if "progress" in batch[0]:
+            out["progress"] = torch.stack([b["progress"] for b in batch], dim=0).view(-1)
         return out
 
     loader_kwargs = dict(
@@ -2094,7 +2180,11 @@ def run_epoch(
         adj = batch["adj"].to(accelerator.device)
         reward = batch["reward"].to(accelerator.device)
         done = batch["done"].to(accelerator.device).float()
-        use_next = True  # Always bootstrap with nstep returns
+        progress_target = batch.get("progress")
+        if progress_target is not None:
+            progress_target = progress_target.to(accelerator.device)
+        target_mode = getattr(args, "target_mode", "return")
+        use_next = target_mode != "progress"
         if use_next:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
@@ -2130,10 +2220,19 @@ def run_epoch(
                     pred = model_out
                     vlm_feature = None
                     vlm_multidepth_features = None
+                pred = _apply_value_output_activation(pred, args)
 
                 if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
+                    if target_mode == "progress":
+                        if progress_target is None:
+                            raise RuntimeError(
+                                "target_mode=progress requires progress labels in the batch."
+                            )
+                        target = progress_target
+                        loss = F.mse_loss(pred.view(-1), target.view(-1))
+                        mse_loss = loss
                     # Calculate bootstrapped target
-                    if use_next:
+                    elif use_next:
                         with torch.no_grad():
                             # Swap in EMA weights for bootstrap
                             if target_model is not None:
@@ -2152,6 +2251,7 @@ def run_epoch(
                             )
                             if isinstance(next_pred, dict):
                                 next_pred = next_pred["value"]
+                            next_pred = _apply_value_output_activation(next_pred, args)
 
                             # Swap back online weights
                             if target_model is not None:
@@ -2174,7 +2274,9 @@ def run_epoch(
                         else:
                             target = reward
 
-                    if args.loss_type in ("contrastive", "contrastive_mse"):
+                    if target_mode == "progress":
+                        pass
+                    elif args.loss_type in ("contrastive", "contrastive_mse"):
                         value_contrastive_loss = _contrastive_pairwise_loss(
                             pred.view(-1),
                             target.view(-1),
@@ -2256,10 +2358,15 @@ def run_epoch(
                         "train/reward_mean": reward.detach().mean().item(),
                     }
 
-                    if args.loss_type in ("contrastive", "contrastive_mse"):
+                    if target_mode != "progress" and args.loss_type in (
+                        "contrastive",
+                        "contrastive_mse",
+                    ):
                         log_dict["train/contrastive_loss"] = contrastive_loss.item()
                         if mse_loss is not None:
                             log_dict["train/mse_loss"] = mse_loss.item()
+                    elif target_mode == "progress":
+                        log_dict["train/progress_mse_loss"] = mse_loss.item()
                     wandb.log(log_dict)
             except ImportError:
                 pass
@@ -2429,6 +2536,12 @@ def main():
     with accelerator.main_process_first():
         model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
+    if (
+        not args.resume_from
+        and getattr(args, "target_mode", "return") == "progress"
+        and getattr(args, "value_output_activation", "identity") == "sigmoid"
+    ):
+        _reset_value_head_for_progress(model, accelerator)
     if args.fsdp:
         if args.mixed_precision == "bf16":
             target_dtype = torch.bfloat16
@@ -2685,9 +2798,28 @@ def main():
         raw_model = accelerator.unwrap_model(model)
         raw_model.load_state_dict(ckpt["model"], strict=False)
         accelerator.print("  ✓ Model weights restored")
+        saved_target_mode = _ckpt_arg(ckpt, "target_mode", "return")
+        target_mode_changed = saved_target_mode != getattr(args, "target_mode", "return")
+        if (
+            target_mode_changed
+            and getattr(args, "target_mode", "return") == "progress"
+            and getattr(args, "value_output_activation", "identity") == "sigmoid"
+        ):
+            _reset_value_head_for_progress(raw_model, accelerator)
+        if target_mode_changed and target_model is not None:
+            target_model.clear()
+            for name, p in raw_model.named_parameters():
+                if p.requires_grad:
+                    target_model[name] = p.data.cpu().clone()
 
         # Restore optimizer state
-        if "optimizer" in ckpt:
+        if target_mode_changed:
+            accelerator.print(
+                "  • Target mode changed from "
+                f"{saved_target_mode!r} to {args.target_mode!r}; "
+                "starting optimizer, scheduler, EMA, and epoch count fresh."
+            )
+        elif "optimizer" in ckpt:
             try:
                 optimizer.load_state_dict(ckpt["optimizer"])
                 accelerator.print("  ✓ Optimizer state restored")
@@ -2695,7 +2827,7 @@ def main():
                 accelerator.print(f"  ⚠ Could not restore optimizer state: {e}")
 
         # Restore scheduler state
-        if "scheduler" in ckpt:
+        if not target_mode_changed and "scheduler" in ckpt:
             try:
                 scheduler.load_state_dict(ckpt["scheduler"])
                 accelerator.print("  ✓ Scheduler state restored")
@@ -2703,12 +2835,12 @@ def main():
                 accelerator.print(f"  ⚠ Could not restore scheduler state: {e}")
 
         # Restore EMA shadow
-        if "ema_shadow" in ckpt and target_model is not None:
+        if not target_mode_changed and "ema_shadow" in ckpt and target_model is not None:
             target_model.update(ckpt["ema_shadow"])
             accelerator.print("  ✓ EMA shadow restored")
 
         # Restore epoch
-        start_epoch = ckpt.get("epoch", 0)
+        start_epoch = 0 if target_mode_changed else ckpt.get("epoch", 0)
         accelerator.print(f"  ✓ Resuming from epoch {start_epoch + 1}")
 
         del ckpt  # free memory
