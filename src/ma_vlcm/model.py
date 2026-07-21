@@ -388,10 +388,10 @@ class MultimodalValueModel(nn.Module):
         # robot_feats = self.robot_enc(robot_obs)
 
         num_nodes = robot_obs.shape[2]
-        if num_nodes != self.cfg.num_robots:
+        if adj.shape[-2:] != (num_nodes, num_nodes):
             raise RuntimeError(
-                f"robot_obs has {num_nodes} nodes, but config expects {self.cfg.num_robots}. "
-                "Set --num_robots to match your dataset."
+                "adjacency shape does not match robot observations: "
+                f"robot_obs has {num_nodes} nodes but adj is {tuple(adj.shape[-2:])}."
             )
 
         # Use only the last-step robot obs and encode team structure with GNN.
@@ -401,7 +401,17 @@ class MultimodalValueModel(nn.Module):
         adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
         edge_index = self._adj_to_batched_edge_index(adj_last)
         robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
-        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
+        # A true diagonal entry marks a real node. Offline mixed-cardinality
+        # batches zero-pad both observations and adjacency, so exclude padded
+        # nodes from team pooling. Online environments can pass any N directly.
+        node_mask = torch.diagonal(adj_last, dim1=-2, dim2=-1).gt(0)
+        empty_graph = ~node_mask.any(dim=1)
+        if empty_graph.any():
+            node_mask = node_mask.clone()
+            node_mask[empty_graph] = True
+        node_weights = node_mask.to(robot_node_feats.dtype).unsqueeze(-1)
+        robot_team_feat = (robot_node_feats * node_weights).sum(dim=1)
+        robot_team_feat = robot_team_feat / node_weights.sum(dim=1).clamp(min=1.0)
 
         # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
@@ -475,6 +485,8 @@ class MultimodalValueModel(nn.Module):
             return {
                 "value": value,
                 "vlm_feature": pooled,
-                "vlm_multidepth_features": multidepth_features
+                "vlm_multidepth_features": multidepth_features,
+                "robot_team_feature": robot_team_feat,
+                "value_features": value_head_input,
             }
         return value

@@ -59,12 +59,10 @@ case "${DATASET_PROFILE,,}" in
     tb3_lab|lab|real)
         DATASET_PROFILE="tb3_lab"
         DEFAULT_HF_DATASET_REPO="adi2440/tb3-lab-vlcm-progress-v1"
-        DEFAULT_NUM_ROBOTS=3
         ;;
     tb3_isaac|isaac|isaac_sim|sim)
         DATASET_PROFILE="tb3_isaac"
         DEFAULT_HF_DATASET_REPO="adi2440/tb3-isaac-vlcm"
-        DEFAULT_NUM_ROBOTS=6
         ;;
     *)
         echo "ERROR: DATASET_PROFILE must be tb3_lab or tb3_isaac (got: $DATASET_PROFILE)"
@@ -77,7 +75,6 @@ HF_DATASET_REPO="${HF_DATASET_REPO:-$DEFAULT_HF_DATASET_REPO}"
 # MA-VLCM loader downloads and recursively expands this Hugging Face pattern.
 DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/**/*.tar}"
 DATA_DIR="${1:-${DATA_DIR:-$DEFAULT_TB3_DATA}}"
-NUM_ROBOTS="${NUM_ROBOTS:-$DEFAULT_NUM_ROBOTS}"
 
 DEFAULT_RESUME_CANDIDATES=(
     "/scratch/aparame/VLCM_Data_Collection/checkpoints/NewFinal_0.5B.pt"
@@ -142,7 +139,6 @@ TRAIN_CMD=(
   --batch_size 4
   --grad_accum_steps 4
   --clip_len 16
-  --num_robots "$NUM_ROBOTS"
   --robot_obs_dim 8
   --epochs "$TOTAL_EPOCHS"
   --vl_backend llava_onevision
@@ -179,7 +175,7 @@ fi
 
 echo "Using TurtleBot dataset: $DATA_DIR"
 echo "Dataset profile: $DATASET_PROFILE"
-echo "Model robot slots: $NUM_ROBOTS"
+echo "Robot cardinality: inferred per episode (minibatches are padded dynamically)"
 echo "Scratch root: $SCRATCH_ROOT"
 echo "Hugging Face cache: $HF_HOME"
 echo "Torch cache: $TORCH_HOME"

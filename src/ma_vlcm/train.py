@@ -364,7 +364,16 @@ def parse_args():
     p.add_argument("--video_std", type=float, nargs=3, default=(0.5, 0.5, 0.5))
 
     # Robots / graph
-    p.add_argument("--num_robots", type=int, default=2)
+    p.add_argument(
+        "--num_robots",
+        type=int,
+        default=2,
+        help=(
+            "Legacy fixed-cardinality hint for non-TurtleBot datasets. "
+            "TurtleBot batches infer N per episode and pad only to the "
+            "largest N in that minibatch."
+        ),
+    )
     p.add_argument("--robot_obs_dim", type=int, default=6)
 
     # Text
@@ -525,6 +534,8 @@ def _apply_peft(model, args):
         base = model.backbone.model
         vt = None
         for attr_path in [
+            ("base_model", "model", "model", "vision_tower"),
+            ("model", "model", "model", "vision_tower"),
             ("model", "model", "vision_tower"),
             ("base_model", "model", "vision_tower"),
             ("model", "vision_tower"),
@@ -570,6 +581,8 @@ def _apply_peft(model, args):
                     vt = get_peft_model(vt, vision_lora_cfg)
                     # Replace the vision tower in the model
                     for attr_path in [
+                        ("base_model", "model", "model"),
+                        ("model", "model", "model"),
                         ("model", "model"),
                         ("base_model", "model"),
                         ("model",),
@@ -1731,7 +1744,11 @@ class SequenceWebDataset(IterableDataset):
                         adj = adj.numpy()
                     adj = torch.tensor(adj, dtype=torch.float32)
                 else:
-                    n = self.max_num_robots if self.max_num_robots is not None else self.num_robots
+                    n = (
+                        self.max_num_robots
+                        if self.max_num_robots is not None
+                        else len(state_json.get("agents", []))
+                    )
                     adj = torch.eye(n, dtype=torch.float32)
 
                 if (
@@ -1781,7 +1798,10 @@ class SequenceWebDataset(IterableDataset):
                 )
 
                 obs_lines = []
-                for ag in agents[: self.num_robots]:
+                visible_agents = (
+                    agents if self.num_robots is None else agents[: self.num_robots]
+                )
+                for ag in visible_agents:
                     ag_id = ag.get("id", 0)
                     color = ag.get("color", "unknown")
                     pos = ag.get("pos", [0.0, 0.0])
@@ -1908,6 +1928,10 @@ def webdataset_loader(
     # vlm_processor is now lazily loaded in the dataset worker to avoid pickling issues
     # and ensure robustness.
 
+    # The physical and Isaac TurtleBot collectors share dataset_type=tb3_lab.
+    # Keep each episode's native cardinality; collation below pads only within
+    # a minibatch, with zero adjacency diagonals marking non-existent nodes.
+    dynamic_team_size = dataset_type == "tb3_lab"
     dataset = SequenceWebDataset(
         shards=shards,
         clip_len=args.clip_len,
@@ -1919,8 +1943,8 @@ def webdataset_loader(
         vlm_processor=None,
         vl_model_name=args.vl_model_name if args.preprocess_in_loader else None,
         robot_obs_dim=args.robot_obs_dim,
-        num_robots=args.num_robots,
-        max_num_robots=args.num_robots,
+        num_robots=None if dynamic_team_size else args.num_robots,
+        max_num_robots=None if dynamic_team_size else args.num_robots,
         shuffle_shards=shuffle,
         text_prompt_template=args.text_prompt_template,
         dataset_type=dataset_type,
@@ -1942,6 +1966,19 @@ def webdataset_loader(
     )
 
     def _collate(batch):
+        def _pad_graph_batch(items, *, adjacency=False):
+            max_nodes = max(int(item.shape[-1 if adjacency else -2]) for item in items)
+            padded = []
+            for item in items:
+                nodes = int(item.shape[-1 if adjacency else -2])
+                pad_nodes = max_nodes - nodes
+                if adjacency:
+                    item = F.pad(item, (0, pad_nodes, 0, pad_nodes))
+                else:
+                    item = F.pad(item, (0, 0, 0, pad_nodes))
+                padded.append(item)
+            return torch.stack(padded, dim=0)
+
         def _stack_inputs(items):
             out = {}
             if not items:
@@ -1966,17 +2003,19 @@ def webdataset_loader(
 
         out = {
             "inputs": _stack_inputs([b["inputs"] for b in batch]),
-            "robot_obs": torch.stack([b["robot_obs"] for b in batch], dim=0),
-            "adj": torch.stack([b["adj"] for b in batch], dim=0),
+            "robot_obs": _pad_graph_batch([b["robot_obs"] for b in batch]),
+            "adj": _pad_graph_batch([b["adj"] for b in batch], adjacency=True),
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
         if "next_inputs" in batch[0]:
             out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
-            out["next_robot_obs"] = torch.stack(
-                [b["next_robot_obs"] for b in batch], dim=0
+            out["next_robot_obs"] = _pad_graph_batch(
+                [b["next_robot_obs"] for b in batch]
             )
-            out["next_adj"] = torch.stack([b["next_adj"] for b in batch], dim=0)
+            out["next_adj"] = _pad_graph_batch(
+                [b["next_adj"] for b in batch], adjacency=True
+            )
         if "returns" in batch[0]:
             out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
         if "progress" in batch[0]:

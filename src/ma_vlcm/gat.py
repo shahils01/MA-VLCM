@@ -102,16 +102,18 @@ class GNN_Model(MessagePassing):
 
     def hid_feat_init(self, x):
         # x shape: (batch_size, num_agents, in_channels)
+        batch_size, num_nodes = x.shape[:2]
         x = self.dropout(x)
         x = self.agent_encoder(x)  # (batch_size, num_agents, hid_channels_)
 
         # Reshape to (batch_size, num_agents, heads, hid_channels)
-        x = x.view(-1, self.num_nodes, self.heads, self.hid_channels)
+        x = x.view(batch_size, num_nodes, self.heads, self.hid_channels)
         return x
 
     def aero_propagate(self, h, edge_index):
         # h shape: (batch_size, num_agents, heads, hid_channels)
         batch_size = h.size(0)
+        num_nodes = h.size(1)
         self.k = 0
 
         # Create batch-aware edge index
@@ -149,7 +151,7 @@ class GNN_Model(MessagePassing):
             out = scatter_add(messages, row, dim=0, out=out)
 
             # Reshape back
-            h = out.view(batch_size, self.num_nodes, self.heads, self.hid_channels)
+            h = out.view(batch_size, num_nodes, self.heads, self.hid_channels)
 
             # Update z and z_scale
             z += h
