@@ -101,6 +101,54 @@ sbatch scripts/lora_submit_train_tb3_isaac.sh
 Both jobs request one H100, 32 CPU cores, 128 GB RAM, and 48 hours by default.
 Edit the `#SBATCH` header if the cluster uses different resource names.
 
+## Backbone Options
+
+The TurtleBot training path supports three backbone profiles:
+
+| Profile | Default model | Modalities used by the critic | Training script |
+| --- | --- | --- | --- |
+| `llava_onevision` | `llava-hf/llava-onevision-qwen2-0.5b-ov-hf` | video + prompt + robot graph | `lora_run_train_tb3_lab.sh` |
+| `qwen3_vl` | `Qwen/Qwen3-VL-2B-Instruct` | video + prompt + robot graph | `lora_run_train_tb3_qwen3_vl.sh` |
+| `vjepa2` | `facebook/vjepa2-vitl-fpc64-256` | video + robot graph | `lora_run_train_tb3_vjepa2.sh` |
+
+Qwen3-VL is the larger vision-language comparison. V-JEPA2 is the visual
+representation baseline: it intentionally does not consume the language
+prompt, and its pooled video tokens are fused directly with the shared GNN team
+feature. All three profiles predict the same bounded progress target and remain
+independent of the number of robots.
+
+Run Qwen3-VL on the physical dataset:
+
+```bash
+bash scripts/lora_run_train_tb3_qwen3_vl.sh
+```
+
+Run V-JEPA2 on the Isaac Sim dataset:
+
+```bash
+DATASET_PROFILE=tb3_isaac bash scripts/lora_run_train_tb3_vjepa2.sh
+```
+
+The corresponding Slurm launchers default to the Isaac Sim dataset:
+
+```bash
+mkdir -p logs
+sbatch scripts/lora_submit_train_tb3_qwen3_vl.sh
+sbatch scripts/lora_submit_train_tb3_vjepa2.sh
+```
+
+Select the physical dataset for either Slurm launcher with, for example:
+
+```bash
+DATASET_PROFILE=tb3_lab sbatch scripts/lora_submit_train_tb3_qwen3_vl.sh
+```
+
+Qwen3-VL defaults to batch size 1 with 16 accumulation steps. V-JEPA2 defaults
+to batch size 2 with 8 accumulation steps. Override these with `BATCH_SIZE`,
+`GRAD_ACCUM_STEPS`, or `CLIP_LEN`. New Qwen3-VL and V-JEPA2 runs start from
+their Hugging Face backbone weights; a LLaVA MA-VLCM checkpoint is not a valid
+resume checkpoint for either architecture.
+
 ## Common Overrides
 
 Use a different Hugging Face repository:
@@ -151,10 +199,16 @@ Useful variables:
 | `MA_VLCM_SCRATCH_ROOT` | Root for caches, temporary files, W&B, and checkpoints |
 | `NUM_PROCESSES` | Number of Accelerate processes |
 | `MIXED_PRECISION` | Usually `bf16`, `fp16`, or `no` |
+| `BACKBONE_PROFILE` | `llava_onevision`, `qwen3_vl`, or `vjepa2` |
+| `VL_MODEL_NAME` | Override the Hugging Face model within a profile |
+| `BATCH_SIZE` | Per-process minibatch size |
+| `GRAD_ACCUM_STEPS` | Optimizer gradient accumulation steps |
+| `CLIP_LEN` | Frames supplied to the video backbone |
+| `PEFT_MODE` | `lora` (default), `qlora` for supported VLMs, or `none` |
 
 ## Training Behavior
 
-The TurtleBot launcher uses:
+The default TurtleBot launcher uses:
 
 - LLaVA-OneVision Qwen2 0.5B
 - 16-frame clips

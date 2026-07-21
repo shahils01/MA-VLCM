@@ -56,8 +56,8 @@ class ModelConfig:
     contrastive_depth_offsets: tuple = (0,)
 
 
-class LLaVAVideoBackbone(nn.Module):
-    """Backbone wrapper for LLaVA-style video models using HF interfaces."""
+class VisionLanguageBackbone(nn.Module):
+    """Backbone wrapper for the supported Hugging Face video VLMs."""
 
     def __init__(self, cfg: ModelConfig, device: torch.device):
         super().__init__()
@@ -75,7 +75,6 @@ class LLaVAVideoBackbone(nn.Module):
             from transformers import (
                 AutoProcessor,
                 AutoTokenizer,
-                AutoModelForCausalLM,
                 LlavaNextVideoProcessor,
             )
             try:
@@ -108,10 +107,20 @@ class LLaVAVideoBackbone(nn.Module):
                 AutoModelForVision2Seq = None
         except Exception as e:
             raise ImportError(
-                "LLaVA-Video backend requires transformers installed."
+                "The selected vision-language backend requires Transformers."
             ) from e
 
-        if cfg.vl_backend == "llava_onevision":
+        if cfg.vl_backend == "qwen3_vl":
+            try:
+                from transformers import Qwen3VLForConditionalGeneration
+            except ImportError as exc:
+                raise ImportError(
+                    "qwen3_vl requires a Transformers version containing "
+                    "Qwen3VLForConditionalGeneration. Install the repository's "
+                    "git-based Transformers requirement."
+                ) from exc
+            self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
+        elif cfg.vl_backend == "llava_onevision":
             if LlavaOnevisionProcessor is None:
                 raise ImportError("LlavaOnevisionProcessor not available in your transformers version.")
             self.processor = LlavaOnevisionProcessor.from_pretrained(cfg.vl_model_name)
@@ -132,7 +141,11 @@ class LLaVAVideoBackbone(nn.Module):
         # This is safe because each process has its own GPU (accelerator.device)
         model_kwargs["device_map"] = {"": device}
 
-        if cfg.vl_backend == "llava_onevision":
+        if cfg.vl_backend == "qwen3_vl":
+            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+                cfg.vl_model_name, **model_kwargs
+            )
+        elif cfg.vl_backend == "llava_onevision":
             if LlavaOnevisionForConditionalGeneration is None:
                 raise ImportError("LlavaOnevisionForConditionalGeneration not available.")
             self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
@@ -155,7 +168,7 @@ class LLaVAVideoBackbone(nn.Module):
                 p.requires_grad = False
             # Optionally unfreeze the vision tower for fine-tuning
             if not cfg.freeze_vision_tower:
-                vision_tower = getattr(self.model, "vision_tower", None)
+                vision_tower = self.get_vision_tower()
                 if vision_tower is not None:
                     for p in vision_tower.parameters():
                         p.requires_grad = True
@@ -164,6 +177,31 @@ class LLaVAVideoBackbone(nn.Module):
                     print("[ModelConfig] WARNING: Could not find vision_tower attribute; all VL params remain frozen.")
 
         self._dtype = dtype
+
+    def get_vision_tower(self):
+        """Return the visual encoder for optimizer grouping and visual LoRA."""
+        for path in (
+            ("base_model", "model", "model", "vision_tower"),
+            ("base_model", "model", "model", "visual"),
+            ("model", "model", "model", "vision_tower"),
+            ("model", "model", "model", "visual"),
+            ("base_model", "model", "vision_tower"),
+            ("base_model", "model", "visual"),
+            ("model", "model", "vision_tower"),
+            ("model", "model", "visual"),
+            ("model", "vision_tower"),
+            ("model", "visual"),
+            ("vision_tower",),
+            ("visual",),
+        ):
+            module = self.model
+            for attr in path:
+                module = getattr(module, attr, None)
+                if module is None:
+                    break
+            if module is not None:
+                return module
+        return None
 
     def get_input_embeddings(self):
         if hasattr(self.model, "get_input_embeddings"):
@@ -176,7 +214,7 @@ class LLaVAVideoBackbone(nn.Module):
             self.model.model, "get_input_embeddings"
         ):
             return self.model.model.get_input_embeddings()
-        raise AttributeError("Could not access input embeddings on LLaVA backbone.")
+        raise AttributeError("Could not access input embeddings on the VLM backbone.")
 
     def _move_inputs_to_device(self, inputs):
         moved = {}
@@ -212,6 +250,55 @@ class LLaVAVideoBackbone(nn.Module):
             max_length=max_length,
         )
         return self._move_inputs_to_device(inputs)
+
+
+class VJEPA2VideoBackbone(nn.Module):
+    """Video-only V-JEPA2 encoder used as a compact critic representation."""
+
+    def __init__(self, cfg: ModelConfig, device: torch.device):
+        super().__init__()
+        self.cfg = cfg
+        self.device = device
+        if cfg.vl_dtype == "float16":
+            dtype = torch.float16
+        elif cfg.vl_dtype == "float32":
+            dtype = torch.float32
+        else:
+            dtype = torch.bfloat16
+
+        try:
+            from transformers import AutoVideoProcessor, VJEPA2Model
+        except ImportError as exc:
+            raise ImportError(
+                "vjepa2 requires a Transformers version containing VJEPA2Model "
+                "and AutoVideoProcessor."
+            ) from exc
+
+        self.processor = AutoVideoProcessor.from_pretrained(cfg.vl_model_name)
+        model_kwargs = {"torch_dtype": dtype, "device_map": {"": device}}
+        self.model = VJEPA2Model.from_pretrained(cfg.vl_model_name, **model_kwargs)
+        self.hidden_size = int(self.model.config.hidden_size)
+        self.tokenizer = None
+        self._dtype = dtype
+
+        if cfg.freeze_vl or cfg.freeze_vision_tower:
+            for parameter in self.model.parameters():
+                parameter.requires_grad = False
+
+    def get_vision_tower(self):
+        return self.model
+
+    def _move_inputs_to_device(self, inputs):
+        moved = {}
+        for key, value in inputs.items():
+            if torch.is_tensor(value):
+                if key == "pixel_values_videos":
+                    moved[key] = value.to(self.device, dtype=self._dtype)
+                else:
+                    moved[key] = value.to(self.device)
+            else:
+                moved[key] = value
+        return moved
 
 
 class TemporalTransformer(nn.Module):
@@ -304,9 +391,14 @@ class MultimodalValueModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.debug_save_video = cfg.debug_save_video
-        self.backbone = LLaVAVideoBackbone(cfg, device=device)
-        lm_hidden = self.backbone.get_input_embeddings().embedding_dim
-        self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
+        self.visual_only = cfg.vl_backend == "vjepa2"
+        if self.visual_only:
+            self.backbone = VJEPA2VideoBackbone(cfg, device=device)
+            lm_hidden = self.backbone.hidden_size
+        else:
+            self.backbone = VisionLanguageBackbone(cfg, device=device)
+            lm_hidden = self.backbone.get_input_embeddings().embedding_dim
+            self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
 
         try:
             from .gat import GNN_Model
@@ -413,7 +505,49 @@ class MultimodalValueModel(nn.Module):
         robot_team_feat = (robot_node_feats * node_weights).sum(dim=1)
         robot_team_feat = robot_team_feat / node_weights.sum(dim=1).clamp(min=1.0)
 
-        # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
+        if self.visual_only:
+            inputs = self.backbone._move_inputs_to_device(inputs)
+            output = self.backbone.model(
+                **inputs,
+                skip_predictor=True,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            final_hidden = output.last_hidden_state
+            pooled = final_hidden.mean(dim=1)
+            pooled = pooled.to(
+                dtype=self.value_head.weight.dtype,
+                device=self.value_head.weight.device,
+            )
+
+            multidepth_features = None
+            if return_features and self.cfg.contrastive_multidepth:
+                multidepth_features = []
+                hidden_states = output.hidden_states or ()
+                for offset in self.cfg.contrastive_depth_offsets:
+                    idx = -(1 + offset)
+                    if abs(idx) <= len(hidden_states):
+                        feature = hidden_states[idx].mean(dim=1)
+                        multidepth_features.append(
+                            feature.to(
+                                dtype=self.value_head.weight.dtype,
+                                device=self.value_head.weight.device,
+                            )
+                        )
+
+            value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
+            value = self.value_head(value_head_input).squeeze(-1)
+            if return_features:
+                return {
+                    "value": value,
+                    "vlm_feature": pooled,
+                    "vlm_multidepth_features": multidepth_features,
+                    "robot_team_feature": robot_team_feat,
+                    "value_features": value_head_input,
+                }
+            return value
+
+        # Manual VLM forward: inject robot embeddings at <obs> token positions.
         inputs = self.backbone._move_inputs_to_device(inputs)
         input_ids = inputs["input_ids"].clone()
         attn_mask = inputs.get("attention_mask")

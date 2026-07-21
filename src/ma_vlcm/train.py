@@ -319,7 +319,14 @@ def parse_args():
         "--vl_backend",
         type=str,
         default="llava_video",
-        choices=["deepseek_vl", "deepseek_vl2", "llava_video", "llava_onevision"],
+        choices=[
+            "deepseek_vl",
+            "deepseek_vl2",
+            "llava_video",
+            "llava_onevision",
+            "qwen3_vl",
+            "vjepa2",
+        ],
     )
     p.add_argument(
         "--vl_model_name", type=str, default="llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
@@ -503,12 +510,42 @@ def _apply_peft(model, args):
     for p in model.backbone.model.parameters():
         p.requires_grad = False
 
-    # Enable gradient checkpointing for ALL PEFT modes (saves ~30-40% activation memory)
+    # Checkpoint transformer activations for both VLM and video-only LoRA runs.
     if hasattr(model.backbone.model, "gradient_checkpointing_enable"):
         model.backbone.model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
         print("[PEFT] Gradient checkpointing ENABLED")
+
+    if args.vl_backend == "vjepa2":
+        if args.peft == "qlora":
+            raise RuntimeError(
+                "QLoRA is not supported for the V-JEPA2 encoder. Use LoRA or "
+                "set --peft none for a frozen/full-finetune run."
+            )
+        targets = (
+            _parse_lora_targets(args)
+            if args.lora_target_modules
+            else ["query", "key", "value"]
+        )
+        lora_cfg = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias=args.lora_bias,
+            target_modules=targets,
+        )
+        model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
+        trainable = sum(
+            parameter.numel()
+            for parameter in model.backbone.model.parameters()
+            if parameter.requires_grad
+        )
+        print(
+            f"[PEFT] V-JEPA2 visual LoRA applied: {trainable:,} trainable "
+            f"parameters, targets={targets}"
+        )
+        return model
 
     if args.peft == "qlora":
         model.backbone.model = prepare_model_for_kbit_training(
@@ -535,11 +572,17 @@ def _apply_peft(model, args):
         vt = None
         for attr_path in [
             ("base_model", "model", "model", "vision_tower"),
+            ("base_model", "model", "model", "visual"),
             ("model", "model", "model", "vision_tower"),
+            ("model", "model", "model", "visual"),
             ("model", "model", "vision_tower"),
+            ("model", "model", "visual"),
             ("base_model", "model", "vision_tower"),
+            ("base_model", "model", "visual"),
             ("model", "vision_tower"),
+            ("model", "visual"),
             ("vision_tower",),
+            ("visual",),
         ]:
             candidate = base
             for attr in attr_path:
@@ -592,9 +635,13 @@ def _apply_peft(model, args):
                             parent = getattr(parent, attr, None)
                             if parent is None:
                                 break
-                        if parent is not None and hasattr(parent, "vision_tower"):
-                            parent.vision_tower = vt
-                            break
+                        if parent is not None:
+                            if hasattr(parent, "vision_tower"):
+                                parent.vision_tower = vt
+                                break
+                            if hasattr(parent, "visual"):
+                                parent.visual = vt
+                                break
 
                     trainable = sum(
                         p.numel() for p in vt.parameters() if p.requires_grad
@@ -1096,7 +1143,30 @@ class SequenceWebDataset(IterableDataset):
             raise RuntimeError("webdataset is not installed.")
 
         if self.vlm_processor is None and self.vl_model_name is not None:
-            if (
+            if self.vl_backend == "vjepa2":
+                from transformers import AutoVideoProcessor
+
+                try:
+                    self.vlm_processor = AutoVideoProcessor.from_pretrained(
+                        self.vl_model_name
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to load V-JEPA2 video processor: {e}")
+            elif self.vl_backend == "qwen3_vl":
+                from transformers import AutoProcessor
+
+                try:
+                    self.vlm_processor = AutoProcessor.from_pretrained(
+                        self.vl_model_name
+                    )
+                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                    if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
+                        tokenizer.add_special_tokens(
+                            {"additional_special_tokens": ["<obs>"]}
+                        )
+                except Exception as e:
+                    print(f"Warning: Failed to load Qwen3-VL processor: {e}")
+            elif (
                 self.vl_backend == "llava_onevision"
                 or "llava-onevision" in self.vl_model_name.lower()
             ):
@@ -1193,36 +1263,72 @@ class SequenceWebDataset(IterableDataset):
                         text = self.text_prompt_template
                     if text is None:
                         text = ""
-                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                    if tokenizer is not None:
-                        vocab = tokenizer.get_vocab()
-                        if (
-                            "<video>" in vocab
-                            and "<video>" not in text
-                            and "<image>" not in text
-                        ):
-                            text = f"<video>\n{text}"
-                        if "<obs>" in vocab and "<obs>" not in text:
-                            if "<video>" in text:
-                                text = text.replace("<video>\n", "<video><obs>\n", 1)
-                            else:
-                                text = f"<obs>\n{text}"
-                    try:
-                        max_len = self.vlm_max_text_len
+                    max_len = self.vlm_max_text_len
+
+                    if self.vl_backend == "vjepa2":
                         inputs = self.vlm_processor(
-                            text=text,
                             videos=frames,
+                            return_tensors="pt",
+                        )
+                    elif self.vl_backend == "qwen3_vl":
+                        if "<obs>" not in text:
+                            text = f"<obs>\n{text}"
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "video", "video": frames},
+                                    {"type": "text", "text": text},
+                                ],
+                            }
+                        ]
+                        inputs = self.vlm_processor.apply_chat_template(
+                            messages,
+                            tokenize=True,
+                            add_generation_prompt=False,
+                            return_dict=True,
                             return_tensors="pt",
                             padding=self.vlm_padding,
                             truncation=self.vlm_truncation,
                             max_length=max_len,
+                            # Clips are already sampled by the dataset. Qwen's
+                            # default 2-FPS sampler would otherwise discard most
+                            # of a short trajectory when metadata is unavailable.
+                            do_sample_frames=False,
                         )
-                    except TypeError:
-                        print("using image processor instead of video processor")
-                        inputs = self.vlm_processor(
-                            images=frames,
-                            return_tensors="pt",
-                        )
+                        inputs.pop("token_type_ids", None)
+                    else:
+                        tokenizer = getattr(self.vlm_processor, "tokenizer", None)
+                        if tokenizer is not None:
+                            vocab = tokenizer.get_vocab()
+                            if (
+                                "<video>" in vocab
+                                and "<video>" not in text
+                                and "<image>" not in text
+                            ):
+                                text = f"<video>\n{text}"
+                            if "<obs>" in vocab and "<obs>" not in text:
+                                if "<video>" in text:
+                                    text = text.replace(
+                                        "<video>\n", "<video><obs>\n", 1
+                                    )
+                                else:
+                                    text = f"<obs>\n{text}"
+                        try:
+                            inputs = self.vlm_processor(
+                                text=text,
+                                videos=frames,
+                                return_tensors="pt",
+                                padding=self.vlm_padding,
+                                truncation=self.vlm_truncation,
+                                max_length=max_len,
+                            )
+                        except TypeError:
+                            print("using image processor instead of video processor")
+                            inputs = self.vlm_processor(
+                                images=frames,
+                                return_tensors="pt",
+                            )
                     packed = {}
                     for k, v in dict(inputs).items():
                         if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
@@ -1956,8 +2062,10 @@ def webdataset_loader(
         keep_raw_video=False,
         include_next=getattr(args, "target_mode", "return") != "progress",
         vlm_max_text_len=args.vl_max_text_len,
-        vlm_truncation=True,
-        vlm_padding="max_length",
+        # Truncating a Qwen3-VL prompt can remove visual placeholder tokens and
+        # make the token/video feature counts disagree inside the model.
+        vlm_truncation=args.vl_backend != "qwen3_vl",
+        vlm_padding="longest" if args.vl_backend == "qwen3_vl" else "max_length",
         resize_width=args.resize_width,
         resize_height=args.resize_height,
         vl_backend=args.vl_backend,
@@ -1987,10 +2095,18 @@ def webdataset_loader(
             for k in keys:
                 vals = [d[k] for d in items]
                 if torch.is_tensor(vals[0]):
-                    if k in ["input_ids", "attention_mask"]:
+                    if k in ["input_ids", "attention_mask", "mm_token_type_ids"]:
                         out[k] = torch.nn.utils.rnn.pad_sequence(
                             vals, batch_first=True, padding_value=0
                         )
+                    elif (
+                        args.vl_backend == "qwen3_vl"
+                        and k in ["pixel_values", "pixel_values_videos"]
+                    ):
+                        # Qwen flattens visual patches from every video along
+                        # dimension 0; video_grid_thw preserves the per-video
+                        # boundaries for the multimodal model.
+                        out[k] = torch.cat(vals, dim=0)
                     elif k == "labels":
                         out[k] = torch.nn.utils.rnn.pad_sequence(
                             vals, batch_first=True, padding_value=-100
@@ -2601,11 +2717,10 @@ def main():
         model = torch.compile(model)
 
     # ── Build param groups: separate LR for vision tower ──
-    vision_tower = getattr(model, "backbone", None)
-    if vision_tower is not None:
-        vision_tower = getattr(vision_tower, "model", None)
-    if vision_tower is not None:
-        vision_tower = getattr(vision_tower, "vision_tower", None)
+    backbone = getattr(model, "backbone", None)
+    vision_tower = None
+    if backbone is not None and hasattr(backbone, "get_vision_tower"):
+        vision_tower = backbone.get_vision_tower()
 
     if vision_tower is not None:
         vision_tower_ids = {id(p) for p in vision_tower.parameters() if p.requires_grad}
