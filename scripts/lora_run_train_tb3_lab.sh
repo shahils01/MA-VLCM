@@ -54,9 +54,30 @@ mkdir -p \
     "$TMPDIR" \
     "$APPTAINER_TMPDIR"
 
-HF_DATASET_REPO="${HF_DATASET_REPO:-adi2440/tb3-lab-vlcm-progress-v1}"
-DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/*.tar}"
+DATASET_PROFILE="${DATASET_PROFILE:-tb3_lab}"
+case "${DATASET_PROFILE,,}" in
+    tb3_lab|lab|real)
+        DATASET_PROFILE="tb3_lab"
+        DEFAULT_HF_DATASET_REPO="adi2440/tb3-lab-vlcm-progress-v1"
+        DEFAULT_NUM_ROBOTS=3
+        ;;
+    tb3_isaac|isaac|isaac_sim|sim)
+        DATASET_PROFILE="tb3_isaac"
+        DEFAULT_HF_DATASET_REPO="adi2440/tb3-isaac-vlcm"
+        DEFAULT_NUM_ROBOTS=6
+        ;;
+    *)
+        echo "ERROR: DATASET_PROFILE must be tb3_lab or tb3_isaac (got: $DATASET_PROFILE)"
+        exit 2
+        ;;
+esac
+
+HF_DATASET_REPO="${HF_DATASET_REPO:-$DEFAULT_HF_DATASET_REPO}"
+# Both collectors may keep shards in nested agents_XX/worker_XX folders. The
+# MA-VLCM loader downloads and recursively expands this Hugging Face pattern.
+DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/**/*.tar}"
 DATA_DIR="${1:-${DATA_DIR:-$DEFAULT_TB3_DATA}}"
+NUM_ROBOTS="${NUM_ROBOTS:-$DEFAULT_NUM_ROBOTS}"
 
 DEFAULT_RESUME_CANDIDATES=(
     "/scratch/aparame/VLCM_Data_Collection/checkpoints/NewFinal_0.5B.pt"
@@ -84,23 +105,23 @@ case "${RESUME_CHECKPOINT,,}" in
         RESUME_CHECKPOINT=""
         ;;
 esac
-SAVE_DIR="${SAVE_DIR:-$SCRATCH_ROOT/checkpoints/tb3_lab}"
+SAVE_DIR="${SAVE_DIR:-$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE}"
 CONTAINER_PATH="${CONTAINER_PATH:-$REPO_ROOT/ma_vlcm.sif}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-${EPOCHS:-20}}"
 MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
-WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-turtlebot_0.5B}"
+WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-${DATASET_PROFILE}_0.5B}"
 
 case "$DATA_DIR" in
     hf://*|http://*|https://*|pipe:*)
-        echo "Using remote TB3 lab dataset: $DATA_DIR"
+        echo "Using remote TurtleBot dataset: $DATA_DIR"
         ;;
     *)
         if [ ! -d "$DATA_DIR" ] && [[ "$DATA_DIR" != *"*"* ]] && [[ "$DATA_DIR" != *"?"* ]]; then
-            echo "ERROR: TB3 lab dataset directory or shard pattern not found: $DATA_DIR"
+            echo "ERROR: TurtleBot dataset directory or shard pattern not found: $DATA_DIR"
             exit 1
         fi
-        echo "Using local TB3 lab dataset: $DATA_DIR"
+        echo "Using local TurtleBot dataset: $DATA_DIR"
         ;;
 esac
 
@@ -121,7 +142,7 @@ TRAIN_CMD=(
   --batch_size 4
   --grad_accum_steps 4
   --clip_len 16
-  --num_robots 3
+  --num_robots "$NUM_ROBOTS"
   --robot_obs_dim 8
   --epochs "$TOTAL_EPOCHS"
   --vl_backend llava_onevision
@@ -156,7 +177,9 @@ else
     echo "Training from scratch: no --resume_from checkpoint will be used."
 fi
 
-echo "Using TB3 lab dataset: $DATA_DIR"
+echo "Using TurtleBot dataset: $DATA_DIR"
+echo "Dataset profile: $DATASET_PROFILE"
+echo "Model robot slots: $NUM_ROBOTS"
 echo "Scratch root: $SCRATCH_ROOT"
 echo "Hugging Face cache: $HF_HOME"
 echo "Torch cache: $TORCH_HOME"

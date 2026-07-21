@@ -60,7 +60,7 @@ The current TurtleBot3 lab LoRA launcher expects progression-labeled WebDataset
 shards on Hugging Face by default:
 
 ```bash
-hf://datasets/adi2440/tb3-lab-vlcm-progress-v1/*.tar
+hf://datasets/adi2440/tb3-lab-vlcm-progress-v1/**/*.tar
 ```
 
 If you collected raw TB3 lab shards or already have the older reward-labeled
@@ -84,6 +84,25 @@ Fine tune the saved MA-VLCM checkpoint on the progression-labeled TB3 lab data w
 bash scripts/lora_run_train_tb3_lab.sh
 ```
 
+The same launcher also trains on the compatible Isaac Sim TurtleBot3 dataset.
+Isaac episodes contain 3–6 agents, so this profile uses six model slots and
+pads smaller episodes in the loader:
+
+```bash
+DATASET_PROFILE=tb3_isaac bash scripts/lora_run_train_tb3_lab.sh
+```
+
+The `tb3_lab` profile is the default and uses three model slots. The Isaac
+profile defaults to `adi2440/tb3-isaac-vlcm`; both profiles recursively load
+root-level or nested `.tar` shards. Override `HF_DATASET_REPO`, `DATA_DIR`, or
+the first positional argument as before. A local Isaac collection can be used
+directly:
+
+```bash
+DATASET_PROFILE=tb3_isaac bash scripts/lora_run_train_tb3_lab.sh \
+  /home/adi2440/Desktop/MARL_Shahil_Aditya/VLCM_Data_Collection/TURTLEBOT/data/tb3_isaac_vlcm
+```
+
 The TB3 launcher defaults to `--target_mode progress`,
 `--value_output_activation sigmoid`, and `--loss_type mse`. It preserves the
 old dense reward files in the shards, but trains the value head on
@@ -97,10 +116,22 @@ Scratch defaults to `$SCRATCH/ma_vlcm`, then `/scratch/$USER/ma_vlcm`, then
 To use a different dataset repo or local shard directory:
 
 ```bash
-HF_DATASET_REPO=adi2440/tb3-lab-vlcm-progress-v1 bash scripts/lora_run_train_tb3_lab.sh
+HF_DATASET_REPO=your-username/your-tb3-dataset bash scripts/lora_run_train_tb3_lab.sh
 
-bash scripts/lora_run_train_tb3_lab.sh /path/to/local/tb3_lab_progress_v1
+bash scripts/lora_run_train_tb3_lab.sh hf://datasets/your-username/your-tb3-dataset/*.tar
 ```
+
+#### Configuring Hugging Face Dataset & Authentication for Training
+
+- **Dataset Repository**: Pass via `HF_DATASET_REPO` environment variable or as the first positional argument:
+  ```bash
+  HF_DATASET_REPO="your-username/your-tb3-dataset" bash scripts/lora_run_train_tb3_lab.sh
+  ```
+- **Authentication Token**: If using a private Hugging Face dataset, export your API token before running:
+  ```bash
+  export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxx"
+  HF_DATASET_REPO="your-username/your-tb3-dataset" bash scripts/lora_run_train_tb3_lab.sh
+  ```
 
 To resume from a different pretrained or intermediate checkpoint, pass it as
 the second argument or set `RESUME_CHECKPOINT`:
@@ -128,8 +159,8 @@ On Slurm, pass the same environment variable:
 TRAIN_FROM_SCRATCH=1 sbatch scripts/lora_submit_train_tb3_lab.sh
 ```
 
-Outputs are written to `$MA_VLCM_SCRATCH_ROOT/checkpoints/tb3_lab` unless
-`SAVE_DIR` is set.
+Outputs are written to `$MA_VLCM_SCRATCH_ROOT/checkpoints/$DATASET_PROFILE`
+unless `SAVE_DIR` is set.
 
 On Slurm:
 
