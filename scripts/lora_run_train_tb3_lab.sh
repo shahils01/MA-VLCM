@@ -120,14 +120,86 @@ BATCH_SIZE="${BATCH_SIZE:-$DEFAULT_BATCH_SIZE}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-$DEFAULT_GRAD_ACCUM_STEPS}"
 CLIP_LEN="${CLIP_LEN:-$DEFAULT_CLIP_LEN}"
 VL_MAX_TEXT_LEN="${VL_MAX_TEXT_LEN:-$DEFAULT_VL_MAX_TEXT_LEN}"
-PEFT_MODE="${PEFT_MODE:-lora}"
+FINETUNE_MODE="${FINETUNE_MODE:-lora}"
+case "${FINETUNE_MODE,,}" in
+    lora|all_lora)
+        FINETUNE_MODE="lora"
+        PEFT_MODE="lora"
+        LORA_SCOPE="all"
+        FREEZE_VL=1
+        FREEZE_VISION_TOWER=0
+        ;;
+    qlora)
+        if [ "$BACKBONE_PROFILE" = "vjepa2" ]; then
+            echo "ERROR: V-JEPA2 does not support QLoRA."
+            exit 2
+        fi
+        FINETUNE_MODE="qlora"
+        PEFT_MODE="qlora"
+        LORA_SCOPE="all"
+        FREEZE_VL=1
+        FREEZE_VISION_TOWER=0
+        ;;
+    language_lora|language-only-lora|language_only_lora)
+        if [ "$BACKBONE_PROFILE" = "vjepa2" ]; then
+            echo "ERROR: V-JEPA2 has no language model; language_lora is unavailable."
+            exit 2
+        fi
+        FINETUNE_MODE="language_lora"
+        PEFT_MODE="lora"
+        LORA_SCOPE="language"
+        FREEZE_VL=1
+        FREEZE_VISION_TOWER=1
+        ;;
+    vision_lora|vision-only-lora|vision_only_lora)
+        FINETUNE_MODE="vision_lora"
+        PEFT_MODE="lora"
+        LORA_SCOPE="vision"
+        FREEZE_VL=1
+        FREEZE_VISION_TOWER=0
+        ;;
+    full|full_finetune|full-finetune)
+        FINETUNE_MODE="full"
+        PEFT_MODE="none"
+        LORA_SCOPE="all"
+        FREEZE_VL=0
+        FREEZE_VISION_TOWER=0
+        ;;
+    vision_full|vision-only-full|vision_only_full)
+        FINETUNE_MODE="vision_full"
+        PEFT_MODE="none"
+        LORA_SCOPE="vision"
+        FREEZE_VL=1
+        FREEZE_VISION_TOWER=0
+        ;;
+    heads_only|heads-only|head_only)
+        FINETUNE_MODE="heads_only"
+        PEFT_MODE="none"
+        LORA_SCOPE="all"
+        FREEZE_VL=1
+        FREEZE_VISION_TOWER=1
+        ;;
+    *)
+        echo "ERROR: FINETUNE_MODE must be lora, qlora, language_lora, vision_lora, full, vision_full, or heads_only (got: $FINETUNE_MODE)"
+        exit 2
+        ;;
+esac
+LORA_TARGET_MODULES="${LORA_TARGET_MODULES:-}"
+HEAD_LR="${HEAD_LR:-3e-4}"
+if [ "$FINETUNE_MODE" = "full" ]; then
+    DEFAULT_BACKBONE_LR="1e-5"
+else
+    DEFAULT_BACKBONE_LR="$HEAD_LR"
+fi
+BACKBONE_LR="${BACKBONE_LR:-$DEFAULT_BACKBONE_LR}"
+VISION_LR="${VISION_LR:-1e-5}"
 
 DEFAULT_RESUME_CANDIDATES=(
     "/scratch/aparame/VLCM_Data_Collection/checkpoints/NewFinal_0.5B.pt"
     "$SCRATCH_ROOT/checkpoints/NewFinal_0.5B.pt"
     "$REPO_ROOT/checkpoints/NewFinal_0.5B.pt"
 )
-if [ "$BACKBONE_PROFILE" = "llava_onevision" ] && [ -z "${DEFAULT_RESUME_CHECKPOINT:-}" ]; then
+if [ "$BACKBONE_PROFILE" = "llava_onevision" ] && [ "$FINETUNE_MODE" = "lora" ] && [ -z "${DEFAULT_RESUME_CHECKPOINT:-}" ]; then
     DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CANDIDATES[0]}"
     for candidate in "${DEFAULT_RESUME_CANDIDATES[@]}"; do
         if [ -f "$candidate" ]; then
@@ -136,7 +208,7 @@ if [ "$BACKBONE_PROFILE" = "llava_onevision" ] && [ -z "${DEFAULT_RESUME_CHECKPO
         fi
     done
 fi
-if [ "$BACKBONE_PROFILE" != "llava_onevision" ]; then
+if [ "$BACKBONE_PROFILE" != "llava_onevision" ] || [ "$FINETUNE_MODE" != "lora" ]; then
     DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CHECKPOINT:-}"
 fi
 RESUME_CHECKPOINT="${2:-${RESUME_CHECKPOINT:-$DEFAULT_RESUME_CHECKPOINT}}"
@@ -151,17 +223,24 @@ case "${RESUME_CHECKPOINT,,}" in
         RESUME_CHECKPOINT=""
         ;;
 esac
-if [ "$BACKBONE_PROFILE" = "llava_onevision" ]; then
+if [ "$BACKBONE_PROFILE" = "llava_onevision" ] && [ "$FINETUNE_MODE" = "lora" ]; then
     DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE"
-else
+elif [ "$FINETUNE_MODE" = "lora" ]; then
     DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE/$BACKBONE_PROFILE"
+else
+    DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE/$BACKBONE_PROFILE/$FINETUNE_MODE"
 fi
 SAVE_DIR="${SAVE_DIR:-$DEFAULT_SAVE_DIR}"
 CONTAINER_PATH="${CONTAINER_PATH:-$REPO_ROOT/ma_vlcm.sif}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-${EPOCHS:-20}}"
 MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
-WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-${DATASET_PROFILE}_${BACKBONE_RUN_LABEL}}"
+if [ "$FINETUNE_MODE" = "lora" ]; then
+    DEFAULT_WANDB_RUN_PREFIX="${DATASET_PROFILE}_${BACKBONE_RUN_LABEL}"
+else
+    DEFAULT_WANDB_RUN_PREFIX="${DATASET_PROFILE}_${BACKBONE_RUN_LABEL}_${FINETUNE_MODE}"
+fi
+WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-$DEFAULT_WANDB_RUN_PREFIX}"
 
 case "$DATA_DIR" in
     hf://*|http://*|https://*|pipe:*)
@@ -200,12 +279,14 @@ TRAIN_CMD=(
   --save_dir "$SAVE_DIR"
   --num_workers 4
   --mixed_precision "$MIXED_PRECISION"
-  --freeze_vl
   --peft "$PEFT_MODE"
+  --lora_scope "$LORA_SCOPE"
   --lora_r 16
   --lora_alpha 32
   --lora_dropout 0.05
-  --vision_lr 1e-5
+  --lr "$HEAD_LR"
+  --backbone_lr "$BACKBONE_LR"
+  --vision_lr "$VISION_LR"
   --loss_type mse
   --return_mode nstep
   --target_mode progress
@@ -220,6 +301,16 @@ TRAIN_CMD=(
   --run_name_prefix "$WANDB_RUN_PREFIX"
 )
 
+if [ "$FREEZE_VL" = "1" ]; then
+    TRAIN_CMD+=(--freeze_vl)
+fi
+if [ "$FREEZE_VISION_TOWER" = "1" ]; then
+    TRAIN_CMD+=(--freeze_vision_tower)
+fi
+if [ -n "$LORA_TARGET_MODULES" ]; then
+    TRAIN_CMD+=(--lora_target_modules "$LORA_TARGET_MODULES")
+fi
+
 if [ -n "$RESUME_CHECKPOINT" ]; then
     TRAIN_CMD+=(--resume_from "$RESUME_CHECKPOINT")
     echo "Will resume from checkpoint: $RESUME_CHECKPOINT"
@@ -231,7 +322,8 @@ echo "Using TurtleBot dataset: $DATA_DIR"
 echo "Dataset profile: $DATASET_PROFILE"
 echo "Backbone profile: $BACKBONE_PROFILE ($VL_BACKEND, $VL_MODEL_NAME)"
 echo "Clip/batch/accumulation: $CLIP_LEN / $BATCH_SIZE / $GRAD_ACCUM_STEPS"
-echo "PEFT mode: $PEFT_MODE"
+echo "Fine-tune mode: $FINETUNE_MODE (PEFT=$PEFT_MODE, LoRA scope=$LORA_SCOPE)"
+echo "Learning rates: heads=$HEAD_LR, language=$BACKBONE_LR, vision=$VISION_LR"
 echo "Robot cardinality: inferred per episode (minibatches are padded dynamically)"
 echo "Scratch root: $SCRATCH_ROOT"
 echo "Hugging Face cache: $HF_HOME"

@@ -149,6 +149,60 @@ to batch size 2 with 8 accumulation steps. Override these with `BATCH_SIZE`,
 their Hugging Face backbone weights; a LLaVA MA-VLCM checkpoint is not a valid
 resume checkpoint for either architecture.
 
+### Fine-tuning modes
+
+`FINETUNE_MODE` controls exactly which pretrained parameters are optimized. The
+GNN and progress/value head are trained in every mode.
+
+| `FINETUNE_MODE` | Qwen/LLaVA backbone | V-JEPA2 backbone |
+| --- | --- | --- |
+| `lora` (default) | language LoRA + vision LoRA | vision LoRA |
+| `qlora` | quantized language LoRA + vision LoRA | unsupported |
+| `language_lora` | language LoRA; vision frozen | unsupported |
+| `vision_lora` | vision LoRA; language frozen | vision LoRA |
+| `full` | full language and vision backbone | full video backbone |
+| `vision_full` | full vision tower; language frozen | full video backbone |
+| `heads_only` | entire pretrained backbone frozen | entire video backbone frozen |
+
+With the default dimensions and LoRA rank 16, the expected trainable counts are:
+
+| Mode | Qwen3-VL-2B | V-JEPA2 ViT-L |
+| --- | ---: | ---: |
+| `lora` | about 20,430,593 | about 2,429,697 |
+| `language_lora` | about 18,030,337 | unsupported |
+| `vision_lora` | about 2,998,017 | about 2,429,697 |
+| `full` | about 2,128,131,841 | about 303,955,713 |
+| `vision_full` | about 407,554,817 | about 303,955,713 |
+| `heads_only` | 597,761 | 70,401 |
+
+These include the shared GNN and progress head. For Qwen they also include the
+robot-to-language projection. V-JEPA2's unused predictor branch stays frozen
+because the critic calls the encoder with `skip_predictor=True`.
+
+Examples:
+
+```bash
+# Full Qwen3-VL fine-tuning (high GPU-memory use)
+FINETUNE_MODE=full DATASET_PROFILE=tb3_isaac \
+  bash scripts/lora_run_train_tb3_qwen3_vl.sh
+
+# Only Qwen's visual LoRA plus the MA-VLCM graph/progress layers
+FINETUNE_MODE=vision_lora DATASET_PROFILE=tb3_isaac \
+  bash scripts/lora_run_train_tb3_qwen3_vl.sh
+
+# Frozen V-JEPA2 feature extractor; train only GNN and progress head
+FINETUNE_MODE=heads_only DATASET_PROFILE=tb3_isaac \
+  bash scripts/lora_run_train_tb3_vjepa2.sh
+```
+
+For targeted language/V-JEPA attention adapters, set a comma-separated module
+suffix list with `LORA_TARGET_MODULES`, for example
+`LORA_TARGET_MODULES=q_proj,v_proj`. Each run prints the exact trainable count
+for the vision backbone, language backbone, GNN, robot-to-language projection,
+and value head before training starts. Custom heads use `HEAD_LR` (default
+`3e-4`), a fully trainable language backbone uses `BACKBONE_LR` (default
+`1e-5` in `full` mode), and visual parameters use `VISION_LR` (default `1e-5`).
+
 ## Common Overrides
 
 Use a different Hugging Face repository:
@@ -204,7 +258,11 @@ Useful variables:
 | `BATCH_SIZE` | Per-process minibatch size |
 | `GRAD_ACCUM_STEPS` | Optimizer gradient accumulation steps |
 | `CLIP_LEN` | Frames supplied to the video backbone |
-| `PEFT_MODE` | `lora` (default), `qlora` for supported VLMs, or `none` |
+| `FINETUNE_MODE` | Select `lora`, `full`, `vision_lora`, `heads_only`, or another mode above |
+| `LORA_TARGET_MODULES` | Optional comma-separated language/V-JEPA LoRA module suffixes |
+| `HEAD_LR` | Learning rate for the GNN, fusion projection, and progress/value head |
+| `BACKBONE_LR` | Learning rate for trainable non-vision language-backbone parameters |
+| `VISION_LR` | Learning rate for trainable visual-backbone parameters |
 
 ## Training Behavior
 

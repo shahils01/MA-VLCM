@@ -284,6 +284,20 @@ class VJEPA2VideoBackbone(nn.Module):
         if cfg.freeze_vl or cfg.freeze_vision_tower:
             for parameter in self.model.parameters():
                 parameter.requires_grad = False
+            # Match VLM freeze semantics: --freeze_vl freezes the backbone as
+            # a starting point, while an unfrozen vision tower permits visual
+            # full fine-tuning. V-JEPA2 consists entirely of that vision tower.
+            if cfg.freeze_vl and not cfg.freeze_vision_tower:
+                for parameter in self.model.parameters():
+                    parameter.requires_grad = True
+
+        # The critic uses encoder features with skip_predictor=True. Keeping the
+        # unused JEPA prediction branch frozen avoids wasted optimizer state and
+        # unused-parameter failures in full-finetune DDP runs.
+        predictor = getattr(self.model, "predictor", None)
+        if predictor is not None:
+            for parameter in predictor.parameters():
+                parameter.requires_grad = False
 
     def get_vision_tower(self):
         return self.model

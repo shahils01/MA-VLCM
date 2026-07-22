@@ -5,6 +5,7 @@ import json
 import glob
 import functools
 import inspect
+import re
 from collections import deque
 
 from tqdm import tqdm
@@ -350,6 +351,15 @@ def parse_args():
         default=1e-5,
         help="Separate learning rate for the vision tower parameters",
     )
+    p.add_argument(
+        "--backbone_lr",
+        type=float,
+        default=None,
+        help=(
+            "Learning rate for non-vision pretrained backbone parameters. "
+            "Defaults to --lr to preserve existing LoRA behavior."
+        ),
+    )
 
     # PEFT / LoRA
     p.add_argument(
@@ -359,6 +369,16 @@ def parse_args():
     p.add_argument("--lora_alpha", type=int, default=32)
     p.add_argument("--lora_dropout", type=float, default=0.05)
     p.add_argument("--lora_target_modules", type=str, default="")
+    p.add_argument(
+        "--lora_scope",
+        type=str,
+        default="all",
+        choices=["all", "language", "vision"],
+        help=(
+            "Backbone components receiving LoRA adapters. V-JEPA2 supports "
+            "all/vision because it has no language model."
+        ),
+    )
     p.add_argument(
         "--lora_bias", type=str, default="none", choices=["none", "all", "lora_only"]
     )
@@ -510,6 +530,8 @@ def _apply_peft(model, args):
     for p in model.backbone.model.parameters():
         p.requires_grad = False
 
+    lora_scope = getattr(args, "lora_scope", "all")
+
     # Checkpoint transformer activations for both VLM and video-only LoRA runs.
     if hasattr(model.backbone.model, "gradient_checkpointing_enable"):
         model.backbone.model.gradient_checkpointing_enable(
@@ -518,6 +540,10 @@ def _apply_peft(model, args):
         print("[PEFT] Gradient checkpointing ENABLED")
 
     if args.vl_backend == "vjepa2":
+        if lora_scope == "language":
+            raise RuntimeError(
+                "V-JEPA2 has no language model; use --lora_scope vision or all."
+            )
         if args.peft == "qlora":
             raise RuntimeError(
                 "QLoRA is not supported for the V-JEPA2 encoder. Use LoRA or "
@@ -528,12 +554,15 @@ def _apply_peft(model, args):
             if args.lora_target_modules
             else ["query", "key", "value"]
         )
+        encoder_target_pattern = (
+            r"encoder\..*\.(" + "|".join(re.escape(target) for target in targets) + r")"
+        )
         lora_cfg = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
             bias=args.lora_bias,
-            target_modules=targets,
+            target_modules=encoder_target_pattern,
         )
         model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
         trainable = sum(
@@ -547,6 +576,11 @@ def _apply_peft(model, args):
         )
         return model
 
+    if args.peft == "qlora" and lora_scope == "vision":
+        raise RuntimeError(
+            "Vision-only QLoRA is not supported. Use LoRA for --lora_scope vision."
+        )
+
     if args.peft == "qlora":
         model.backbone.model = prepare_model_for_kbit_training(
             model.backbone.model,
@@ -554,19 +588,20 @@ def _apply_peft(model, args):
             gradient_checkpointing_kwargs={"use_reentrant": False},
         )
 
-    lora_cfg = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias=args.lora_bias,
-        target_modules=_parse_lora_targets(args),
-        task_type="CAUSAL_LM",
-    )
-    model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
+    if lora_scope in ("all", "language"):
+        lora_cfg = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias=args.lora_bias,
+            target_modules=_parse_lora_targets(args),
+            task_type="CAUSAL_LM",
+        )
+        model.backbone.model = get_peft_model(model.backbone.model, lora_cfg)
 
     # Apply LoRA to vision tower if user wants it trainable (instead of full fine-tuning).
     freeze_vision_tower = getattr(args, "freeze_vision_tower", True)
-    if not freeze_vision_tower:
+    if lora_scope in ("all", "vision") and not freeze_vision_tower:
         # Locate vision tower after PEFT wrapping
         base = model.backbone.model
         vt = None
@@ -677,8 +712,62 @@ def _apply_peft(model, args):
                 "[PEFT] WARNING: Could not locate vision_tower "
                 "after LoRA wrapping; it remains frozen."
             )
+    elif lora_scope == "vision" and freeze_vision_tower:
+        raise RuntimeError(
+            "--lora_scope vision conflicts with --freeze_vision_tower."
+        )
 
     return model
+
+
+def _print_trainable_breakdown(model, print_fn=print):
+    """Report trainable parameter counts by MA-VLCM component."""
+    backbone = getattr(model, "backbone", None)
+    vision_tower = (
+        backbone.get_vision_tower()
+        if backbone is not None and hasattr(backbone, "get_vision_tower")
+        else None
+    )
+    vision_ids = (
+        {id(parameter) for parameter in vision_tower.parameters()}
+        if vision_tower is not None
+        else set()
+    )
+    counts = {
+        "vision_backbone": 0,
+        "language_backbone": 0,
+        "robot_gnn": 0,
+        "robot_to_language": 0,
+        "value_head": 0,
+        "other": 0,
+    }
+    total = 0
+    trainable = 0
+    for name, parameter in model.named_parameters():
+        numel = parameter.numel()
+        total += numel
+        if not parameter.requires_grad:
+            continue
+        trainable += numel
+        if name.startswith("backbone."):
+            key = "vision_backbone" if id(parameter) in vision_ids else "language_backbone"
+        elif name.startswith("robot_gnn."):
+            key = "robot_gnn"
+        elif name.startswith("obs_to_lm."):
+            key = "robot_to_language"
+        elif name.startswith("value_head."):
+            key = "value_head"
+        else:
+            key = "other"
+        counts[key] += numel
+
+    print_fn(
+        "Trainable parameters: "
+        f"{trainable:,} / {total:,} ({100.0 * trainable / max(total, 1):.4f}%)"
+    )
+    for component, count in counts.items():
+        if count:
+            print_fn(f"  {component}: {count:,}")
 
 
 def _as_numpy(x):
@@ -2691,6 +2780,7 @@ def main():
     with accelerator.main_process_first():
         model = build_model(args, device=accelerator.device)
     model = _apply_peft(model, args)
+    _print_trainable_breakdown(model, accelerator.print)
     if (
         not args.resume_from
         and getattr(args, "target_mode", "return") == "progress"
@@ -2716,40 +2806,49 @@ def main():
     if args.compile:
         model = torch.compile(model)
 
-    # ── Build param groups: separate LR for vision tower ──
+    # ── Build parameter groups for custom, language, and vision parts ──
     backbone = getattr(model, "backbone", None)
     vision_tower = None
     if backbone is not None and hasattr(backbone, "get_vision_tower"):
         vision_tower = backbone.get_vision_tower()
+    vision_ids = (
+        {id(parameter) for parameter in vision_tower.parameters()}
+        if vision_tower is not None
+        else set()
+    )
+    backbone_ids = (
+        {id(parameter) for parameter in backbone.parameters()}
+        if backbone is not None
+        else set()
+    )
+    vision_params = []
+    language_params = []
+    custom_params = []
+    for parameter in model.parameters():
+        if not parameter.requires_grad:
+            continue
+        parameter_id = id(parameter)
+        if parameter_id in vision_ids:
+            vision_params.append(parameter)
+        elif parameter_id in backbone_ids:
+            language_params.append(parameter)
+        else:
+            custom_params.append(parameter)
 
-    if vision_tower is not None:
-        vision_tower_ids = {id(p) for p in vision_tower.parameters() if p.requires_grad}
-        vision_params = [
-            p
-            for p in model.parameters()
-            if p.requires_grad and id(p) in vision_tower_ids
-        ]
-        other_params = [
-            p
-            for p in model.parameters()
-            if p.requires_grad and id(p) not in vision_tower_ids
-        ]
-        accelerator.print(
-            f"Param groups: vision_tower={len(vision_params)} params (lr={args.vision_lr}), "
-            f"other={len(other_params)} params (lr={args.lr})"
-        )
-        param_groups = [
-            {"params": other_params, "lr": args.lr},
-            {"params": vision_params, "lr": args.vision_lr},
-        ]
-    else:
-        accelerator.print("No vision tower found; using single param group.")
-        param_groups = [
-            {
-                "params": [p for p in model.parameters() if p.requires_grad],
-                "lr": args.lr,
-            }
-        ]
+    backbone_lr = args.lr if args.backbone_lr is None else args.backbone_lr
+    param_groups = []
+    if custom_params:
+        param_groups.append({"params": custom_params, "lr": args.lr})
+    if language_params:
+        param_groups.append({"params": language_params, "lr": backbone_lr})
+    if vision_params:
+        param_groups.append({"params": vision_params, "lr": args.vision_lr})
+    accelerator.print(
+        "Optimizer parameter groups: "
+        f"custom={sum(p.numel() for p in custom_params):,} (lr={args.lr}), "
+        f"language={sum(p.numel() for p in language_params):,} (lr={backbone_lr}), "
+        f"vision={sum(p.numel() for p in vision_params):,} (lr={args.vision_lr})"
+    )
 
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
