@@ -118,6 +118,7 @@ VL_BACKEND="${VL_BACKEND:-$DEFAULT_VL_BACKEND}"
 VL_MODEL_NAME="${VL_MODEL_NAME:-$DEFAULT_VL_MODEL_NAME}"
 BATCH_SIZE="${BATCH_SIZE:-$DEFAULT_BATCH_SIZE}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-$DEFAULT_GRAD_ACCUM_STEPS}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
 CLIP_LEN="${CLIP_LEN:-$DEFAULT_CLIP_LEN}"
 VL_MAX_TEXT_LEN="${VL_MAX_TEXT_LEN:-$DEFAULT_VL_MAX_TEXT_LEN}"
 FINETUNE_MODE="${FINETUNE_MODE:-lora}"
@@ -230,6 +231,9 @@ elif [ "$FINETUNE_MODE" = "lora" ]; then
 else
     DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE/$BACKBONE_PROFILE/$FINETUNE_MODE"
 fi
+SAMPLES_PER_EPOCH="${SAMPLES_PER_EPOCH:-5000}"
+VAL_SPLIT="${VAL_SPLIT:-0.2}"
+SPLIT_SEED="${SPLIT_SEED:-42}"
 SAVE_DIR="${SAVE_DIR:-$DEFAULT_SAVE_DIR}"
 CONTAINER_PATH="${CONTAINER_PATH:-$REPO_ROOT/ma_vlcm.sif}"
 NUM_PROCESSES="${NUM_PROCESSES:-1}"
@@ -277,7 +281,7 @@ TRAIN_CMD=(
   --vl_backend "$VL_BACKEND"
   --vl_model_name "$VL_MODEL_NAME"
   --save_dir "$SAVE_DIR"
-  --num_workers 4
+  --num_workers "$NUM_WORKERS"
   --mixed_precision "$MIXED_PRECISION"
   --peft "$PEFT_MODE"
   --lora_scope "$LORA_SCOPE"
@@ -293,7 +297,9 @@ TRAIN_CMD=(
   --value_output_activation sigmoid
   --mse_loss_weight 1.0
   --max_grad_norm 1.0
-  --samples_per_epoch 5000
+  --samples_per_epoch "$SAMPLES_PER_EPOCH"
+  --val_split "$VAL_SPLIT"
+  --split_seed "$SPLIT_SEED"
   --gamma 0.95
   --max_return_horizon 64
   --ema_decay 0.995
@@ -321,7 +327,7 @@ fi
 echo "Using TurtleBot dataset: $DATA_DIR"
 echo "Dataset profile: $DATASET_PROFILE"
 echo "Backbone profile: $BACKBONE_PROFILE ($VL_BACKEND, $VL_MODEL_NAME)"
-echo "Clip/batch/accumulation: $CLIP_LEN / $BATCH_SIZE / $GRAD_ACCUM_STEPS"
+echo "Clip/batch/accumulation/workers: $CLIP_LEN / $BATCH_SIZE / $GRAD_ACCUM_STEPS / $NUM_WORKERS"
 echo "Fine-tune mode: $FINETUNE_MODE (PEFT=$PEFT_MODE, LoRA scope=$LORA_SCOPE)"
 echo "Learning rates: heads=$HEAD_LR, language=$BACKBONE_LR, vision=$VISION_LR"
 echo "Robot cardinality: inferred per episode (minibatches are padded dynamically)"
@@ -330,6 +336,8 @@ echo "Hugging Face cache: $HF_HOME"
 echo "Torch cache: $TORCH_HOME"
 echo "Saving checkpoints to: $SAVE_DIR"
 echo "Total epoch target: $TOTAL_EPOCHS"
+echo "Global clips per epoch: $SAMPLES_PER_EPOCH"
+echo "Validation split / seed: $VAL_SPLIT / $SPLIT_SEED"
 echo "Mixed precision: $MIXED_PRECISION"
 echo "W&B run prefix: $WANDB_RUN_PREFIX"
 

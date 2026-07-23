@@ -249,6 +249,9 @@ Useful variables:
 | `RESUME_CHECKPOINT` | Pretrained or intermediate `.pt` checkpoint |
 | `TRAIN_FROM_SCRATCH=1` | Disable checkpoint resume |
 | `TOTAL_EPOCHS` | Final epoch target |
+| `SAMPLES_PER_EPOCH` | Global number of clip samples consumed per epoch (default `5000`) |
+| `VAL_SPLIT` | Fraction of episode shards held out for validation (default `0.2`) |
+| `SPLIT_SEED` | Deterministic episode-shard split seed (default `42`) |
 | `SAVE_DIR` | Checkpoint output directory |
 | `MA_VLCM_SCRATCH_ROOT` | Root for caches, temporary files, W&B, and checkpoints |
 | `NUM_PROCESSES` | Number of Accelerate processes |
@@ -279,6 +282,10 @@ The default TurtleBot launcher uses:
 Each episode retains its native number of robots. Mixed-cardinality minibatches
 are padded only to the largest team in that minibatch. A zero adjacency diagonal
 marks padded nodes, excluding them from message passing and team pooling.
+
+Remote Hugging Face shard patterns are expanded before splitting, so complete
+episode shards—not neighboring clips—are assigned to train or validation. Each
+epoch logs its consumed batch count and observed unique episode-ID count.
 
 Checkpoints default to:
 
@@ -350,6 +357,61 @@ Offline evaluation:
 ```bash
 bash scripts/run_inference_vlcm.sh
 ```
+
+Compare complete held-out episodes with the latest saved LLaVA-OneVision,
+Qwen3-VL, and V-JEPA2 epoch checkpoints:
+
+```bash
+bash scripts/run_tb3_episode_inference_all.sh
+```
+
+Submit the same evaluation as a one-GPU A100 Slurm job:
+
+```bash
+mkdir -p logs
+LLAVA_CHECKPOINT=/path/to/llava_epoch_20.pt \
+sbatch scripts/submit_tb3_episode_inference_all.sh
+```
+
+Environment overrides are inherited by the job, and extra evaluator arguments
+after the submission-script path are forwarded to the inference launcher.
+
+The launcher deterministically selects five episode shards from the same 20%
+episode-level validation split used by training. It processes every sliding
+16-frame clip through each model sequentially, so only one backbone occupies
+GPU memory at a time. Results are organized under:
+
+```text
+outputs/plots/tb3_episode_inference/run_YYYYMMDD_HHMMSS/
+├── manifest.json
+├── model_metadata.json
+├── summary.json
+├── episode_01_<source>/
+│   ├── progress.csv
+│   ├── progress.png
+│   ├── episode_progress.mp4
+│   └── summary.json
+└── ...
+```
+
+Each animation shows the original overhead episode video above a growing plot
+of ground-truth normalized progress and all three model predictions. If FFmpeg
+is unavailable, the evaluator writes a GIF instead.
+
+Checkpoint discovery chooses the newest run timestamp for each backbone and
+then the highest epoch saved by that run. Override any model or other setting
+with environment variables, for example:
+
+```bash
+LLAVA_CHECKPOINT=/path/to/llava_epoch_20.pt \
+NUM_EPISODES=5 VIDEO_FPS=5 \
+bash scripts/run_tb3_episode_inference_all.sh
+```
+
+The current `tb3_isaac` scratch folder contains timestamped Qwen3-VL and
+V-JEPA2 epoch checkpoints but no timestamped LLaVA epoch checkpoint, so provide
+`LLAVA_CHECKPOINT` if it is stored elsewhere. Use `NO_VIDEO=1` for CSV/PNG-only
+evaluation or pass additional Python options after the launcher name.
 
 Physical TurtleBot3 live monitoring:
 

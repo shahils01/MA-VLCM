@@ -177,6 +177,7 @@ def main():
 
         sample = next(iter(dataset))
         assert sample["robot_obs"].shape == (1, 3, 8)
+        assert sample["episode_id"] == "tb3_lab_episode"
         assert sample["adj"].shape == (1, 3, 3)
         np.testing.assert_allclose(sample["reward"].numpy(), np.array([1.74], dtype=np.float32))
         np.testing.assert_allclose(sample["returns"].numpy(), np.array([1.74], dtype=np.float32))

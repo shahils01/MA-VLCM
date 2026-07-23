@@ -1,4 +1,6 @@
 import argparse
+import hashlib
+import math
 import os
 import io
 import json
@@ -83,6 +85,12 @@ import webdataset as wds
 from .model import ModelConfig, MultimodalValueModel
 
 
+def _episode_id_to_int64(episode_id):
+    """Encode an episode ID as a deterministic, Accelerate-safe int64."""
+    digest = hashlib.blake2b(str(episode_id).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 63) - 1)
+
+
 def parse_args():
     p = argparse.ArgumentParser()
 
@@ -105,7 +113,7 @@ def parse_args():
         "--samples_per_epoch",
         type=int,
         default=50000,
-        help="Approximate samples per epoch for LR schedule (970 shards × ~50 clips)",
+        help="Number of clip samples consumed globally per training epoch",
     )
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
     p.add_argument("--text_prompt_template", type=str, default=None)
@@ -141,7 +149,13 @@ def parse_args():
         "--val_split",
         type=float,
         default=0.2,
-        help="Fraction of shards to hold out for validation",
+        help="Fraction of episode shards to hold out for validation",
+    )
+    p.add_argument(
+        "--split_seed",
+        type=int,
+        default=42,
+        help="Seed for deterministic episode-shard train/validation splitting",
     )
     p.add_argument(
         "--dataset_type",
@@ -1462,6 +1476,7 @@ class SequenceWebDataset(IterableDataset):
                 returns = torch.tensor(returns, dtype=torch.float32)
 
             out = {
+                "episode_id": str(clip[0].get("episode_id", "")),
                 "robot_obs": robot_obs,
                 "adj": adj,
                 "reward": reward.view(1),
@@ -2067,6 +2082,7 @@ class SequenceWebDataset(IterableDataset):
             buffer.append(
                 {
                     "image": image,
+                    "episode_id": current_ep,
                     "robot_obs": robot_obs,
                     "adj": adj,
                     "text": text,
@@ -2207,6 +2223,12 @@ def webdataset_loader(
             return out
 
         out = {
+            # Accelerate concatenates every batch field, so metadata must be a
+            # tensor rather than a list of strings.
+            "episode_id": torch.tensor(
+                [_episode_id_to_int64(b.get("episode_id", "")) for b in batch],
+                dtype=torch.long,
+            ),
             "inputs": _stack_inputs([b["inputs"] for b in batch]),
             "robot_obs": _pad_graph_batch([b["robot_obs"] for b in batch]),
             "adj": _pad_graph_batch([b["adj"] for b in batch], adjacency=True),
@@ -2395,6 +2417,7 @@ def run_epoch(
     loss_fn = nn.MSELoss()
     total_loss = 0.0
     step = 0
+    observed_episode_ids = set()
 
     phase = "train" if train else "val"
     show_pbar = accelerator.is_main_process
@@ -2409,6 +2432,9 @@ def run_epoch(
         if max_steps is not None and step >= max_steps:
             break
         step += 1
+        episode_ids = batch.get("episode_id")
+        if torch.is_tensor(episode_ids):
+            observed_episode_ids.update(episode_ids.detach().cpu().view(-1).tolist())
 
         def _move_inputs(inputs):
             moved = {}
@@ -2616,29 +2642,53 @@ def run_epoch(
                 pass
 
     pbar.close()
+    accelerator.print(
+        f"{phase}: consumed {step} batches and observed "
+        f"{len(observed_episode_ids)} unique episode IDs on process "
+        f"{accelerator.process_index}."
+    )
+    if accelerator.is_main_process:
+        try:
+            import wandb
+
+            if wandb.run is not None:
+                wandb.log({f"{phase}/unique_episodes": len(observed_episode_ids)})
+        except ImportError:
+            pass
     return total_loss / max(step, 1)
 
 
-def split_shards(shards_pattern, val_split=0.3, seed=42):
-    import glob, random
+def split_shards(shards_pattern, val_split=0.2, seed=42):
+    import random
 
-    if not isinstance(shards_pattern, str):
+    if not 0.0 <= val_split < 1.0:
+        raise ValueError(f"val_split must be in [0, 1), got {val_split}")
+    if val_split == 0.0:
         return shards_pattern, None
 
-    # Handle remote URLs seamlessly
-    if shards_pattern.startswith(("hf://", "http://", "https://", "pipe:")):
+    if isinstance(shards_pattern, (list, tuple)):
+        files = sorted(str(path) for path in shards_pattern)
+    elif not isinstance(shards_pattern, str):
+        return shards_pattern, None
+    elif shards_pattern.startswith("hf://datasets/"):
+        expanded = _expand_hf_dataset_shards(shards_pattern)
+        if not isinstance(expanded, list):
+            return shards_pattern, None
+        files = sorted(expanded)
+    elif shards_pattern.startswith(("http://", "https://", "pipe:")):
+        # These streams need an explicit validation URL because they do not
+        # expose a local shard manifest that can be split safely.
         return shards_pattern, None
 
-    # If it's a directory, recursively find all .tar files
-    if os.path.isdir(shards_pattern):
+    elif os.path.isdir(shards_pattern):
         files = sorted(
             glob.glob(
                 os.path.join(shards_pattern, "**", "*.tar"),
                 recursive=True,
             )
         )
-    elif "*" in shards_pattern:
-        files = sorted(glob.glob(shards_pattern))
+    elif any(char in shards_pattern for char in "*?["):
+        files = sorted(glob.glob(shards_pattern, recursive=True))
     else:
         return shards_pattern, None
 
@@ -2646,7 +2696,7 @@ def split_shards(shards_pattern, val_split=0.3, seed=42):
         return shards_pattern, None
 
     random.Random(seed).shuffle(files)
-    split_idx = int(len(files) * (1.0 - val_split))
+    split_idx = max(1, int(len(files) * (1.0 - val_split)))
     train_shards = files[:split_idx]
     val_shards = files[split_idx:]
 
@@ -2654,6 +2704,20 @@ def split_shards(shards_pattern, val_split=0.3, seed=42):
         val_shards = None
 
     return train_shards, val_shards
+
+
+def _compute_epoch_batch_counts(
+    samples_per_epoch, batch_size, grad_accum_steps, num_processes=1
+):
+    """Return per-process microbatches and global optimizer steps per epoch."""
+    if samples_per_epoch <= 0:
+        raise ValueError("samples_per_epoch must be positive")
+    global_batch_size = max(1, batch_size) * max(1, num_processes)
+    microbatches_per_epoch = math.ceil(samples_per_epoch / global_batch_size)
+    optimizer_steps_per_epoch = math.ceil(
+        microbatches_per_epoch / max(1, grad_accum_steps)
+    )
+    return microbatches_per_epoch, optimizer_steps_per_epoch
 
 
 def main():
@@ -2853,15 +2917,22 @@ def main():
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
     # ── Cosine LR scheduler with linear warmup ──
-    # Estimate total steps: (samples_per_epoch / batch_size / grad_accum) * epochs
+    # Cap the loader by clip samples. Gradient accumulation affects optimizer
+    # and scheduler steps, but must not reduce the number of consumed batches.
     warmup_fraction = 0.05
-    estimated_steps_per_epoch = max(
-        args.samples_per_epoch
-        // max(args.batch_size * max(1, args.grad_accum_steps), 1),
-        100,
+    microbatches_per_epoch, optimizer_steps_per_epoch = _compute_epoch_batch_counts(
+        args.samples_per_epoch,
+        args.batch_size,
+        args.grad_accum_steps,
+        accelerator.num_processes,
     )
-    total_steps = estimated_steps_per_epoch * args.epochs
+    total_steps = optimizer_steps_per_epoch * args.epochs
     warmup_steps = int(total_steps * warmup_fraction)
+    accelerator.print(
+        f"Epoch budget: {args.samples_per_epoch} global clips, "
+        f"{microbatches_per_epoch} microbatches/process, "
+        f"{optimizer_steps_per_epoch} optimizer steps."
+    )
     from torch.optim.lr_scheduler import LambdaLR
 
     def lr_lambda(step):
@@ -2871,13 +2942,24 @@ def main():
             max(1, total_steps - warmup_steps)
         )
         return max(
-            0.0, 0.5 * (1.0 + __import__("math").cos(__import__("math").pi * progress))
+            0.0, 0.5 * (1.0 + math.cos(math.pi * progress))
         )
 
     scheduler = LambdaLR(optimizer, lr_lambda)
 
     # --- Shard Splitting & Loader Creation ---
-    train_main_shards, val_main_shards = split_shards(args.train_shards, args.val_split)
+    if args.val_shards:
+        train_main_shards = args.train_shards
+        val_main_shards = args.val_shards
+        accelerator.print("Using explicit validation shards from --val_shards.")
+    else:
+        train_main_shards, val_main_shards = split_shards(
+            args.train_shards, args.val_split, args.split_seed
+        )
+    if isinstance(train_main_shards, list):
+        accelerator.print(f"Training split: {len(train_main_shards)} episode shards.")
+    if isinstance(val_main_shards, list):
+        accelerator.print(f"Validation split: {len(val_main_shards)} episode shards.")
 
     if args.dataset_type == "tb3_lab":
         accelerator.print("Single-dataset training enabled for tb3_lab TurtleBot data.")
@@ -3110,7 +3192,7 @@ def main():
             args,
             train=True,
             scheduler=scheduler,
-            max_steps=estimated_steps_per_epoch,
+            max_steps=microbatches_per_epoch,
             target_model=target_model,
         )
         val_loss = None
@@ -3124,7 +3206,7 @@ def main():
                 args.gamma,
                 args,
                 train=False,
-                max_steps=max(int(estimated_steps_per_epoch * 0.25), 10),
+                max_steps=max(math.ceil(microbatches_per_epoch * 0.25), 10),
             )
 
         accelerator.print(
