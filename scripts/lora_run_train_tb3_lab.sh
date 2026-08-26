@@ -74,7 +74,7 @@ HF_DATASET_REPO="${HF_DATASET_REPO:-$DEFAULT_HF_DATASET_REPO}"
 # Both collectors may keep shards in nested agents_XX/worker_XX folders. The
 # MA-VLCM loader downloads and recursively expands this Hugging Face pattern.
 DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/**/*.tar}"
-DATA_DIR="${1:-${DATA_DIR:-$DEFAULT_TB3_DATA}}"
+DATA_DIR="${1:-${DATA_DIR:-${TB3_TRAIN_SOURCES:-$DEFAULT_TB3_DATA}}}"
 
 BACKBONE_PROFILE="${BACKBONE_PROFILE:-llava_onevision}"
 case "${BACKBONE_PROFILE,,}" in
@@ -121,6 +121,17 @@ GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-$DEFAULT_GRAD_ACCUM_STEPS}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 CLIP_LEN="${CLIP_LEN:-$DEFAULT_CLIP_LEN}"
 VL_MAX_TEXT_LEN="${VL_MAX_TEXT_LEN:-$DEFAULT_VL_MAX_TEXT_LEN}"
+TB3_DATASET_TYPE="${TB3_DATASET_TYPE:-tb3_lab}"
+TB3_TARGET_SCHEMA="${TB3_TARGET_SCHEMA:-tb3_progress_v1}"
+ROBOT_OBS_DIM="${ROBOT_OBS_DIM:-8}"
+SUCCESS_ONLY="${SUCCESS_ONLY:-0}"
+TRAINED_AGENT_COUNTS="${TRAINED_AGENT_COUNTS:-3}"
+TASK_DOMAINS="${TASK_DOMAINS:-goal_to_goal}"
+LAYOUT_SPLIT="${LAYOUT_SPLIT:-seen_train}"
+BALANCE_TB3_SOURCES="${BALANCE_TB3_SOURCES:-0}"
+TB3_BALANCE_MODE="${TB3_BALANCE_MODE:-domain_cardinality}"
+TB3_IMAGE_MODE="${TB3_IMAGE_MODE:-center_square}"
+TB3_IMAGE_SIZE="${TB3_IMAGE_SIZE:-336}"
 FINETUNE_MODE="${FINETUNE_MODE:-lora}"
 case "${FINETUNE_MODE,,}" in
     lora|all_lora)
@@ -247,6 +258,9 @@ fi
 WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-$DEFAULT_WANDB_RUN_PREFIX}"
 
 case "$DATA_DIR" in
+    *";"*)
+        echo "Using multiple TurtleBot dataset sources: $DATA_DIR"
+        ;;
     hf://*|http://*|https://*|pipe:*)
         echo "Using remote TurtleBot dataset: $DATA_DIR"
         ;;
@@ -272,11 +286,20 @@ export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 TRAIN_CMD=(
   accelerate launch --num_processes "$NUM_PROCESSES" --mixed_precision "$MIXED_PRECISION" -m ma_vlcm.train
   --train_shards "$DATA_DIR"
-  --dataset_type tb3_lab
+  --dataset_type "$TB3_DATASET_TYPE"
   --batch_size "$BATCH_SIZE"
   --grad_accum_steps "$GRAD_ACCUM_STEPS"
   --clip_len "$CLIP_LEN"
-  --robot_obs_dim 8
+  --robot_obs_dim "$ROBOT_OBS_DIM"
+  --target_schema "$TB3_TARGET_SCHEMA"
+  --tb3_image_mode "$TB3_IMAGE_MODE"
+  --resize_width "$TB3_IMAGE_SIZE"
+  --resize_height "$TB3_IMAGE_SIZE"
+  --trained_agent_counts "$TRAINED_AGENT_COUNTS"
+  --task_domains "$TASK_DOMAINS"
+  --tb3_balance_mode "$TB3_BALANCE_MODE"
+  --layout_split "$LAYOUT_SPLIT"
+  --modalities video,robot_obs,adj
   --epochs "$TOTAL_EPOCHS"
   --vl_backend "$VL_BACKEND"
   --vl_model_name "$VL_MODEL_NAME"
@@ -307,6 +330,14 @@ TRAIN_CMD=(
   --run_name_prefix "$WANDB_RUN_PREFIX"
 )
 
+if [ "$SUCCESS_ONLY" = "1" ]; then
+    TRAIN_CMD+=(--success_only)
+fi
+
+if [ "$BALANCE_TB3_SOURCES" = "1" ]; then
+    TRAIN_CMD+=(--balance_tb3_sources)
+fi
+
 if [ "$FREEZE_VL" = "1" ]; then
     TRAIN_CMD+=(--freeze_vl)
 fi
@@ -331,6 +362,8 @@ echo "Clip/batch/accumulation/workers: $CLIP_LEN / $BATCH_SIZE / $GRAD_ACCUM_STE
 echo "Fine-tune mode: $FINETUNE_MODE (PEFT=$PEFT_MODE, LoRA scope=$LORA_SCOPE)"
 echo "Learning rates: heads=$HEAD_LR, language=$BACKBONE_LR, vision=$VISION_LR"
 echo "Robot cardinality: inferred per episode (minibatches are padded dynamically)"
+echo "TB3 source balance mode: $TB3_BALANCE_MODE"
+echo "TB3 image canonicalization: $TB3_IMAGE_MODE -> ${TB3_IMAGE_SIZE}x${TB3_IMAGE_SIZE} (no rotation or reflection)"
 echo "Scratch root: $SCRATCH_ROOT"
 echo "Hugging Face cache: $HF_HOME"
 echo "Torch cache: $TORCH_HOME"

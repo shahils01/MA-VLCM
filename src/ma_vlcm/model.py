@@ -422,8 +422,8 @@ class MultimodalValueModel(nn.Module):
                 "Make sure torch-geometric and torch-scatter are installed."
             ) from e
 
-        # Keep the same node feature slice used before flattening (first 8 dims per robot).
-        self.robot_node_dim = min(8, cfg.robot_obs_dim)
+        # Use the checkpoint-declared row width (8-D legacy or 9-D progress v2).
+        self.robot_node_dim = cfg.robot_obs_dim
         gnn_heads = max(1, cfg.temporal_heads)
         gnn_hidden = max(1, math.ceil(cfg.d_model / gnn_heads))
         gnn_args = SimpleNamespace(
@@ -445,6 +445,9 @@ class MultimodalValueModel(nn.Module):
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
         self.value_head = nn.Linear(lm_hidden + cfg.d_model, 1)
+        self.success_head = nn.Linear(lm_hidden + cfg.d_model, 1)
+        nn.init.zeros_(self.success_head.weight)
+        nn.init.zeros_(self.success_head.bias)
         # Initialize bias to roughly the mean TD target (return over clip_len)
         # to prevent max_grad_norm from choking the MSE loss component.
         nn.init.constant_(self.value_head.bias, 50.0)
@@ -476,6 +479,7 @@ class MultimodalValueModel(nn.Module):
         text_mask=None,
         image_sizes=None,
         return_features=False,
+        precomputed_visual_features=None,
     ):
         # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
         # robot_obs: [B, T, N, obs_dim]
@@ -520,22 +524,32 @@ class MultimodalValueModel(nn.Module):
         robot_team_feat = robot_team_feat / node_weights.sum(dim=1).clamp(min=1.0)
 
         if self.visual_only:
-            inputs = self.backbone._move_inputs_to_device(inputs)
-            output = self.backbone.model(
-                **inputs,
-                skip_predictor=True,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-            final_hidden = output.last_hidden_state
-            pooled = final_hidden.mean(dim=1)
+            output = None
+            if precomputed_visual_features is None:
+                inputs = self.backbone._move_inputs_to_device(inputs)
+                output = self.backbone.model(
+                    **inputs,
+                    skip_predictor=True,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                final_hidden = output.last_hidden_state
+                pooled = final_hidden.mean(dim=1)
+            else:
+                pooled = torch.as_tensor(precomputed_visual_features)
+                if pooled.shape[0] != bsz:
+                    raise RuntimeError("precomputed visual feature batch mismatch")
             pooled = pooled.to(
                 dtype=self.value_head.weight.dtype,
                 device=self.value_head.weight.device,
             )
 
             multidepth_features = None
-            if return_features and self.cfg.contrastive_multidepth:
+            if (
+                return_features
+                and self.cfg.contrastive_multidepth
+                and output is not None
+            ):
                 multidepth_features = []
                 hidden_states = output.hidden_states or ()
                 for offset in self.cfg.contrastive_depth_offsets:
@@ -554,6 +568,7 @@ class MultimodalValueModel(nn.Module):
             if return_features:
                 return {
                     "value": value,
+                    "success_logit": self.success_head(value_head_input).squeeze(-1),
                     "vlm_feature": pooled,
                     "vlm_multidepth_features": multidepth_features,
                     "robot_team_feature": robot_team_feat,
@@ -632,6 +647,7 @@ class MultimodalValueModel(nn.Module):
         if return_features:
             return {
                 "value": value,
+                "success_logit": self.success_head(value_head_input).squeeze(-1),
                 "vlm_feature": pooled,
                 "vlm_multidepth_features": multidepth_features,
                 "robot_team_feature": robot_team_feat,

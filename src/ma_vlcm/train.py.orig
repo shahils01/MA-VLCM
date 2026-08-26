@@ -166,28 +166,7 @@ def parse_args():
     )
     p.add_argument("--success_only", action="store_true")
     p.add_argument("--balance_tb3_sources", action="store_true")
-    p.add_argument(
-        "--tb3_balance_mode",
-        type=str,
-        default="domain_cardinality",
-        choices=["domain", "domain_cardinality"],
-        help=(
-            "Balance TB3 shards by task domain alone or by the full "
-            "domain/cardinality cross-product."
-        ),
-    )
     p.add_argument("--target_schema", type=str, default="")
-    p.add_argument(
-        "--tb3_image_mode",
-        type=str,
-        default="center_square",
-        choices=["center_square", "none"],
-        help=(
-            "Canonicalize TB3 overhead frames without rotation or reflection. "
-            "center_square removes horizontal letterboxing from legacy 640x360 "
-            "frames and preserves already-square Isaac frames."
-        ),
-    )
     p.add_argument("--trained_agent_counts", type=str, default="3,4,5")
     p.add_argument("--task_domains", type=str, default="goal_to_goal,static_obstacles")
     p.add_argument("--layout_split", type=str, default="seen_train")
@@ -883,35 +862,7 @@ def _json_from_sample(sample, key):
     return value
 
 
-def _progress_target_from_sample(
-    sample, state_json, target_schema="", initial_goal_distances=None
-):
-    if str(target_schema).lower() == "tb3_progress_v2":
-        agents = sorted(state_json.get("agents", []), key=lambda item: item.get("id", 0))
-        current = np.asarray(
-            [float(agent.get("dist_to_goal", 0.0)) for agent in agents],
-            dtype=np.float32,
-        )
-        if initial_goal_distances is None:
-            initial_goal_distances = [
-                float(
-                    agent.get(
-                        "initial_goal_distance",
-                        agent.get("initial_dist_to_goal", agent.get("dist_to_goal", 0.0)),
-                    )
-                )
-                for agent in agents
-            ]
-        initial = np.asarray(initial_goal_distances, dtype=np.float32)
-        if initial.shape != current.shape:
-            raise ValueError(
-                "tb3_progress_v2 initial/current distance shape mismatch: "
-                f"{initial.shape} versus {current.shape}"
-            )
-        denominator = np.maximum(initial, 1e-6)
-        per_agent = np.clip((initial - current) / denominator, 0.0, 1.0)
-        return float(per_agent.mean()) if per_agent.size else 0.0
-
+def _progress_target_from_sample(sample, state_json):
     progress = _json_from_sample(sample, "progress.json")
     if progress is None:
         progress = state_json.get("progress")
@@ -1140,17 +1091,8 @@ def _parse_tb3_lab_state(
     return obs
 
 
-def _split_shard_sources(shards):
-    """Split a semicolon-delimited set of dataset sources."""
-
-    if not isinstance(shards, str):
-        return shards
-    sources = [source.strip() for source in shards.split(";") if source.strip()]
-    return sources or [shards]
-
-
-def _expand_single_hf_dataset_shards(shards):
-    """Download and expand one hf://datasets/<owner>/<repo>/<glob> source."""
+def _expand_hf_dataset_shards(shards):
+    """Download and expand hf://datasets/<owner>/<repo>/<glob> shards locally."""
     if not isinstance(shards, str):
         return shards
     prefix = "hf://datasets/"
@@ -1204,125 +1146,6 @@ def _expand_single_hf_dataset_shards(shards):
     return expanded
 
 
-def _expand_hf_dataset_shards(shards):
-    """Expand one or more semicolon-delimited shard sources.
-
-    The resulting cache paths retain Hugging Face repository names, which the
-    TB3 sampler uses to identify the legacy goal-to-goal and obstacle sources.
-    """
-
-    sources = _split_shard_sources(shards)
-    if not isinstance(sources, list) or len(sources) == 1:
-        source = sources[0] if isinstance(sources, list) else sources
-        return _expand_single_hf_dataset_shards(source)
-
-    expanded = []
-    for source in sources:
-        resolved = _expand_single_hf_dataset_shards(source)
-        if isinstance(resolved, list):
-            expanded.extend(resolved)
-        elif isinstance(resolved, str) and os.path.isdir(resolved):
-            expanded.extend(
-                sorted(glob.glob(os.path.join(resolved, "**", "*.tar"), recursive=True))
-            )
-        elif isinstance(resolved, str) and any(char in resolved for char in "*?["):
-            expanded.extend(sorted(glob.glob(resolved, recursive=True)))
-        else:
-            expanded.append(resolved)
-    print(f"Resolved {len(expanded)} total shards from {len(sources)} sources.")
-    return expanded
-
-
-def _canonicalize_tb3_image(image, mode, resize_width, resize_height):
-    """Preserve TB3 world/image axes while standardizing camera geometry."""
-
-    if mode == "center_square":
-        if resize_width != resize_height:
-            raise ValueError(
-                "TB3 center_square canonicalization requires equal resize width "
-                f"and height, got {resize_width}x{resize_height}."
-            )
-        width, height = image.size
-        side = min(width, height)
-        left = (width - side) // 2
-        top = (height - side) // 2
-        image = image.crop((left, top, left + side, top + side))
-    if resize_width > 0 and resize_height > 0 and image.size != (
-        resize_width,
-        resize_height,
-    ):
-        image = image.resize((resize_width, resize_height), Image.LANCZOS)
-    return image
-
-
-def _tb3_task_context(state_json, sample=None):
-    """Return a canonical domain-specific instruction and prompt metadata."""
-
-    agents = state_json.get("agents", [])
-    num_agents = int(state_json.get("num_agents", len(agents)))
-    task_name = str(state_json.get("task", "")).strip()
-    stored_instruction = str(state_json.get("task_instruction", "")).strip()
-    if not stored_instruction and sample is not None:
-        task_value = sample.get("task.txt")
-        if isinstance(task_value, bytes):
-            stored_instruction = task_value.decode("utf-8", errors="replace").strip()
-        elif isinstance(task_value, str):
-            stored_instruction = task_value.strip()
-
-    domain = str(state_json.get("task_domain", "")).strip().lower().replace("-", "_")
-    evidence = f"{task_name} {stored_instruction}".lower().replace("-", "_")
-    if not domain:
-        if "static obstacle" in evidence or re.search(r"marl(?:_hpc)?_v(?:1|3(?:\.0)?)", evidence):
-            domain = "static_obstacles"
-        else:
-            domain = "goal_to_goal"
-
-    if domain == "static_obstacles":
-        num_obstacles = int(state_json.get("num_static_obstacles", 3))
-        instruction = (
-            f"Coordinate exactly {num_agents} TurtleBot3 agents so every agent reaches "
-            f"its assigned goal while avoiding all {num_obstacles} static obstacles "
-            "and collisions with teammates."
-        )
-    else:
-        num_obstacles = 0
-        instruction = (
-            f"Coordinate exactly {num_agents} TurtleBot3 agents so every agent reaches "
-            "its assigned goal while avoiding collisions with teammates. This "
-            "goal-to-goal environment has no static obstacles."
-        )
-    return domain, num_agents, num_obstacles, instruction
-
-
-def _build_tb3_prompt(state_json, sample, obs_lines, step_idx, outcome, termination_reason):
-    domain, num_agents, num_obstacles, instruction = _tb3_task_context(
-        state_json, sample
-    )
-    environment = str(state_json.get("environment", "simulation")).lower()
-    environment_label = (
-        "physical indoor"
-        if environment in {"physical", "real", "lab_hardware"}
-        else "simulated indoor"
-    )
-    domain_label = "static-obstacle navigation" if domain == "static_obstacles" else "goal-to-goal navigation"
-    header = (
-        "You are an expert vision-language critic for a multi-agent TurtleBot3 team. "
-        f"This is a {environment_label} {domain_label} task with exactly {num_agents} agents "
-        f"and exactly {num_obstacles} static obstacles. "
-        "The overhead image and structured positions use one aligned world frame in meters: "
-        "+X points right in the image, +Y points up in the image, and the world origin is at "
-        "the image center. Frames are center-cropped only; they are never rotated or reflected. "
-        "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided "
-        "by the structured observations. The target is normalized geometric team progress from "
-        "0 to 1. Traversability information is unavailable. "
-        f"Task domain: {domain}. Task instruction: {instruction} "
-        "Predict the current normalized task progress from the video and team state. "
-        f"Timestep: {step_idx}. Episode outcome token: {outcome}. "
-        f"Termination reason: {termination_reason or 'none'}. "
-    )
-    return header + " ".join(obs_lines)
-
-
 class SequenceWebDataset(IterableDataset):
     def __init__(
         self,
@@ -1357,10 +1180,7 @@ class SequenceWebDataset(IterableDataset):
         rware_visual_mode="both",
         max_return_horizon=0,
         success_only=False,
-        target_schema="",
-        tb3_image_mode="none",
         balance_tb3_sources=False,
-        tb3_balance_mode="domain_cardinality",
         trained_agent_counts="3,4,5",
         task_domains="goal_to_goal,static_obstacles",
     ):
@@ -1392,18 +1212,8 @@ class SequenceWebDataset(IterableDataset):
                 raise ValueError("balanced TB3 sampling requires expanded local shard paths")
             counts = [value for value in str(trained_agent_counts).split(",") if value]
             domains = [value for value in str(task_domains).split(",") if value]
-            shards = balanced_tb3_shards(
-                shards, counts, domains, balance_mode=tb3_balance_mode
-            )
-            group_count = (
-                len(domains)
-                if tb3_balance_mode == "domain"
-                else len(counts) * len(domains)
-            )
-            print(
-                f"Balanced TB3 sampling across {group_count} "
-                f"{tb3_balance_mode} groups."
-            )
+            shards = balanced_tb3_shards(shards, counts, domains)
+            print(f"Balanced TB3 sampling across {len(counts) * len(domains)} strata.")
 
         if isinstance(shards, list):
             print(f"Found {len(shards)} shards.")
@@ -1440,8 +1250,6 @@ class SequenceWebDataset(IterableDataset):
         self.rware_visual_mode = rware_visual_mode
         self._max_return_horizon = max_return_horizon
         self.success_only = bool(success_only)
-        self.target_schema = str(target_schema)
-        self.tb3_image_mode = str(tb3_image_mode)
 
     def _custom_decoder(self, key, data):
         # We only care about images here.
@@ -1455,7 +1263,7 @@ class SequenceWebDataset(IterableDataset):
                         img.load()
                         img = img.convert("RGB")
                         # Only resize overhead/image; rware_topdown is already 336x336
-                        if "rware_topdown" not in key and not self.dataset_type.startswith("tb3"):
+                        if "rware_topdown" not in key:
                             if self.resize_width > 0 and self.resize_height > 0:
                                 img = img.resize(
                                     (self.resize_width, self.resize_height)
@@ -1788,14 +1596,7 @@ class SequenceWebDataset(IterableDataset):
             th = self.resize_height if self.resize_height > 0 else 336
             tw = th  # Square per single-view
             iw, ih = image.size
-            if self.dataset_type.startswith("tb3"):
-                image = _canonicalize_tb3_image(
-                    image,
-                    self.tb3_image_mode,
-                    self.resize_width,
-                    self.resize_height,
-                )
-            elif self.rware_visual_mode == "both" and self.dataset_type == "rware":
+            if self.rware_visual_mode == "both" and self.dataset_type == "rware":
                 # Resize overhead to square, pad right half
                 if (iw, ih) != (tw, th):
                     image = image.resize((tw, th), Image.LANCZOS)
@@ -2187,20 +1988,9 @@ class SequenceWebDataset(IterableDataset):
                     continue
 
                 progress_metadata = _json_from_sample(sample, "progress.json") or {}
-                has_episode_success = "episode_success" in progress_metadata
-                success = (
-                    bool(progress_metadata.get("episode_success"))
-                    if has_episode_success
-                    else None
-                )
-                if self.success_only:
-                    if success is None:
-                        raise ValueError(
-                            "--success_only requires episode_success labels. Relabel "
-                            "legacy tb3_progress_v1 shards or disable SUCCESS_ONLY."
-                        )
-                    if not success:
-                        continue
+                success = bool(progress_metadata.get("episode_success", False))
+                if self.success_only and not success:
+                    continue
                 agents = state_json.get("agents", [])
                 if tb3_initial_goal_distances is None:
                     labelled_initial = progress_metadata.get("initial_distances")
@@ -2256,12 +2046,7 @@ class SequenceWebDataset(IterableDataset):
                     reward = float(
                         np.mean([ag.get("reward", 0.0) for ag in agents]) if agents else 0.0
                     )
-                progress = _progress_target_from_sample(
-                    sample,
-                    state_json,
-                    target_schema=self.target_schema,
-                    initial_goal_distances=tb3_initial_goal_distances,
-                )
+                progress = _progress_target_from_sample(sample, state_json)
 
                 episode_meta = state_json.get("episode_meta", {})
                 agents = state_json.get("agents", [])
@@ -2315,15 +2100,21 @@ class SequenceWebDataset(IterableDataset):
                     )
 
                 step_idx = episode_meta.get("step", episode_frame_count)
+                n_ag = len(agents)
+
                 if self.text_prompt_template is None:
-                    text = _build_tb3_prompt(
-                        state_json,
-                        sample,
-                        obs_lines,
-                        step_idx,
-                        outcome,
-                        termination_reason,
+                    header = (
+                        "You are an expert vision language critic model for multi-agent teams able to critique task progress for a multi-agent policy. "
+                        f"This is a real indoor TurtleBot3 lab environment with {n_ag} agents observed from a bird's-eye webcam view. "
+                        "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
+                        "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
+                        "The target is bounded task progress from 0 to 1: agents should reach their assigned goals while avoiding collisions and unsafe spacing. "
+                        "Traversability information is unavailable in this environment. "
+                        "Predict the current normalized task progress of the policy based on these observations: "
+                        f"Timestep: {step_idx}. Episode outcome token: {outcome}. "
+                        f"Termination reason: {termination_reason or 'none'}. "
                     )
+                    text = header + " ".join(obs_lines)
                 else:
                     text = self.text_prompt_template + " " + " ".join(obs_lines)
 
@@ -2449,14 +2240,11 @@ def webdataset_loader(
         rware_visual_mode=getattr(args, "rware_visual_mode", "both"),
         max_return_horizon=getattr(args, "max_return_horizon", 0),
         success_only=getattr(args, "success_only", False),
-        target_schema=getattr(args, "target_schema", ""),
-        tb3_image_mode=getattr(args, "tb3_image_mode", "none"),
         balance_tb3_sources=(
             getattr(args, "balance_tb3_sources", False)
             if balance_tb3_sources is None
             else bool(balance_tb3_sources)
         ),
-        tb3_balance_mode=getattr(args, "tb3_balance_mode", "domain_cardinality"),
         trained_agent_counts=getattr(args, "trained_agent_counts", "3,4,5"),
         task_domains=getattr(args, "task_domains", "goal_to_goal,static_obstacles"),
     )
@@ -2991,14 +2779,9 @@ def split_shards(shards_pattern, val_split=0.2, seed=42, stratify_tb3=None):
         return shards_pattern, None
 
     if stratify_tb3 is not None:
-        agent_counts, task_domains, balance_mode = stratify_tb3
+        agent_counts, task_domains = stratify_tb3
         return split_tb3_shards_by_stratum(
-            files,
-            agent_counts,
-            task_domains,
-            val_split=val_split,
-            seed=seed,
-            require_all=balance_mode == "domain_cardinality",
+            files, agent_counts, task_domains, val_split=val_split, seed=seed
         )
 
     random.Random(seed).shuffle(files)
@@ -3264,7 +3047,6 @@ def main():
             stratify_tb3 = (
                 [value for value in args.trained_agent_counts.split(",") if value],
                 [value for value in args.task_domains.split(",") if value],
-                args.tb3_balance_mode,
             )
         train_main_shards, val_main_shards = split_shards(
             args.train_shards, args.val_split, args.split_seed,

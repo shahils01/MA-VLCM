@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 
-TB3_PROGRESS_SCHEMA = "tb3_progress_v1"
+TB3_PROGRESS_SCHEMA = "tb3_progress_v2"
 STEP_RE = re.compile(r"_step(\d+)$")
 
 
@@ -136,8 +136,8 @@ def compute_progress(
 ):
     agent_progress = []
     for initial, current in zip(initial_distances, current_distances):
-        initial_remaining = max(float(initial) - float(goal_radius_m), 1e-6)
-        current_remaining = max(float(current) - float(goal_radius_m), 0.0)
+        initial_remaining = max(float(initial), 1e-6)
+        current_remaining = max(float(current), 0.0)
         value = (initial_remaining - current_remaining) / initial_remaining
         agent_progress.append(float(np.clip(value, 0.0, 1.0)))
 
@@ -209,6 +209,9 @@ def build_progress_labels(member_payloads, goal_radius_m, proximity_threshold):
                 collision_failure,
                 goal_radius_m,
             )
+        episode_success = bool(progress_by_prefix[prefixes[-1]]["success"])
+        for prefix in prefixes:
+            progress_by_prefix[prefix]["episode_success"] = episode_success
     return progress_by_prefix
 
 

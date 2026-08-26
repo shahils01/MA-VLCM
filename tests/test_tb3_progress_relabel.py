@@ -68,6 +68,8 @@ def test_relabel_shard_preserves_rewards_and_adds_progress():
 
         assert reward0 == 123.0
         assert reward1 == 456.0
-        assert progress0["schema"] == "tb3_progress_v1"
+        assert progress0["schema"] == "tb3_progress_v2"
         assert progress0["target"] == 0.0
+        assert progress0["episode_success"] is True
+        assert progress0["initial_distances"] == [1.0, 1.0]
         assert progress1["target"] == 1.0

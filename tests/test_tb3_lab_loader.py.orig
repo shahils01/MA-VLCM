@@ -26,10 +26,6 @@ class _FakeProcessor:
 
     def __call__(self, text, videos, return_tensors="pt", padding="max_length", truncation=True, max_length=256):
         assert "Traversability information is unavailable" in text
-        assert "exactly 3 agents" in text
-        assert "exactly 3 static obstacles" in text
-        assert "Task domain: static_obstacles" in text
-        assert "+X points right in the image, +Y points up in the image" in text
         assert len(videos) >= 1
         return {
             "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
@@ -61,7 +57,6 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         tar_path = Path(tmpdir) / "tb3_lab_test.tar"
         state = {
-            "task_instruction": "Reach assigned goals and avoid static obstacles.",
             "episode_meta": {
                 "episode_id": "tb3_lab_episode",
                 "step": 1,

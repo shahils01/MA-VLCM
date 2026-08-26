@@ -203,6 +203,69 @@ and value head before training starts. Custom heads use `HEAD_LR` (default
 `3e-4`), a fully trainable language backbone uses `BACKBONE_LR` (default
 `1e-5` in `full` mode), and visual parameters use `VISION_LR` (default `1e-5`).
 
+## Combined Goal-To-Goal And Obstacle Critic Training
+
+The Qwen3-VL and V-JEPA2 launchers default to a balanced two-source TurtleBot
+training set:
+
+```text
+goal_to_goal:
+  hf://datasets/adi2440/tb3-isaac-vlcm/**/*.tar
+static_obstacles:
+  hf://datasets/adi2440/tb3-isaac-avoid-obstacles-vlcm/**/*.tar
+```
+
+The legacy goal-to-goal repository contains 3-, 4-, 5-, and 6-agent episodes;
+the current obstacle repository contains 3-agent episodes. The loader
+recognizes the legacy repository name as `goal_to_goal`, recognizes
+zero-padded paths such as `agents_03`, and makes an episode-level split for
+every observed domain/cardinality group. Training balances the two task
+domains while preserving every available cardinality; the smaller obstacle
+domain is repeated to match the goal-to-goal domain. Override the sources later
+with a semicolon-delimited `TB3_TRAIN_SOURCES` value.
+
+Both launchers use one physical target definition, `tb3_progress_v2`:
+
+```text
+mean_i clamp((initial_goal_distance_i - current_goal_distance_i)
+             / max(initial_goal_distance_i, epsilon), 0, 1)
+```
+
+For legacy `tb3_progress_v1` shards, the initial distance is taken from the
+first frame and the v2 target is recomputed online; the old stored target is
+not mixed with the new definition. `SUCCESS_ONLY` defaults to `0` because the
+legacy repository does not attach final episode success to every frame. Set it
+to `1` only after relabeling all sources with episode-wide success metadata.
+
+Camera inputs are canonicalized before either backbone sees them. The legacy
+640x360 frame is center-cropped to its square world-aligned workspace; the
+newer square Isaac frame is unchanged. Both are then resized to 336x336. No
+rotation or reflection is applied. The audited convention for both sources is
+world `+X` to image-right and world `+Y` to image-up, with coordinates in
+meters.
+
+Qwen3-VL receives a canonical prompt on every clip that states the domain,
+exact number of agents, exact number of static obstacles, task instruction,
+and world/image axis convention. Goal-to-goal prompts explicitly say that no
+static obstacles are present; obstacle prompts explicitly require avoiding all
+three static obstacles and teammate collisions. V-JEPA2 is intentionally the
+video-only comparison and therefore does not consume language; it distinguishes
+the tasks through canonical video and graph/state inputs.
+
+After the obstacle repository upload is complete, submit directly with:
+
+```bash
+sbatch scripts/lora_submit_train_tb3_vjepa2.sh
+sbatch scripts/lora_submit_train_tb3_qwen3_vl.sh
+```
+
+Configuration-only checks do not allocate a GPU:
+
+```bash
+DRY_RUN=1 bash scripts/lora_run_train_tb3_vjepa2.sh
+DRY_RUN=1 bash scripts/lora_run_train_tb3_qwen3_vl.sh
+```
+
 ## Common Overrides
 
 Use a different Hugging Face repository:
@@ -439,3 +502,45 @@ Useful checks:
 PYTHONPATH=src python tests/test_tb3_lab_loader.py
 bash -n scripts/*.sh
 ```
+
+## `tb3_progress_v2` reward-model workflow
+
+The visual MARL reward oracle uses nine values per robot:
+
+```text
+[x, y, cos(yaw), sin(yaw), v, w,
+ current_goal_distance, min_neighbor_distance, initial_goal_distance]
+```
+
+Relabel raw episode shards before stage-one training. The v2 target is
+`mean(clamp((initial_distance-current_distance)/initial_distance, 0, 1))`.
+The relabeler stores initial distances and episode-wide success metadata in
+every frame label, allowing full successful trajectories—not just their last
+frames—to pass `--success_only`.
+
+```bash
+python scripts/relabel_tb3_progress_dataset.py RAW_SHARDS \
+  --output-dir data/tb3_progress_v2
+
+HF_DATASET_REPO=owner/balanced-gtg-obstacles-3to5 \
+  bash scripts/lora_run_train_tb3_vjepa2.sh
+```
+
+The V-JEPA2 and Qwen3-VL launchers default to `tb3_progress_v2`, 9-D robot
+rows, sigmoid progress output, all available 3/4/5/6-agent goal-to-goal data,
+the current 3-agent static-obstacle data, and domain-balanced episode splits.
+Success-only loading is disabled for compatibility with the legacy labels.
+When additional obstacle cardinalities are ready, keep paths organized by task
+domain and cardinality, for example `static_obstacles/agents_4/*.tar`. The
+loader prevents cross-split shard leakage, preserves native cardinality, and
+pads only within each batch using the adjacency diagonal as the node mask.
+
+`ma_vlcm.reward_refinement` provides the stage-two dual objective and ordering
+contract: absolute frame-progress MSE plus Bradley–Terry loss on matched
+same-task trajectory pairs ordered by terminal success, final team progress,
+then completion time. The model also contains a zero-initialized success head;
+enable its BCE only with `--success_loss_weight`, and keep learned termination
+disabled for the MVP. `temporal_order_accuracy` and
+`value_order_correlation` implement the transferable TOPReward criterion for
+successful prefixes. Token-probability scoring is intentionally not applied to
+V-JEPA2.
