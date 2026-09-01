@@ -32,6 +32,8 @@ class ModelConfig:
 
     # Text (placeholder: supply pre-embedded text vectors)
     text_dim: int = 512
+    task_domain_conditioning: bool = False
+    num_task_domains: int = 3  # unknown, goal_to_goal, static_obstacles
 
     # Model dims
     d_model: int = 256
@@ -444,8 +446,17 @@ class MultimodalValueModel(nn.Module):
         )
 
         # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        self.value_head = nn.Linear(lm_hidden + cfg.d_model, 1)
-        self.success_head = nn.Linear(lm_hidden + cfg.d_model, 1)
+        self.task_domain_embedding = None
+        if self.visual_only and cfg.task_domain_conditioning:
+            self.task_domain_embedding = nn.Embedding(
+                cfg.num_task_domains, cfg.d_model
+            )
+            # Preserve an existing checkpoint at initialization; domain-specific
+            # offsets are learned without changing the critic-head dimensions.
+            nn.init.zeros_(self.task_domain_embedding.weight)
+        head_input_dim = lm_hidden + cfg.d_model
+        self.value_head = nn.Linear(head_input_dim, 1)
+        self.success_head = nn.Linear(head_input_dim, 1)
         nn.init.zeros_(self.success_head.weight)
         nn.init.zeros_(self.success_head.bias)
         # Initialize bias to roughly the mean TD target (return over clip_len)
@@ -488,8 +499,10 @@ class MultimodalValueModel(nn.Module):
 
         inputs = None
         video_list = None
+        task_domain_ids = None
         if isinstance(video, dict):
-            inputs = video
+            inputs = dict(video)
+            task_domain_ids = inputs.pop("task_domain_ids", None)
 
         bsz = robot_obs.shape[0]
         # # print('robot_obs shape = ', robot_obs.shape)
@@ -563,6 +576,22 @@ class MultimodalValueModel(nn.Module):
                             )
                         )
 
+            if self.task_domain_embedding is not None:
+                if task_domain_ids is None:
+                    task_domain_ids = torch.zeros(
+                        bsz, dtype=torch.long, device=pooled.device
+                    )
+                else:
+                    task_domain_ids = torch.as_tensor(
+                        task_domain_ids, dtype=torch.long, device=pooled.device
+                    ).view(-1)
+                task_domain_ids = task_domain_ids.clamp(
+                    min=0, max=self.cfg.num_task_domains - 1
+                )
+                domain_feature = self.task_domain_embedding(task_domain_ids).to(
+                    dtype=pooled.dtype
+                )
+                robot_team_feat = robot_team_feat + domain_feature
             value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
             value = self.value_head(value_head_input).squeeze(-1)
             if return_features:

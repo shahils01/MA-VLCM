@@ -132,6 +132,10 @@ BALANCE_TB3_SOURCES="${BALANCE_TB3_SOURCES:-0}"
 TB3_BALANCE_MODE="${TB3_BALANCE_MODE:-domain_cardinality}"
 TB3_IMAGE_MODE="${TB3_IMAGE_MODE:-center_square}"
 TB3_IMAGE_SIZE="${TB3_IMAGE_SIZE:-336}"
+TASK_DOMAIN_CONDITIONING="${TASK_DOMAIN_CONDITIONING:-0}"
+TEMPORAL_CONSISTENCY_WEIGHT="${TEMPORAL_CONSISTENCY_WEIGHT:-0.0}"
+PROGRESS_DISTANCE_MODE="${PROGRESS_DISTANCE_MODE:-euclidean}"
+QWEN_VIDEO_FPS="${QWEN_VIDEO_FPS:-5.0}"
 FINETUNE_MODE="${FINETUNE_MODE:-lora}"
 case "${FINETUNE_MODE,,}" in
     lora|all_lora)
@@ -292,6 +296,8 @@ TRAIN_CMD=(
   --clip_len "$CLIP_LEN"
   --robot_obs_dim "$ROBOT_OBS_DIM"
   --target_schema "$TB3_TARGET_SCHEMA"
+  --progress_distance_mode "$PROGRESS_DISTANCE_MODE"
+  --qwen_video_fps "$QWEN_VIDEO_FPS"
   --tb3_image_mode "$TB3_IMAGE_MODE"
   --resize_width "$TB3_IMAGE_SIZE"
   --resize_height "$TB3_IMAGE_SIZE"
@@ -319,6 +325,7 @@ TRAIN_CMD=(
   --target_mode progress
   --value_output_activation sigmoid
   --mse_loss_weight 1.0
+  --temporal_consistency_loss_weight "$TEMPORAL_CONSISTENCY_WEIGHT"
   --max_grad_norm 1.0
   --samples_per_epoch "$SAMPLES_PER_EPOCH"
   --val_split "$VAL_SPLIT"
@@ -329,6 +336,10 @@ TRAIN_CMD=(
   --vl_max_text_len "$VL_MAX_TEXT_LEN"
   --run_name_prefix "$WANDB_RUN_PREFIX"
 )
+
+if [ "$TASK_DOMAIN_CONDITIONING" = "1" ]; then
+    TRAIN_CMD+=(--task_domain_conditioning)
+fi
 
 if [ "$SUCCESS_ONLY" = "1" ]; then
     TRAIN_CMD+=(--success_only)
@@ -364,6 +375,10 @@ echo "Learning rates: heads=$HEAD_LR, language=$BACKBONE_LR, vision=$VISION_LR"
 echo "Robot cardinality: inferred per episode (minibatches are padded dynamically)"
 echo "TB3 source balance mode: $TB3_BALANCE_MODE"
 echo "TB3 image canonicalization: $TB3_IMAGE_MODE -> ${TB3_IMAGE_SIZE}x${TB3_IMAGE_SIZE} (no rotation or reflection)"
+echo "Task-domain conditioning: $TASK_DOMAIN_CONDITIONING"
+echo "Temporal consistency weight: $TEMPORAL_CONSISTENCY_WEIGHT"
+echo "Progress distance mode: $PROGRESS_DISTANCE_MODE"
+echo "Qwen source-video timestamp rate: ${QWEN_VIDEO_FPS} Hz"
 echo "Scratch root: $SCRATCH_ROOT"
 echo "Hugging Face cache: $HF_HOME"
 echo "Torch cache: $TORCH_HOME"

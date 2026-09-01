@@ -185,6 +185,9 @@ def build_model(args, device):
         num_robots=_arg(args, "num_robots", 3),
         robot_obs_dim=_arg(args, "robot_obs_dim", 8),
         text_dim=_arg(args, "text_dim", 512),
+        task_domain_conditioning=_arg(
+            args, "task_domain_conditioning", False
+        ),
         d_model=_arg(args, "d_model", 256),
         temporal_layers=_arg(args, "temporal_layers", 2),
         temporal_heads=_arg(args, "temporal_heads", 4),
@@ -732,6 +735,7 @@ class Tb3LiveInferenceNode(Node):
             "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
             "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
             "The target is bounded task progress from 0 to 1: agents should reach their assigned goals while avoiding collisions and unsafe spacing. "
+            "Task domain: goal_to_goal. "
             "Traversability information is unavailable in this environment. "
             "Predict the current normalized task progress of the policy based on these observations: "
             f"Timestep: {meta.get('step', self.step_index)}. "
@@ -780,6 +784,11 @@ class Tb3LiveInferenceNode(Node):
             k: (v.to(dtype=self.model_dtype, device=self.device) if v.is_floating_point() else v.to(self.device)) if torch.is_tensor(v) else v
             for k, v in dict(inputs).items()
         }
+        if _arg(self.model_args, "task_domain_conditioning", False):
+            # The live lab prompt explicitly declares goal_to_goal.
+            inputs["task_domain_ids"] = torch.ones(
+                1, dtype=torch.long, device=self.device
+            )
 
         with torch.no_grad():
             pred = self.model(video=inputs, robot_obs=robot_obs, adj=adj)

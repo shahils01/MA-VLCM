@@ -190,12 +190,40 @@ def parse_args():
     )
     p.add_argument("--trained_agent_counts", type=str, default="3,4,5")
     p.add_argument("--task_domains", type=str, default="goal_to_goal,static_obstacles")
+    p.add_argument(
+        "--task_domain_conditioning",
+        action="store_true",
+        help=(
+            "Condition the V-JEPA2 critic head on a task-domain ID parsed from "
+            "the canonical textual prompt."
+        ),
+    )
+    p.add_argument(
+        "--progress_distance_mode",
+        type=str,
+        default="euclidean",
+        choices=["euclidean", "route_if_available", "route_required"],
+        help=(
+            "Distance used by progress targets. Route modes prefer per-agent "
+            "route/geodesic/path distance metadata; route_if_available falls "
+            "back to Euclidean distance for legacy shards."
+        ),
+    )
     p.add_argument("--layout_split", type=str, default="seen_train")
     p.add_argument("--modalities", type=str, default="video,robot_obs,adj")
 
     # Sequence building
     p.add_argument("--clip_len", type=int, default=10)
     p.add_argument("--clip_stride", type=int, default=1)
+    p.add_argument(
+        "--qwen_video_fps",
+        type=float,
+        default=5.0,
+        help=(
+            "Source-frame rate used to construct Qwen3-VL timestamp tokens for "
+            "pre-sampled clips. TB3 Isaac clips are collected at 5 Hz."
+        ),
+    )
     p.add_argument("--robot_source", type=str, default="obs", choices=["obs", "state"])
     p.add_argument(
         "--reward_reduce", type=str, default="mean", choices=["mean", "sum", "first"]
@@ -269,6 +297,15 @@ def parse_args():
     p.add_argument(
         "--success_loss_weight", type=float, default=0.0,
         help="Optional BCE weight for the success-probability evaluation head.",
+    )
+    p.add_argument(
+        "--temporal_consistency_loss_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight for Smooth-L1 consistency between adjacent predicted and "
+            "target progress changes (0 disables the extra forward pass)."
+        ),
     )
     p.add_argument(
         "--max_grad_norm",
@@ -538,6 +575,7 @@ def build_model(args, device):
         num_robots=args.num_robots,
         robot_obs_dim=args.robot_obs_dim,
         text_dim=args.text_dim,
+        task_domain_conditioning=getattr(args, "task_domain_conditioning", False),
         d_model=args.d_model,
         temporal_layers=args.temporal_layers,
         temporal_heads=args.temporal_heads,
@@ -883,22 +921,130 @@ def _json_from_sample(sample, key):
     return value
 
 
+_ROUTE_DISTANCE_KEYS = (
+    "route_dist_to_goal",
+    "route_distance_to_goal",
+    "geodesic_dist_to_goal",
+    "geodesic_distance_to_goal",
+    "path_dist_to_goal",
+    "path_distance_to_goal",
+)
+_INITIAL_ROUTE_DISTANCE_KEYS = tuple(
+    f"initial_{key}" for key in _ROUTE_DISTANCE_KEYS
+)
+_INITIAL_ROUTE_METADATA_KEYS = (
+    "initial_route_distances",
+    "initial_geodesic_distances",
+    "initial_path_distances",
+)
+
+
+def _effective_progress_distance_mode(agents, progress_metadata, requested_mode):
+    """Choose one internally consistent metric for the entire episode."""
+
+    requested_mode = str(requested_mode).lower()
+    if requested_mode not in {
+        "euclidean",
+        "route_if_available",
+        "route_required",
+    }:
+        raise ValueError(f"unsupported progress distance mode: {requested_mode}")
+    if requested_mode == "euclidean":
+        return "euclidean"
+
+    ordered_agents = sorted(agents, key=lambda item: item.get("id", 0))
+    current_available = bool(ordered_agents) and all(
+        any(agent.get(key) is not None for key in _ROUTE_DISTANCE_KEYS)
+        for agent in ordered_agents
+    )
+    metadata_initial = next(
+        (
+            progress_metadata.get(key)
+            for key in _INITIAL_ROUTE_METADATA_KEYS
+            if progress_metadata.get(key) is not None
+        ),
+        None,
+    )
+    initial_available = (
+        metadata_initial is not None
+        and len(metadata_initial) == len(ordered_agents)
+    ) or (
+        bool(ordered_agents)
+        and all(
+            any(agent.get(key) is not None for key in _INITIAL_ROUTE_DISTANCE_KEYS)
+            for agent in ordered_agents
+        )
+    )
+    if current_available and initial_available:
+        # "required" prevents a later frame from silently changing metrics.
+        return "route_required"
+    if requested_mode == "route_required":
+        raise ValueError(
+            "route_required progress needs complete current and initial "
+            "route/geodesic/path distances for every agent"
+        )
+    return "euclidean"
+
+
+def _agent_progress_distance(agent, mode="euclidean", initial=False):
+    """Return route distance when available, with explicit legacy fallback."""
+
+    mode = str(mode).lower()
+    if mode not in {"euclidean", "route_if_available", "route_required"}:
+        raise ValueError(f"unsupported progress distance mode: {mode}")
+    if mode != "euclidean":
+        keys = _INITIAL_ROUTE_DISTANCE_KEYS if initial else _ROUTE_DISTANCE_KEYS
+        for key in keys:
+            value = agent.get(key)
+            if value is not None:
+                return float(value)
+        if mode == "route_required":
+            raise ValueError(
+                "route_required progress needs per-agent route/geodesic/path "
+                "distance metadata"
+            )
+    if initial:
+        return float(
+            agent.get(
+                "initial_goal_distance",
+                agent.get("initial_dist_to_goal", agent.get("dist_to_goal", 0.0)),
+            )
+        )
+    return float(agent.get("dist_to_goal", 0.0))
+
+
+def _initial_progress_distances(agents, progress_metadata, mode="euclidean"):
+    if str(mode).lower() != "euclidean":
+        for key in _INITIAL_ROUTE_METADATA_KEYS:
+            values = progress_metadata.get(key)
+            if values is not None and len(values) == len(agents):
+                return [float(value) for value in values]
+    values = progress_metadata.get("initial_distances")
+    if values is not None and str(mode).lower() == "euclidean":
+        return [float(value) for value in values]
+    return [
+        _agent_progress_distance(agent, mode=mode, initial=True)
+        for agent in sorted(agents, key=lambda item: item.get("id", 0))
+    ]
+
+
 def _progress_target_from_sample(
-    sample, state_json, target_schema="", initial_goal_distances=None
+    sample, state_json, target_schema="", initial_goal_distances=None,
+    progress_distance_mode="euclidean",
 ):
     if str(target_schema).lower() == "tb3_progress_v2":
         agents = sorted(state_json.get("agents", []), key=lambda item: item.get("id", 0))
         current = np.asarray(
-            [float(agent.get("dist_to_goal", 0.0)) for agent in agents],
+            [
+                _agent_progress_distance(agent, mode=progress_distance_mode)
+                for agent in agents
+            ],
             dtype=np.float32,
         )
         if initial_goal_distances is None:
             initial_goal_distances = [
-                float(
-                    agent.get(
-                        "initial_goal_distance",
-                        agent.get("initial_dist_to_goal", agent.get("dist_to_goal", 0.0)),
-                    )
+                _agent_progress_distance(
+                    agent, mode=progress_distance_mode, initial=True
                 )
                 for agent in agents
             ]
@@ -1089,7 +1235,8 @@ def _parse_offroad_state(state_json, num_robots=None, robot_obs_dim=8):
 
 
 def _parse_tb3_lab_state(
-    state_json, num_robots=None, robot_obs_dim=8, initial_goal_distances=None
+    state_json, num_robots=None, robot_obs_dim=8, initial_goal_distances=None,
+    progress_distance_mode="euclidean",
 ):
     """Parse TurtleBot state into ``tb3_progress_v1`` or ``v2`` rows.
 
@@ -1124,7 +1271,9 @@ def _parse_tb3_lab_state(
         obs[i, 3] = float(np.sin(yaw))
         obs[i, 4] = v_lin
         obs[i, 5] = v_ang
-        obs[i, 6] = float(ag.get("dist_to_goal", 0.0))
+        obs[i, 6] = _agent_progress_distance(
+            ag, mode=progress_distance_mode
+        )
         obs[i, 7] = float(ag.get("min_neighbor_dist", 0.0))
         if robot_obs_dim >= 9:
             initial = (
@@ -1294,7 +1443,40 @@ def _tb3_task_context(state_json, sample=None):
     return domain, num_agents, num_obstacles, instruction
 
 
-def _build_tb3_prompt(state_json, sample, obs_lines, step_idx, outcome, termination_reason):
+def _task_domain_id_from_text(text):
+    """Map the canonical textual prompt to a compact conditioning ID."""
+
+    normalized = str(text or "").lower().replace("-", "_")
+    if "task domain: static_obstacles" in normalized or "static obstacle" in normalized:
+        return 2
+    if "task domain: goal_to_goal" in normalized or "goal_to_goal" in normalized:
+        return 1
+    return 0
+
+
+def _qwen_video_metadata(frame_count, fps):
+    """Metadata for an already sampled clip so Qwen uses real timestamps."""
+
+    frame_count = int(frame_count)
+    fps = float(fps)
+    if frame_count <= 0:
+        raise ValueError("Qwen video metadata requires at least one frame")
+    if fps <= 0:
+        raise ValueError("Qwen video FPS must be positive")
+    return [
+        {
+            "total_num_frames": frame_count,
+            "fps": fps,
+            "duration": frame_count / fps,
+            "frames_indices": list(range(frame_count)),
+        }
+    ]
+
+
+def _build_tb3_prompt(
+    state_json, sample, obs_lines, step_idx, outcome, termination_reason,
+    progress_distance_mode="euclidean",
+):
     domain, num_agents, num_obstacles, instruction = _tb3_task_context(
         state_json, sample
     )
@@ -1305,6 +1487,15 @@ def _build_tb3_prompt(state_json, sample, obs_lines, step_idx, outcome, terminat
         else "simulated indoor"
     )
     domain_label = "static-obstacle navigation" if domain == "static_obstacles" else "goal-to-goal navigation"
+    if progress_distance_mode == "route_required":
+        progress_description = "normalized collision-free route progress"
+    elif progress_distance_mode == "route_if_available":
+        progress_description = (
+            "normalized route progress when route metadata is available, "
+            "otherwise normalized Euclidean progress"
+        )
+    else:
+        progress_description = "normalized Euclidean geometric team progress"
     header = (
         "You are an expert vision-language critic for a multi-agent TurtleBot3 team. "
         f"This is a {environment_label} {domain_label} task with exactly {num_agents} agents "
@@ -1313,8 +1504,9 @@ def _build_tb3_prompt(state_json, sample, obs_lines, step_idx, outcome, terminat
         "+X points right in the image, +Y points up in the image, and the world origin is at "
         "the image center. Frames are center-cropped only; they are never rotated or reflected. "
         "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided "
-        "by the structured observations. The target is normalized geometric team progress from "
-        "0 to 1. Traversability information is unavailable. "
+        "by the structured observations. The target is "
+        f"{progress_description} from 0 to 1. "
+        "Traversability information is unavailable. "
         f"Task domain: {domain}. Task instruction: {instruction} "
         "Predict the current normalized task progress from the video and team state. "
         f"Timestep: {step_idx}. Episode outcome token: {outcome}. "
@@ -1363,6 +1555,8 @@ class SequenceWebDataset(IterableDataset):
         tb3_balance_mode="domain_cardinality",
         trained_agent_counts="3,4,5",
         task_domains="goal_to_goal,static_obstacles",
+        progress_distance_mode="euclidean",
+        qwen_video_fps=5.0,
     ):
         if isinstance(shards, str):
             if shards.startswith("hf://datasets/"):
@@ -1442,6 +1636,10 @@ class SequenceWebDataset(IterableDataset):
         self.success_only = bool(success_only)
         self.target_schema = str(target_schema)
         self.tb3_image_mode = str(tb3_image_mode)
+        self.progress_distance_mode = str(progress_distance_mode)
+        self.qwen_video_fps = float(qwen_video_fps)
+        if self.qwen_video_fps <= 0:
+            raise ValueError("qwen_video_fps must be positive")
 
     def _custom_decoder(self, key, data):
         # We only care about images here.
@@ -1576,6 +1774,7 @@ class SequenceWebDataset(IterableDataset):
         buffer = deque()
         episode_frame_count = 0
         tb3_initial_goal_distances = None
+        tb3_progress_distance_mode = self.progress_distance_mode
 
         def _process_clip_data(clip, next_clip=None):
             raw_video = [f["image"] for f in clip]
@@ -1628,6 +1827,9 @@ class SequenceWebDataset(IterableDataset):
                             # default 2-FPS sampler would otherwise discard most
                             # of a short trajectory when metadata is unavailable.
                             do_sample_frames=False,
+                            video_metadata=_qwen_video_metadata(
+                                len(frames), self.qwen_video_fps
+                            ),
                         )
                         inputs.pop("token_type_ids", None)
                     else:
@@ -1667,6 +1869,10 @@ class SequenceWebDataset(IterableDataset):
                         if torch.is_tensor(v) and v.dim() > 0 and v.shape[0] == 1:
                             v = v.squeeze(0)
                         packed[k] = v
+                    if self.vl_backend == "vjepa2":
+                        packed["task_domain_ids"] = torch.tensor(
+                            _task_domain_id_from_text(text), dtype=torch.long
+                        )
                     return packed
 
                 text = clip[0]["text"]
@@ -1686,11 +1892,17 @@ class SequenceWebDataset(IterableDataset):
             reward = torch.tensor(float(clip[-1]["reward"]), dtype=torch.float32)
             done = torch.tensor(float(clip[-1]["done"]), dtype=torch.float32)
             progress = None
+            next_progress = None
             success = None
             if self.target_mode == "progress":
                 progress = torch.tensor(
                     float(clip[-1].get("progress", 0.0)), dtype=torch.float32
                 )
+                if next_clip is not None:
+                    next_progress = torch.tensor(
+                        float(next_clip[-1].get("progress", 0.0)),
+                        dtype=torch.float32,
+                    )
                 if clip[-1].get("success") is not None:
                     success = torch.tensor(float(clip[-1]["success"]), dtype=torch.float32)
 
@@ -1719,6 +1931,8 @@ class SequenceWebDataset(IterableDataset):
                 out["returns"] = returns.view(1)
             if progress is not None:
                 out["progress"] = progress.view(1)
+            if next_progress is not None:
+                out["next_progress"] = next_progress.view(1)
             if success is not None:
                 out["success"] = success.view(1)
             out["inputs"] = inputs
@@ -1750,6 +1964,7 @@ class SequenceWebDataset(IterableDataset):
                 current_ep = ep_id
                 episode_frame_count = 0
                 tb3_initial_goal_distances = None
+                tb3_progress_distance_mode = self.progress_distance_mode
 
             # Image loading — handle RWARE topdown off-by-one:
             # rware_topdown[N] matches overhead[N-1], so apply
@@ -2203,20 +2418,22 @@ class SequenceWebDataset(IterableDataset):
                         continue
                 agents = state_json.get("agents", [])
                 if tb3_initial_goal_distances is None:
-                    labelled_initial = progress_metadata.get("initial_distances")
-                    tb3_initial_goal_distances = (
-                        [float(value) for value in labelled_initial]
-                        if labelled_initial is not None
-                        else [
-                            float(agent.get("initial_goal_distance", agent.get("dist_to_goal", 0.0)))
-                            for agent in sorted(agents, key=lambda item: item.get("id", 0))
-                        ]
+                    tb3_progress_distance_mode = _effective_progress_distance_mode(
+                        agents,
+                        progress_metadata,
+                        self.progress_distance_mode,
+                    )
+                    tb3_initial_goal_distances = _initial_progress_distances(
+                        agents,
+                        progress_metadata,
+                        mode=tb3_progress_distance_mode,
                     )
                 robot_obs = _parse_tb3_lab_state(
                     state_json,
                     num_robots=self.num_robots,
                     robot_obs_dim=self.robot_obs_dim,
                     initial_goal_distances=tb3_initial_goal_distances,
+                    progress_distance_mode=tb3_progress_distance_mode,
                 )
 
                 if "adj.npy" in sample:
@@ -2261,6 +2478,7 @@ class SequenceWebDataset(IterableDataset):
                     state_json,
                     target_schema=self.target_schema,
                     initial_goal_distances=tb3_initial_goal_distances,
+                    progress_distance_mode=tb3_progress_distance_mode,
                 )
 
                 episode_meta = state_json.get("episode_meta", {})
@@ -2323,6 +2541,7 @@ class SequenceWebDataset(IterableDataset):
                         step_idx,
                         outcome,
                         termination_reason,
+                        progress_distance_mode=tb3_progress_distance_mode,
                     )
                 else:
                     text = self.text_prompt_template + " " + " ".join(obs_lines)
@@ -2388,6 +2607,83 @@ class SequenceWebDataset(IterableDataset):
                 buffer.popleft()
 
 
+def _validate_qwen_visual_batch(inputs):
+    """Ensure Qwen patch tensors agree with their per-video spatial grids."""
+
+    pairs = (
+        ("pixel_values", "image_grid_thw"),
+        ("pixel_values_videos", "video_grid_thw"),
+    )
+    for pixel_key, grid_key in pairs:
+        if pixel_key not in inputs or grid_key not in inputs:
+            continue
+        pixels = inputs[pixel_key]
+        grid = inputs[grid_key]
+        if pixels.ndim != 2:
+            raise RuntimeError(
+                f"Qwen {pixel_key} must be a flattened 2-D patch matrix; "
+                f"got shape {tuple(pixels.shape)}."
+            )
+        if grid.ndim != 2 or grid.shape[-1] != 3:
+            raise RuntimeError(
+                f"Qwen {grid_key} must have shape [num_items, 3]; "
+                f"got shape {tuple(grid.shape)}."
+            )
+        actual_patches = int(pixels.shape[0])
+        expected_patches = int(grid.to(dtype=torch.int64).prod(dim=-1).sum().item())
+        if actual_patches != expected_patches:
+            raise RuntimeError(
+                "Qwen visual patch/grid mismatch before model forward: "
+                f"{pixel_key} has {actual_patches} patches but {grid_key} "
+                f"describes {expected_patches}; pixel shape={tuple(pixels.shape)}, "
+                f"grid shape={tuple(grid.shape)}."
+            )
+
+
+def _collate_vlm_inputs(items, vl_backend):
+    """Collate processor outputs, preserving Qwen's flattened-patch contract."""
+
+    out = {}
+    if not items:
+        return out
+    keys = items[0].keys()
+    for key in keys:
+        vals = [item[key] for item in items]
+        if not torch.is_tensor(vals[0]):
+            out[key] = vals
+            continue
+        if key in ["input_ids", "attention_mask", "mm_token_type_ids"]:
+            sequences = [value.reshape(-1) for value in vals]
+            out[key] = torch.nn.utils.rnn.pad_sequence(
+                sequences, batch_first=True, padding_value=0
+            )
+        elif vl_backend == "qwen3_vl" and key in [
+            "pixel_values",
+            "pixel_values_videos",
+        ]:
+            # Processor versions differ on whether they retain a leading
+            # one-item batch dimension. Qwen's vision tower always requires a
+            # single [total_patches, patch_width] matrix across the minibatch.
+            flattened = [value.reshape(-1, value.shape[-1]) for value in vals]
+            out[key] = torch.cat(flattened, dim=0).contiguous()
+        elif vl_backend == "qwen3_vl" and key in [
+            "image_grid_thw",
+            "video_grid_thw",
+        ]:
+            grids = [value.reshape(-1, 3) for value in vals]
+            out[key] = torch.cat(grids, dim=0).contiguous()
+        elif key == "labels":
+            sequences = [value.reshape(-1) for value in vals]
+            out[key] = torch.nn.utils.rnn.pad_sequence(
+                sequences, batch_first=True, padding_value=-100
+            )
+        else:
+            out[key] = torch.stack(vals, dim=0)
+    if vl_backend == "qwen3_vl":
+        _validate_qwen_visual_batch(out)
+    return out
+
+
 def webdataset_loader(
     args, shards, batch_size, num_workers, shuffle=False, dataset_type=None,
     balance_tb3_sources=None,
@@ -2437,7 +2733,10 @@ def webdataset_loader(
         n_step=args.n_step,
         gamma=args.gamma,
         keep_raw_video=False,
-        include_next=getattr(args, "target_mode", "return") != "progress",
+        include_next=(
+            getattr(args, "target_mode", "return") != "progress"
+            or float(getattr(args, "temporal_consistency_loss_weight", 0.0)) > 0.0
+        ),
         vlm_max_text_len=args.vl_max_text_len,
         # Truncating a Qwen3-VL prompt can remove visual placeholder tokens and
         # make the token/video feature counts disagree inside the model.
@@ -2459,6 +2758,8 @@ def webdataset_loader(
         tb3_balance_mode=getattr(args, "tb3_balance_mode", "domain_cardinality"),
         trained_agent_counts=getattr(args, "trained_agent_counts", "3,4,5"),
         task_domains=getattr(args, "task_domains", "goal_to_goal,static_obstacles"),
+        progress_distance_mode=getattr(args, "progress_distance_mode", "euclidean"),
+        qwen_video_fps=getattr(args, "qwen_video_fps", 5.0),
     )
 
     def _collate(batch):
@@ -2475,36 +2776,6 @@ def webdataset_loader(
                 padded.append(item)
             return torch.stack(padded, dim=0)
 
-        def _stack_inputs(items):
-            out = {}
-            if not items:
-                return out
-            keys = items[0].keys()
-            for k in keys:
-                vals = [d[k] for d in items]
-                if torch.is_tensor(vals[0]):
-                    if k in ["input_ids", "attention_mask", "mm_token_type_ids"]:
-                        out[k] = torch.nn.utils.rnn.pad_sequence(
-                            vals, batch_first=True, padding_value=0
-                        )
-                    elif (
-                        args.vl_backend == "qwen3_vl"
-                        and k in ["pixel_values", "pixel_values_videos"]
-                    ):
-                        # Qwen flattens visual patches from every video along
-                        # dimension 0; video_grid_thw preserves the per-video
-                        # boundaries for the multimodal model.
-                        out[k] = torch.cat(vals, dim=0)
-                    elif k == "labels":
-                        out[k] = torch.nn.utils.rnn.pad_sequence(
-                            vals, batch_first=True, padding_value=-100
-                        )
-                    else:
-                        out[k] = torch.stack(vals, dim=0)
-                else:
-                    out[k] = vals
-            return out
-
         out = {
             # Accelerate concatenates every batch field, so metadata must be a
             # tensor rather than a list of strings.
@@ -2512,14 +2783,18 @@ def webdataset_loader(
                 [_episode_id_to_int64(b.get("episode_id", "")) for b in batch],
                 dtype=torch.long,
             ),
-            "inputs": _stack_inputs([b["inputs"] for b in batch]),
+            "inputs": _collate_vlm_inputs(
+                [b["inputs"] for b in batch], args.vl_backend
+            ),
             "robot_obs": _pad_graph_batch([b["robot_obs"] for b in batch]),
             "adj": _pad_graph_batch([b["adj"] for b in batch], adjacency=True),
             "reward": torch.stack([b["reward"] for b in batch], dim=0).view(-1),
             "done": torch.stack([b["done"] for b in batch], dim=0).view(-1),
         }
         if "next_inputs" in batch[0]:
-            out["next_inputs"] = _stack_inputs([b["next_inputs"] for b in batch])
+            out["next_inputs"] = _collate_vlm_inputs(
+                [b["next_inputs"] for b in batch], args.vl_backend
+            )
             out["next_robot_obs"] = _pad_graph_batch(
                 [b["next_robot_obs"] for b in batch]
             )
@@ -2530,6 +2805,10 @@ def webdataset_loader(
             out["returns"] = torch.stack([b["returns"] for b in batch], dim=0).view(-1)
         if "progress" in batch[0]:
             out["progress"] = torch.stack([b["progress"] for b in batch], dim=0).view(-1)
+        if "next_progress" in batch[0]:
+            out["next_progress"] = torch.stack(
+                [b["next_progress"] for b in batch], dim=0
+            ).view(-1)
         return out
 
     loader_kwargs = dict(
@@ -2542,6 +2821,14 @@ def webdataset_loader(
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 2
     return DataLoader(dataset, **loader_kwargs)
+
+
+def _temporal_consistency_loss(pred, next_pred, target, next_target):
+    """Match adjacent prediction changes to adjacent progress-target changes."""
+
+    predicted_delta = next_pred.view(-1) - pred.view(-1)
+    target_delta = next_target.view(-1) - target.view(-1)
+    return F.smooth_l1_loss(predicted_delta, target_delta, beta=0.02)
 
 
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
@@ -2737,15 +3024,22 @@ def run_epoch(
         if progress_target is not None:
             progress_target = progress_target.to(accelerator.device)
         target_mode = getattr(args, "target_mode", "return")
-        use_next = target_mode != "progress"
+        temporal_weight = float(
+            getattr(args, "temporal_consistency_loss_weight", 0.0)
+        )
+        use_next = target_mode != "progress" or temporal_weight > 0.0
         if use_next:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
             next_adj = batch["next_adj"].to(accelerator.device)
+            next_progress_target = batch.get("next_progress")
+            if next_progress_target is not None:
+                next_progress_target = next_progress_target.to(accelerator.device)
         else:
             next_inputs = None
             next_robot_obs = None
             next_adj = None
+            next_progress_target = None
 
         if (
             train
@@ -2861,6 +3155,31 @@ def run_epoch(
                     elif args.loss_type == "mse":
                         loss = loss_fn(pred, target)
 
+                temporal_consistency_loss = None
+                if target_mode == "progress" and temporal_weight > 0.0:
+                    if next_progress_target is None:
+                        raise RuntimeError(
+                            "temporal consistency requires next_progress targets"
+                        )
+                    next_model_out = model(
+                        next_inputs,
+                        next_robot_obs,
+                        next_adj,
+                        return_features=False,
+                    )
+                    if isinstance(next_model_out, dict):
+                        next_model_out = next_model_out["value"]
+                    temporal_next_pred = _apply_value_output_activation(
+                        next_model_out, args
+                    )
+                    temporal_consistency_loss = _temporal_consistency_loss(
+                        pred,
+                        temporal_next_pred,
+                        progress_target,
+                        next_progress_target,
+                    )
+                    loss = loss + temporal_weight * temporal_consistency_loss
+
                 success_weight = float(getattr(args, "success_loss_weight", 0.0))
                 if success_weight > 0.0:
                     success_target = batch.get("success")
@@ -2932,6 +3251,10 @@ def run_epoch(
                             log_dict["train/mse_loss"] = mse_loss.item()
                     elif target_mode == "progress":
                         log_dict["train/progress_mse_loss"] = mse_loss.item()
+                        if temporal_consistency_loss is not None:
+                            log_dict["train/temporal_consistency_loss"] = (
+                                temporal_consistency_loss.item()
+                            )
                     wandb.log(log_dict)
             except ImportError:
                 pass

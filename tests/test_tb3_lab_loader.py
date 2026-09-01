@@ -38,6 +38,16 @@ class _FakeProcessor:
         }
 
 
+class _FakeVJEPA2Processor:
+    def __call__(self, videos, return_tensors="pt"):
+        assert len(videos) >= 1
+        return {
+            "pixel_values_videos": torch.zeros(
+                (1, len(videos), 3, 8, 8), dtype=torch.float32
+            )
+        }
+
+
 def _add_bytes(tar, name, payload):
     info = tarfile.TarInfo(name=name)
     info.size = len(payload)
@@ -184,11 +194,11 @@ def main():
         assert sample["robot_obs"].shape == (1, 3, 8)
         assert sample["episode_id"] == "tb3_lab_episode"
         assert sample["adj"].shape == (1, 3, 3)
-        np.testing.assert_allclose(sample["reward"].numpy(), np.array([1.74], dtype=np.float32))
-        np.testing.assert_allclose(sample["returns"].numpy(), np.array([1.74], dtype=np.float32))
+        torch.testing.assert_close(sample["reward"], torch.tensor([1.74]))
+        torch.testing.assert_close(sample["returns"], torch.tensor([1.74]))
         assert sample["done"].item() == 0.0
-        last_robot = sample["robot_obs"][0, 2].numpy()
-        np.testing.assert_allclose(last_robot[:2], np.array([1.0, 0.6], dtype=np.float32))
+        last_robot = sample["robot_obs"][0, 2]
+        torch.testing.assert_close(last_robot[:2], torch.tensor([1.0, 0.6]))
         assert sample["inputs"]["input_ids"].shape == (3,)
 
         progress_dataset = SequenceWebDataset(
@@ -220,9 +230,8 @@ def main():
             vl_backend="llava_onevision",
         )
         progress_sample = next(iter(progress_dataset))
-        np.testing.assert_allclose(
-            progress_sample["progress"].numpy(),
-            np.array([0.42], dtype=np.float32),
+        torch.testing.assert_close(
+            progress_sample["progress"], torch.tensor([0.42])
         )
         assert "returns" not in progress_sample
 
@@ -256,6 +265,44 @@ def main():
             _add_bytes(tar, f"{second}.adj.npy", _make_npy_bytes(adj))
             _add_bytes(tar, f"{second}.dist.npy", _make_npy_bytes(dist))
 
+        temporal_dataset = SequenceWebDataset(
+            shards=str(multi_path),
+            clip_len=1,
+            clip_stride=1,
+            text_mode="raw",
+            robot_source="state",
+            reward_reduce="mean",
+            done_reduce="any",
+            vlm_processor=_FakeVJEPA2Processor(),
+            vl_model_name=None,
+            robot_obs_dim=8,
+            num_robots=3,
+            max_num_robots=3,
+            text_prompt_template=None,
+            dataset_type="tb3_lab",
+            return_mode="nstep",
+            target_mode="progress",
+            n_step=1,
+            gamma=0.95,
+            keep_raw_video=False,
+            include_next=True,
+            vlm_max_text_len=256,
+            vlm_truncation=True,
+            vlm_padding="max_length",
+            resize_width=144,
+            resize_height=144,
+            vl_backend="vjepa2",
+        )
+        temporal_sample = next(iter(temporal_dataset))
+        assert temporal_sample["inputs"]["task_domain_ids"].item() == 2
+        assert temporal_sample["next_inputs"]["task_domain_ids"].item() == 2
+        torch.testing.assert_close(
+            temporal_sample["progress"], torch.tensor([0.2])
+        )
+        torch.testing.assert_close(
+            temporal_sample["next_progress"], torch.tensor([0.0])
+        )
+
         multi_dataset = SequenceWebDataset(
             shards=str(multi_path),
             clip_len=2,
@@ -288,9 +335,8 @@ def main():
         assert multi_sample["robot_obs"].shape == (2, 3, 8)
         assert multi_sample["adj"].shape == (2, 3, 3)
         assert multi_sample["done"].item() == 1.0
-        np.testing.assert_allclose(
-            multi_sample["reward"].numpy(),
-            np.array([-25.0], dtype=np.float32),
+        torch.testing.assert_close(
+            multi_sample["reward"], torch.tensor([-25.0])
         )
 
         args = SimpleNamespace(

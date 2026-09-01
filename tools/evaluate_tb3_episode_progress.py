@@ -96,6 +96,15 @@ def parse_args():
         "--output-dir", default="outputs/plots/tb3_episode_inference"
     )
     parser.add_argument("--num-episodes", type=int, default=5)
+    parser.add_argument(
+        "--num-failed-episodes",
+        type=int,
+        default=0,
+        help=(
+            "Require this many unsuccessful episodes among the selected episodes. "
+            "Requires episode_success labels in the progress metadata."
+        ),
+    )
     parser.add_argument("--episode-seed", type=int, default=42)
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--val-split", type=float, default=0.2)
@@ -195,6 +204,9 @@ def inspect_episode_shard(shard_path, load_frames=False):
     targets = {}
     steps = set()
     state_episode_id = None
+    episode_success = None
+    state_episode_success = None
+    latest_state_step = -1
     with tarfile.open(shard_path, "r") as archive:
         for member in archive.getmembers():
             if not member.isfile():
@@ -215,16 +227,27 @@ def inspect_episode_shard(shard_path, load_frames=False):
                     payload = json.loads(extracted.read().decode("utf-8"))
                     if isinstance(payload, dict):
                         value = payload.get("target", payload.get("team_progress"))
+                        if "episode_success" in payload:
+                            episode_success = bool(payload["episode_success"])
                     else:
                         value = payload
                     if value is None:
                         continue
                     targets[step] = float(value)
-            elif state_episode_id is None and member.name.endswith(".state.json"):
+            elif member.name.endswith(".state.json"):
                 extracted = archive.extractfile(member)
                 if extracted is not None:
                     state = json.loads(extracted.read().decode("utf-8"))
-                    state_episode_id = state.get("episode_meta", {}).get("episode_id")
+                    episode_meta = state.get("episode_meta", {})
+                    if state_episode_id is None:
+                        state_episode_id = episode_meta.get("episode_id")
+                    if step >= latest_state_step:
+                        latest_state_step = step
+                        outcome = str(episode_meta.get("outcome", "")).lower()
+                        if episode_meta.get("success", False) or outcome == "success":
+                            state_episode_success = True
+                        elif episode_meta.get("failure", False) or outcome == "failure":
+                            state_episode_success = False
 
     ordered_steps = sorted(steps)
     source_parts = list(shard_path.with_suffix("").parts[-3:])
@@ -238,6 +261,11 @@ def inspect_episode_shard(shard_path, load_frames=False):
         "targets": targets,
         "frames": frames,
         "frame_count": len(ordered_steps),
+        "episode_success": (
+            episode_success
+            if episode_success is not None
+            else state_episode_success
+        ),
     }
 
 
@@ -261,8 +289,30 @@ def select_episode_shards(args):
             f"Requested {args.num_episodes} episodes with at least "
             f"{args.minimum_frames} frames, but found {len(eligible)}."
         )
+    num_failed = int(args.num_failed_episodes)
+    if not 0 <= num_failed <= args.num_episodes:
+        raise ValueError(
+            "--num-failed-episodes must be between zero and --num-episodes"
+        )
     rng = random.Random(args.episode_seed)
-    selected = rng.sample(eligible, args.num_episodes)
+    if num_failed:
+        num_successful = args.num_episodes - num_failed
+        failed = [item for item in eligible if item[1]["episode_success"] is False]
+        successful = [item for item in eligible if item[1]["episode_success"] is True]
+        unknown = [item for item in eligible if item[1]["episode_success"] is None]
+        if len(failed) < num_failed or len(successful) < num_successful:
+            raise RuntimeError(
+                "Requested an outcome-stratified evaluation with "
+                f"{num_successful} successful and {num_failed} failed episodes, but "
+                f"found {len(successful)} successful, {len(failed)} failed, and "
+                f"{len(unknown)} without episode_success labels."
+            )
+        selected = rng.sample(successful, num_successful) + rng.sample(
+            failed, num_failed
+        )
+        rng.shuffle(selected)
+    else:
+        selected = rng.sample(eligible, args.num_episodes)
     return [item[1] for item in selected]
 
 
@@ -393,6 +443,9 @@ def infer_episode(model, model_args, model_dtype, episode, device, clip_stride):
     args.target_mode = "progress"
     args.batch_size = 1
     args.num_workers = 0
+    # Checkpoint training may use adjacent clips, but episode inference emits
+    # one prediction for every complete clip window.
+    args.temporal_consistency_loss_weight = 0.0
     loader = webdataset_loader(
         args,
         shards=episode["path"],
@@ -400,6 +453,10 @@ def infer_episode(model, model_args, model_dtype, episode, device, clip_stride):
         num_workers=0,
         shuffle=False,
         dataset_type="tb3_lab",
+        # The episode was already selected from the held-out shards. Training
+        # checkpoints may retain balance_tb3_sources=True, but balancing a
+        # single explicit tar path is neither valid nor useful for inference.
+        balance_tb3_sources=False,
     )
 
     clip_len = int(args.clip_len)
@@ -437,7 +494,29 @@ def _prediction_at_or_before(rows, step):
     return available[-1]["prediction"] if available else None
 
 
+def _evaluation_targets(episode, results):
+    """Prefer loader targets so plots use the checkpoint training schema."""
+
+    targets = dict(episode["targets"])
+    aligned = {}
+    for rows in results.values():
+        for row in rows:
+            step = row["step"]
+            target = row["target"]
+            if step in aligned and not math.isclose(
+                aligned[step], target, rel_tol=1e-6, abs_tol=1e-6
+            ):
+                raise RuntimeError(
+                    "Compared checkpoints produced different target schemas at "
+                    f"step {step}: {aligned[step]} versus {target}."
+                )
+            aligned[step] = target
+    targets.update(aligned)
+    return targets
+
+
 def write_episode_csv(path, episode, results):
+    targets = _evaluation_targets(episode, results)
     maps = {
         name: {row["step"]: row["prediction"] for row in rows}
         for name, rows in results.items()
@@ -449,7 +528,7 @@ def write_episode_csv(path, episode, results):
         )
         writer.writeheader()
         for step in episode["steps"]:
-            row = {"step": step, "target": episode["targets"].get(step, "")}
+            row = {"step": step, "target": targets.get(step, "")}
             for name in results:
                 row[f"prediction_{name}"] = maps[name].get(step, "")
             writer.writerow(row)
@@ -467,12 +546,13 @@ def _plot_modules():
 
 
 def _plot_curves(axis, episode, results, through_step=None):
-    target_steps = [step for step in episode["steps"] if step in episode["targets"]]
+    targets = _evaluation_targets(episode, results)
+    target_steps = [step for step in episode["steps"] if step in targets]
     if through_step is not None:
         target_steps = [step for step in target_steps if step <= through_step]
     axis.plot(
         target_steps,
-        [episode["targets"][step] for step in target_steps],
+        [targets[step] for step in target_steps],
         color="#1f77b4",
         linewidth=2.5,
         label="Ground-truth progress",
@@ -560,8 +640,7 @@ def summarize_episode(episode, results):
     for name, rows in results.items():
         errors = []
         for row in rows:
-            target = episode["targets"].get(row["step"], row["target"])
-            errors.append(row["prediction"] - target)
+            errors.append(row["prediction"] - row["target"])
         array = np.asarray(errors, dtype=np.float64)
         summary[name] = {
             "samples": len(rows),
@@ -602,6 +681,7 @@ def main():
         "checkpoint_root": str(Path(args.checkpoint_root).expanduser()),
         "checkpoints": {name: str(path) for name, path in checkpoints.items()},
         "episodes": episodes,
+        "num_failed_episodes": args.num_failed_episodes,
         "clip_stride": args.clip_stride,
         "fps": args.fps,
     }
@@ -651,7 +731,17 @@ def main():
 
     aggregate_summary = {}
     for index, episode in enumerate(episodes, start=1):
-        episode_dir = run_dir / f"episode_{index:02d}_{episode['source_id']}"
+        outcome_label = (
+            "success"
+            if episode["episode_success"] is True
+            else "failure"
+            if episode["episode_success"] is False
+            else "unknown"
+        )
+        episode_dir = (
+            run_dir
+            / f"episode_{index:02d}_{outcome_label}_{episode['source_id']}"
+        )
         episode_dir.mkdir(parents=True, exist_ok=False)
         results = all_results[episode["source_id"]]
         write_episode_csv(episode_dir / "progress.csv", episode, results)

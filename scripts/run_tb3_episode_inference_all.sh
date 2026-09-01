@@ -23,6 +23,7 @@ CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-$SCRATCH_ROOT/checkpoints}"
 DATASET="${DATASET:-hf://datasets/adi2440/tb3-isaac-vlcm/**/*.tar}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/outputs/plots/tb3_episode_inference}"
 NUM_EPISODES="${NUM_EPISODES:-5}"
+NUM_FAILED_EPISODES="${NUM_FAILED_EPISODES:-0}"
 EPISODE_SEED="${EPISODE_SEED:-42}"
 SPLIT_SEED="${SPLIT_SEED:-42}"
 VAL_SPLIT="${VAL_SPLIT:-0.2}"
@@ -45,6 +46,7 @@ EVAL_ARGS=(
   --dataset "$DATASET"
   --output-dir "$OUTPUT_DIR"
   --num-episodes "$NUM_EPISODES"
+  --num-failed-episodes "$NUM_FAILED_EPISODES"
   --episode-seed "$EPISODE_SEED"
   --split-seed "$SPLIT_SEED"
   --val-split "$VAL_SPLIT"
@@ -73,7 +75,7 @@ EVAL_ARGS+=("$@")
 
 echo "Checkpoint root: $CHECKPOINT_ROOT"
 echo "Dataset: $DATASET"
-echo "Episodes: $NUM_EPISODES (held-out split=$VAL_SPLIT, seed=$EPISODE_SEED)"
+echo "Episodes: $NUM_EPISODES ($NUM_FAILED_EPISODES failed; held-out split=$VAL_SPLIT, seed=$EPISODE_SEED)"
 echo "Output directory: $OUTPUT_DIR"
 
 if [ -f "$CONTAINER_PATH" ] && command -v apptainer >/dev/null 2>&1; then
