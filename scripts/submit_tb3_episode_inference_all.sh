@@ -10,7 +10,7 @@
 #SBATCH --gpus=a100:1
 
 # Submit the three-backbone, full-episode inference launcher through Slurm.
-# Environment overrides such as LLAVA_CHECKPOINT, NUM_EPISODES, and NO_VIDEO
+# Environment overrides such as NUM_EPISODES, and NO_VIDEO
 # are inherited by sbatch; positional arguments are forwarded unchanged.
 
 set -euo pipefail

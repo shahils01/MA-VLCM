@@ -35,30 +35,20 @@ from ma_vlcm.train import (
 )
 
 
-MODEL_ORDER = ("llava", "qwen3_vl", "vjepa2")
+MODEL_ORDER = ("qwen3_vl", "vjepa2")
 MODEL_LABELS = {
-    "llava": "LLaVA-OneVision",
     "qwen3_vl": "Qwen3-VL",
     "vjepa2": "V-JEPA2",
 }
 MODEL_COLORS = {
-    "llava": "#d62728",
     "qwen3_vl": "#2ca02c",
     "vjepa2": "#9467bd",
 }
 MODEL_FILENAME_TOKENS = {
-    "llava": (
-        "llava_onevision",
-        "llava-onevision",
-        "llava",
-        "tb3_isaac_0.5b",
-        "turtlebot_0.5b",
-    ),
     "qwen3_vl": ("qwen3_vl", "qwen3vl"),
     "vjepa2": ("vjepa2", "v_jepa2"),
 }
 EXPECTED_BACKENDS = {
-    "llava": "llava_onevision",
     "qwen3_vl": "qwen3_vl",
     "vjepa2": "vjepa2",
 }
@@ -82,7 +72,7 @@ def _default_checkpoint_root():
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate the latest LLaVA, Qwen3-VL, and V-JEPA2 checkpoints on "
+            "Evaluate the latest Qwen3-VL and V-JEPA2 checkpoints on "
             "the same complete held-out TurtleBot episodes."
         )
     )
@@ -124,7 +114,6 @@ def parse_args():
         default=None,
         help="Explicit episode tar files; bypasses automatic held-out selection.",
     )
-    parser.add_argument("--llava-checkpoint", default=None)
     parser.add_argument("--qwen3-vl-checkpoint", default=None)
     parser.add_argument("--vjepa2-checkpoint", default=None)
     parser.add_argument(
@@ -658,7 +647,6 @@ def main():
         raise ValueError("--clip-stride must be positive")
 
     explicit = {
-        "llava": args.llava_checkpoint or os.environ.get("LLAVA_CHECKPOINT"),
         "qwen3_vl": args.qwen3_vl_checkpoint or os.environ.get("QWEN3_VL_CHECKPOINT"),
         "vjepa2": args.vjepa2_checkpoint or os.environ.get("VJEPA2_CHECKPOINT"),
     }

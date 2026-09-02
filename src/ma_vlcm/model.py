@@ -11,8 +11,8 @@ import torch.nn.functional as F
 @dataclass
 class ModelConfig:
     # Backbone
-    vl_backend: str = "llava_video"
-    vl_model_name: str = "llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
+    vl_backend: str = "qwen3_vl"
+    vl_model_name: str = "Qwen/Qwen3-VL-2B-Instruct"
     vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
     vl_max_text_len: int = 256
     freeze_vl: bool = False
@@ -74,32 +74,7 @@ class VisionLanguageBackbone(nn.Module):
             dtype = torch.bfloat16
 
         try:
-            from transformers import (
-                AutoProcessor,
-                AutoTokenizer,
-                LlavaNextVideoProcessor,
-            )
-            try:
-                from transformers import LlavaOnevisionProcessor
-            except ImportError:
-                LlavaOnevisionProcessor = None
-
-            try:
-                from transformers.models.llava_next_video import (
-                    LlavaNextVideoForConditionalGeneration,
-                )
-            except ImportError:
-                LlavaNextVideoForConditionalGeneration = None
-            
-            try:
-                from transformers.models.llava_onevision import (
-                    LlavaOnevisionForConditionalGeneration,
-                )
-            except ImportError:
-                try:
-                    from transformers import LlavaOnevisionForConditionalGeneration
-                except ImportError:
-                    LlavaOnevisionForConditionalGeneration = None
+            from transformers import AutoProcessor, AutoTokenizer
 
             try:
                 from transformers.models.auto.modeling_auto import (
@@ -122,12 +97,8 @@ class VisionLanguageBackbone(nn.Module):
                     "git-based Transformers requirement."
                 ) from exc
             self.processor = AutoProcessor.from_pretrained(cfg.vl_model_name)
-        elif cfg.vl_backend == "llava_onevision":
-            if LlavaOnevisionProcessor is None:
-                raise ImportError("LlavaOnevisionProcessor not available in your transformers version.")
-            self.processor = LlavaOnevisionProcessor.from_pretrained(cfg.vl_model_name)
         else:
-            self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
+            raise ValueError(f"Unsupported vision-language backend: {cfg.vl_backend}")
 
         self.tokenizer = getattr(
             self.processor, "tokenizer", None
@@ -147,16 +118,8 @@ class VisionLanguageBackbone(nn.Module):
             self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                 cfg.vl_model_name, **model_kwargs
             )
-        elif cfg.vl_backend == "llava_onevision":
-            if LlavaOnevisionForConditionalGeneration is None:
-                raise ImportError("LlavaOnevisionForConditionalGeneration not available.")
-            self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
-                cfg.vl_model_name, **model_kwargs
-            )
         else:
-            self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-                cfg.vl_model_name, **model_kwargs
-            )
+            raise ValueError(f"Unsupported vision-language backend: {cfg.vl_backend}")
 
         if "<obs>" in self.tokenizer.get_vocab() and hasattr(
             self.model, "resize_token_embeddings"
@@ -239,7 +202,7 @@ class VisionLanguageBackbone(nn.Module):
     def prepare_inputs(
         self, text, videos, padding=False, truncation=False, max_length=None
     ):
-        # For LLaVA video prompts, truncation can break special token alignment.
+        # For Qwen3-VL prompts, truncation can break special token alignment.
         # Only pass max_length when truncation is explicitly enabled.
         if truncation and max_length is None:
             max_length = self.cfg.vl_max_text_len

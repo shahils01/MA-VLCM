@@ -40,13 +40,13 @@ def test_latest_checkpoint_uses_newest_run_then_highest_epoch(tmp_path):
     assert selected == newer_last.resolve()
 
 
-def test_latest_checkpoint_accepts_legacy_llava_run_prefix(tmp_path):
-    first = tmp_path / "tb3_isaac_0.5B_20260720_120000_epoch_1.pt"
-    last = tmp_path / "tb3_isaac_0.5B_20260720_120000_epoch_20.pt"
+def test_latest_checkpoint_selects_highest_qwen_epoch(tmp_path):
+    first = tmp_path / "tb3_isaac_qwen3_vl_2b_20260720_120000_epoch_1.pt"
+    last = tmp_path / "tb3_isaac_qwen3_vl_2b_20260720_120000_epoch_20.pt"
     first.touch()
     last.touch()
 
-    selected = find_latest_checkpoint(tmp_path, "llava")
+    selected = find_latest_checkpoint(tmp_path, "qwen3_vl")
     assert selected == last.resolve()
 
 
@@ -92,7 +92,7 @@ def test_inspect_episode_and_write_aligned_csv(tmp_path):
     info["targets"][1] = 0.75
     output = tmp_path / "progress.csv"
     results = {
-        "llava": [
+        "qwen3_vl": [
             {"step": 1, "prediction": 0.3, "target": 0.4},
             {"step": 2, "prediction": 0.9, "target": 1.0},
         ],
@@ -103,7 +103,7 @@ def test_inspect_episode_and_write_aligned_csv(tmp_path):
     }
     write_episode_csv(output, info, results)
     rows = output.read_text().splitlines()
-    assert rows[0] == "step,target,prediction_llava,prediction_vjepa2"
+    assert rows[0] == "step,target,prediction_qwen3_vl,prediction_vjepa2"
     assert rows[1] == "0,0.0,,"
     assert rows[2] == "1,0.4,0.3,0.5"
     assert rows[-1] == "2,1.0,0.9,0.8"
@@ -112,7 +112,7 @@ def test_inspect_episode_and_write_aligned_csv(tmp_path):
 def test_explicit_checkpoint_is_accepted_without_filename_convention(tmp_path):
     checkpoint = tmp_path / "legacy_model.pt"
     checkpoint.touch()
-    assert find_latest_checkpoint(tmp_path, "llava", checkpoint) == checkpoint.resolve()
+    assert find_latest_checkpoint(tmp_path, "qwen3_vl", checkpoint) == checkpoint.resolve()
 
 
 def test_episode_inference_disables_training_source_balancing(monkeypatch, tmp_path):

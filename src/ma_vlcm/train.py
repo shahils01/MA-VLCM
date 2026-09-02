@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset
-from accelerate import Accelerator
+from accelerate import Accelerator, DataLoaderConfiguration
 import numpy as np
 
 # Extracted Shelf Map (Partial - to be updated with full map)
@@ -403,18 +403,14 @@ def parse_args():
     p.add_argument(
         "--vl_backend",
         type=str,
-        default="llava_video",
+        default="qwen3_vl",
         choices=[
-            "deepseek_vl",
-            "deepseek_vl2",
-            "llava_video",
-            "llava_onevision",
             "qwen3_vl",
             "vjepa2",
         ],
     )
     p.add_argument(
-        "--vl_model_name", type=str, default="llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
+        "--vl_model_name", type=str, default="Qwen/Qwen3-VL-2B-Instruct"
     )
     p.add_argument(
         "--vl_dtype",
@@ -597,7 +593,7 @@ def build_model(args, device):
 def _parse_lora_targets(args):
     if args.lora_target_modules:
         return [t.strip() for t in args.lora_target_modules.split(",") if t.strip()]
-    # Default targets for LLaMA-style blocks used by LLaVA
+    # Default targets for the language-model transformer blocks
     return ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
@@ -1545,7 +1541,7 @@ class SequenceWebDataset(IterableDataset):
         rware_config="tiny-2ag-hard",
         resize_width=672,
         resize_height=336,
-        vl_backend="llava_video",
+        vl_backend="qwen3_vl",
         rware_visual_mode="both",
         max_return_horizon=0,
         success_only=False,
@@ -1696,38 +1692,8 @@ class SequenceWebDataset(IterableDataset):
                         )
                 except Exception as e:
                     print(f"Warning: Failed to load Qwen3-VL processor: {e}")
-            elif (
-                self.vl_backend == "llava_onevision"
-                or "llava-onevision" in self.vl_model_name.lower()
-            ):
-                from transformers import LlavaOnevisionProcessor
-
-                try:
-                    self.vlm_processor = LlavaOnevisionProcessor.from_pretrained(
-                        self.vl_model_name
-                    )
-                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                    if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
-                        tokenizer.add_special_tokens(
-                            {"additional_special_tokens": ["<obs>"]}
-                        )
-                except Exception as e:
-                    print(f"Warning: Failed to load LLaVA-OneVision processor: {e}")
             else:
-                from transformers import LlavaNextVideoProcessor
-
-                try:
-                    self.vlm_processor = LlavaNextVideoProcessor.from_pretrained(
-                        self.vl_model_name
-                    )
-                    # Ensure special tokens
-                    tokenizer = getattr(self.vlm_processor, "tokenizer", None)
-                    if tokenizer is not None and "<obs>" not in tokenizer.get_vocab():
-                        tokenizer.add_special_tokens(
-                            {"additional_special_tokens": ["<obs>"]}
-                        )
-                except Exception as e:
-                    print(f"Warning: Failed to load VLM processor: {e}")
+                raise ValueError(f"Unsupported vision-language backend: {self.vl_backend}")
 
         # Error handler: skip broken samples instead of crashing
         def custom_wds_handler(exn):
@@ -3446,11 +3412,21 @@ def main():
         )
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
+    # IterableDataset dispatch makes Accelerate infer one shared leading batch
+    # dimension for every tensor. Qwen visual inputs intentionally violate that
+    # assumption: pixel_values_videos is [sum(patches), patch_width], while the
+    # rest of the minibatch starts with batch_size. Dispatch would therefore
+    # truncate (for example) 8192 visual patches to 16 before model.forward.
+    dataloader_config = DataLoaderConfiguration(
+        dispatch_batches=False,
+        non_blocking=True,
+    )
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         fsdp_plugin=fsdp_plugin,
         gradient_accumulation_steps=max(1, args.grad_accum_steps),
         kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else [],
+        dataloader_config=dataloader_config,
     )
 
     # --- WandB init (main process only) ---

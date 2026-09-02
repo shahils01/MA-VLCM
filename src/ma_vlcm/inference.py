@@ -93,7 +93,7 @@ def parse_inference_args():
     p.add_argument(
         "--baseline",
         action="store_true",
-        help="Baseline mode: skip LoRA adapters, keep LLaVA at pretrained weights. "
+        help="Baseline mode: skip LoRA adapters, keep the pretrained vision-language backbone weights. "
         "Only loads GNN + value head from checkpoint for apples-to-apples comparison.",
     )
     p.add_argument(
@@ -1045,8 +1045,8 @@ def main():
     # ── 3. Rebuild model + load weights ─────────────────────────────────────
     baseline_mode = cli_args.baseline
     if baseline_mode:
-        print("Building model in BASELINE mode (no LoRA, pretrained LLaVA backbone)...")
-        # Build without LoRA — pretrained LLaVA + random custom heads
+        print("Building model in BASELINE mode (no LoRA, pretrained vision-language backbone)...")
+        # Build without LoRA — pretrained backbone + random custom heads
         saved_peft = getattr(args, "peft", "none")
         args.peft = "none"
         model = build_model(args, device=device)
@@ -1068,7 +1068,7 @@ def main():
 
     if baseline_mode:
         # Only load custom heads: robot_gnn, value_head, obs_to_lm
-        # Skip all LoRA and backbone keys — keep LLaVA at pretrained weights
+        # Skip all LoRA and backbone keys — keep the pretrained backbone weights
         custom_prefixes = ("robot_gnn.", "value_head.", "obs_to_lm.")
         baseline_sd = {
             k: v for k, v in cleaned_sd.items() if k.startswith(custom_prefixes)

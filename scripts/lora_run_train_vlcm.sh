@@ -111,8 +111,8 @@ apptainer exec --nv -B "$REPO_ROOT:$REPO_ROOT" -B "$BASE_SCRATCH:$BASE_SCRATCH" 
   --num_robots "$NUM_ROBOTS" \
   --robot_obs_dim 8 \
   --epochs 15 \
-  --vl_backend llava_onevision \
-  --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+  --vl_backend qwen3_vl \
+  --vl_model_name Qwen/Qwen3-VL-2B-Instruct \
   --save_dir "$SAVE_DIR" \
   --num_workers 8 \
   --mixed_precision bf16 \
@@ -135,8 +135,8 @@ apptainer exec --nv -B "$REPO_ROOT:$REPO_ROOT" -B "$BASE_SCRATCH:$BASE_SCRATCH" 
   ${RESUME_CHECKPOINT:+--resume_from "$RESUME_CHECKPOINT"}
 
 # Tar up results for transfer back (handled by transfer_output_files=checkpoints_rware)
-#   --vl_backend llava_video \
-#   --vl_model_name llava-hf/LLaVA-NeXT-Video-7B-32K-hf \
+#   --vl_backend qwen3_vl \
+#   --vl_model_name Qwen/Qwen3-VL-2B-Instruct \
 
 # apptainer exec --nv -B "$PWD:$PWD" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
 #   --env HF_TOKEN="$HF_TOKEN" \
@@ -152,8 +152,8 @@ apptainer exec --nv -B "$REPO_ROOT:$REPO_ROOT" -B "$BASE_SCRATCH:$BASE_SCRATCH" 
 #   --num_robots "$NUM_ROBOTS" \
 #   --robot_obs_dim 8 \
 #   --epochs 10 \
-#   --vl_backend llava_onevision \
-#   --vl_model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
+#   --vl_backend qwen3_vl \
+#   --vl_model_name Qwen/Qwen3-VL-2B-Instruct \
 #   --save_dir "$SAVE_DIR" \
 #   --num_workers 16 \
 #   --mixed_precision bf16 \

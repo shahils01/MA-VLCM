@@ -1,5 +1,5 @@
 #!/bin/bash
-# Evaluate the latest LLaVA, Qwen3-VL, and V-JEPA2 critics on five full
+# Evaluate the latest Qwen3-VL and V-JEPA2 critics on five full
 # held-out TurtleBot episode shards and generate comparison plots/videos.
 
 set -euo pipefail
@@ -58,9 +58,6 @@ EVAL_ARGS=(
 
 if [ -n "${RUN_NAME:-}" ]; then
     EVAL_ARGS+=(--run-name "$RUN_NAME")
-fi
-if [ -n "${LLAVA_CHECKPOINT:-}" ]; then
-    EVAL_ARGS+=(--llava-checkpoint "$LLAVA_CHECKPOINT")
 fi
 if [ -n "${QWEN3_VL_CHECKPOINT:-}" ]; then
     EVAL_ARGS+=(--qwen3-vl-checkpoint "$QWEN3_VL_CHECKPOINT")

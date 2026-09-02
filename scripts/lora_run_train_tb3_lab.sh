@@ -76,18 +76,8 @@ HF_DATASET_REPO="${HF_DATASET_REPO:-$DEFAULT_HF_DATASET_REPO}"
 DEFAULT_TB3_DATA="${DEFAULT_TB3_DATA:-hf://datasets/$HF_DATASET_REPO/**/*.tar}"
 DATA_DIR="${1:-${DATA_DIR:-${TB3_TRAIN_SOURCES:-$DEFAULT_TB3_DATA}}}"
 
-BACKBONE_PROFILE="${BACKBONE_PROFILE:-llava_onevision}"
+BACKBONE_PROFILE="${BACKBONE_PROFILE:-qwen3_vl}"
 case "${BACKBONE_PROFILE,,}" in
-    llava_onevision|llava|onevision)
-        BACKBONE_PROFILE="llava_onevision"
-        DEFAULT_VL_BACKEND="llava_onevision"
-        DEFAULT_VL_MODEL_NAME="llava-hf/llava-onevision-qwen2-0.5b-ov-hf"
-        DEFAULT_BATCH_SIZE=4
-        DEFAULT_GRAD_ACCUM_STEPS=4
-        DEFAULT_CLIP_LEN=16
-        DEFAULT_VL_MAX_TEXT_LEN=4700
-        BACKBONE_RUN_LABEL="llava_onevision_0.5b"
-        ;;
     qwen3_vl|qwen3|qwen)
         BACKBONE_PROFILE="qwen3_vl"
         DEFAULT_VL_BACKEND="qwen3_vl"
@@ -109,7 +99,7 @@ case "${BACKBONE_PROFILE,,}" in
         BACKBONE_RUN_LABEL="vjepa2_vitl"
         ;;
     *)
-        echo "ERROR: BACKBONE_PROFILE must be llava_onevision, qwen3_vl, or vjepa2 (got: $BACKBONE_PROFILE)"
+        echo "ERROR: BACKBONE_PROFILE must be qwen3_vl or vjepa2 (got: $BACKBONE_PROFILE)"
         exit 2
         ;;
 esac
@@ -210,22 +200,8 @@ fi
 BACKBONE_LR="${BACKBONE_LR:-$DEFAULT_BACKBONE_LR}"
 VISION_LR="${VISION_LR:-1e-5}"
 
-DEFAULT_RESUME_CANDIDATES=(
-    "/scratch/aparame/VLCM_Data_Collection/checkpoints/NewFinal_0.5B.pt"
-    "$SCRATCH_ROOT/checkpoints/NewFinal_0.5B.pt"
-    "$REPO_ROOT/checkpoints/NewFinal_0.5B.pt"
-)
-if [ "$BACKBONE_PROFILE" = "llava_onevision" ] && [ "$FINETUNE_MODE" = "lora" ] && [ -z "${DEFAULT_RESUME_CHECKPOINT:-}" ]; then
-    DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CANDIDATES[0]}"
-    for candidate in "${DEFAULT_RESUME_CANDIDATES[@]}"; do
-        if [ -f "$candidate" ]; then
-            DEFAULT_RESUME_CHECKPOINT="$candidate"
-            break
-        fi
-    done
-fi
-if [ "$BACKBONE_PROFILE" != "llava_onevision" ] || [ "$FINETUNE_MODE" != "lora" ]; then
-    DEFAULT_RESUME_CHECKPOINT="${DEFAULT_RESUME_CHECKPOINT:-}"
+if [ -z "${DEFAULT_RESUME_CHECKPOINT:-}" ]; then
+    DEFAULT_RESUME_CHECKPOINT=""
 fi
 RESUME_CHECKPOINT="${2:-${RESUME_CHECKPOINT:-$DEFAULT_RESUME_CHECKPOINT}}"
 TRAIN_FROM_SCRATCH="${TRAIN_FROM_SCRATCH:-0}"
@@ -239,9 +215,7 @@ case "${RESUME_CHECKPOINT,,}" in
         RESUME_CHECKPOINT=""
         ;;
 esac
-if [ "$BACKBONE_PROFILE" = "llava_onevision" ] && [ "$FINETUNE_MODE" = "lora" ]; then
-    DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE"
-elif [ "$FINETUNE_MODE" = "lora" ]; then
+if [ "$FINETUNE_MODE" = "lora" ]; then
     DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE/$BACKBONE_PROFILE"
 else
     DEFAULT_SAVE_DIR="$SCRATCH_ROOT/checkpoints/$DATASET_PROFILE/$BACKBONE_PROFILE/$FINETUNE_MODE"

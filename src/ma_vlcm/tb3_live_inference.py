@@ -170,8 +170,8 @@ def _arg(args, name, default):
 
 def build_model(args, device):
     cfg = ModelConfig(
-        vl_backend=_arg(args, "vl_backend", "llava_onevision"),
-        vl_model_name=_arg(args, "vl_model_name", "llava-hf/llava-onevision-qwen2-0.5b-ov-hf"),
+        vl_backend=_arg(args, "vl_backend", "qwen3_vl"),
+        vl_model_name=_arg(args, "vl_model_name", "Qwen/Qwen3-VL-2B-Instruct"),
         vl_dtype=_arg(args, "vl_dtype", "bfloat16"),
         vl_max_text_len=_arg(args, "vl_max_text_len", 256),
         freeze_vl=_arg(args, "freeze_vl", False),
