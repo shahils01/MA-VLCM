@@ -1,0 +1,47 @@
+{
+  "status": "training_finished",
+  "epochs_completed": 75,
+  "best_composite_epoch": 22,
+  "best_scalar_mse_epoch": 63,
+  "comparison_epochs": [
+    22,
+    63,
+    75
+  ],
+  "selected_epoch_metrics": [
+    {
+      "val/epoch_categorical_ce_loss": 1.0611465118126944,
+      "val/trajectory_preference_accuracy": 0.96875,
+      "val/drop_direction_recall": 0.7160686427457098,
+      "val/epoch_progress_mse_loss": 0.03584712348356334,
+      "val/change_mae": 0.023797987497346185,
+      "val/recovery_direction_recall": 0.6916524701873935,
+      "val/epoch_loss": 1.418474324978888,
+      "epoch": 22,
+      "train/epoch_loss": 0.9584508880404048
+    },
+    {
+      "val/epoch_categorical_ce_loss": 1.2687801112188026,
+      "val/trajectory_preference_accuracy": 0.875,
+      "val/drop_direction_recall": 0.7535101404056163,
+      "val/epoch_progress_mse_loss": 0.017591354382716418,
+      "val/change_mae": 0.016469424649585562,
+      "val/recovery_direction_recall": 0.6899488926746167,
+      "val/epoch_loss": 1.669743552687578,
+      "epoch": 63,
+      "train/epoch_loss": 0.8450241616184387
+    },
+    {
+      "val/epoch_categorical_ce_loss": 1.2012972156517208,
+      "val/trajectory_preference_accuracy": 0.90625,
+      "val/drop_direction_recall": 0.719188767550702,
+      "val/epoch_progress_mse_loss": 0.02000353962068857,
+      "val/change_mae": 0.016853501523655723,
+      "val/recovery_direction_recall": 0.65587734241908,
+      "val/epoch_loss": 1.5952801629900932,
+      "epoch": 75,
+      "train/epoch_loss": 0.7201693851170661
+    }
+  ],
+  "interpretation": "Composite/CE generalization gap after epoch22; scalar and temporal errors keep improving later. Epoch75 scalar MSE is 13.71% worse than epoch63. Offline matched episode inference is required before choosing the critic."
+}

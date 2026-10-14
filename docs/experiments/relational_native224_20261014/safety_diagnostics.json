@@ -1,0 +1,80 @@
+{
+  "epoch22": {
+    "goal_to_goal": {
+      "noncollision_frames": 2174,
+      "noncollision_abs_error": 211.9039591251203,
+      "noncollision_squared_error": 40.322248098168856,
+      "noncollision_drop_pairs": 358,
+      "noncollision_drop_hits": 292,
+      "collision_onsets": 38,
+      "negative_at_onset": 38,
+      "drop_at_onset": 38,
+      "noncollision_mae": 0.09747192232066251,
+      "noncollision_drop_recall": 0.8156424581005587
+    },
+    "static_obstacles": {
+      "noncollision_frames": 3249,
+      "noncollision_abs_error": 403.5789066870784,
+      "noncollision_squared_error": 132.63863587353367,
+      "noncollision_drop_pairs": 339,
+      "noncollision_drop_hits": 140,
+      "collision_onsets": 32,
+      "negative_at_onset": 31,
+      "drop_at_onset": 32,
+      "noncollision_mae": 0.12421634554850058,
+      "noncollision_drop_recall": 0.41297935103244837
+    }
+  },
+  "epoch63": {
+    "goal_to_goal": {
+      "noncollision_frames": 2174,
+      "noncollision_abs_error": 110.47491773408547,
+      "noncollision_squared_error": 8.940485456655743,
+      "noncollision_drop_pairs": 358,
+      "noncollision_drop_hits": 328,
+      "collision_onsets": 38,
+      "negative_at_onset": 38,
+      "drop_at_onset": 38,
+      "noncollision_mae": 0.05081642950049929,
+      "noncollision_drop_recall": 0.9162011173184358
+    },
+    "static_obstacles": {
+      "noncollision_frames": 3249,
+      "noncollision_abs_error": 385.1483083711355,
+      "noncollision_squared_error": 124.46675904514599,
+      "noncollision_drop_pairs": 339,
+      "noncollision_drop_hits": 117,
+      "collision_onsets": 32,
+      "negative_at_onset": 32,
+      "drop_at_onset": 32,
+      "noncollision_mae": 0.1185436467747416,
+      "noncollision_drop_recall": 0.34513274336283184
+    }
+  },
+  "epoch75": {
+    "goal_to_goal": {
+      "noncollision_frames": 2174,
+      "noncollision_abs_error": 91.89016993557743,
+      "noncollision_squared_error": 7.902052274066956,
+      "noncollision_drop_pairs": 358,
+      "noncollision_drop_hits": 344,
+      "collision_onsets": 38,
+      "negative_at_onset": 38,
+      "drop_at_onset": 38,
+      "noncollision_mae": 0.042267787458867265,
+      "noncollision_drop_recall": 0.9608938547486033
+    },
+    "static_obstacles": {
+      "noncollision_frames": 3249,
+      "noncollision_abs_error": 358.3545564603264,
+      "noncollision_squared_error": 137.89120354826088,
+      "noncollision_drop_pairs": 339,
+      "noncollision_drop_hits": 104,
+      "collision_onsets": 32,
+      "negative_at_onset": 32,
+      "drop_at_onset": 32,
+      "noncollision_mae": 0.11029687795023897,
+      "noncollision_drop_recall": 0.30678466076696165
+    }
+  }
+}

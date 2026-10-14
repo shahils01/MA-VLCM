@@ -117,6 +117,9 @@ ROBOT_OBS_DIM="${ROBOT_OBS_DIM:-8}"
 SUCCESS_ONLY="${SUCCESS_ONLY:-0}"
 TRAINED_AGENT_COUNTS="${TRAINED_AGENT_COUNTS:-3}"
 TASK_DOMAINS="${TASK_DOMAINS:-goal_to_goal}"
+if [ "${TB3_REQUIRE_BOTH_DOMAINS:-0}" = 1 ]; then
+    source "$SCRIPT_DIR/require_both_tb3_sources.sh" "$DATA_DIR"
+fi
 LAYOUT_SPLIT="${LAYOUT_SPLIT:-seen_train}"
 BALANCE_TB3_SOURCES="${BALANCE_TB3_SOURCES:-0}"
 TB3_BALANCE_MODE="${TB3_BALANCE_MODE:-domain_cardinality}"
@@ -124,6 +127,9 @@ TB3_IMAGE_MODE="${TB3_IMAGE_MODE:-center_square}"
 TB3_IMAGE_SIZE="${TB3_IMAGE_SIZE:-336}"
 TASK_DOMAIN_CONDITIONING="${TASK_DOMAIN_CONDITIONING:-0}"
 TEMPORAL_CONSISTENCY_WEIGHT="${TEMPORAL_CONSISTENCY_WEIGHT:-0.0}"
+CONDITIONAL_LIPSCHITZ_WEIGHT="${CONDITIONAL_LIPSCHITZ_WEIGHT:-0.0}"
+LIPSCHITZ_POSITION_SCALE_M="${LIPSCHITZ_POSITION_SCALE_M:-0.1}"
+LIPSCHITZ_PIXEL_SCALE="${LIPSCHITZ_PIXEL_SCALE:-0.1}"
 PROGRESS_DISTANCE_MODE="${PROGRESS_DISTANCE_MODE:-euclidean}"
 QWEN_VIDEO_FPS="${QWEN_VIDEO_FPS:-5.0}"
 FINETUNE_MODE="${FINETUNE_MODE:-lora}"
@@ -261,12 +267,22 @@ export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
+VALUE_OUTPUT_ACTIVATION="${VALUE_OUTPUT_ACTIVATION:-sigmoid}"
+if [ "$TB3_TARGET_SCHEMA" = "tb3_potential_v1" ]; then
+    if [ "${LOSS_TYPE:-mse}" = "categorical_ce" ]; then
+        VALUE_OUTPUT_ACTIVATION=identity
+    else
+        VALUE_OUTPUT_ACTIVATION=tanh
+    fi
+fi
+
 TRAIN_CMD=(
-  accelerate launch --num_processes "$NUM_PROCESSES" --mixed_precision "$MIXED_PRECISION" -m ma_vlcm.train
+  accelerate launch ${ACCELERATE_DISTRIBUTED_ARGS:-} --num_processes "$NUM_PROCESSES" --mixed_precision "$MIXED_PRECISION" -m ma_vlcm.train
   --train_shards "$DATA_DIR"
   --dataset_type "$TB3_DATASET_TYPE"
   --batch_size "$BATCH_SIZE"
   --grad_accum_steps "$GRAD_ACCUM_STEPS"
+  --loader_prefetch_factor "${LOADER_PREFETCH_FACTOR:-2}"
   --clip_len "$CLIP_LEN"
   --robot_obs_dim "$ROBOT_OBS_DIM"
   --target_schema "$TB3_TARGET_SCHEMA"
@@ -288,18 +304,35 @@ TRAIN_CMD=(
   --mixed_precision "$MIXED_PRECISION"
   --peft "$PEFT_MODE"
   --lora_scope "$LORA_SCOPE"
-  --lora_r 16
-  --lora_alpha 32
+  --lora_r "${LORA_R:-16}"
+  --lora_alpha "${LORA_ALPHA:-32}"
   --lora_dropout 0.05
   --lr "$HEAD_LR"
   --backbone_lr "$BACKBONE_LR"
   --vision_lr "$VISION_LR"
-  --loss_type mse
+  --loss_type "${LOSS_TYPE:-mse}"
+  --critic_readout "${CRITIC_READOUT:-mean}"
+  --agent_pooling "${AGENT_POOLING:-mean}"
+  --potential_aux_loss_weight "${POTENTIAL_AUX_WEIGHT:-0}"
+  --apf_target_transform "${APF_TARGET_TRANSFORM:-raw}"
+  --preference_loss_weight "${PREFERENCE_LOSS_WEIGHT:-0}"
+  --preference_shards "${PREFERENCE_SHARDS:-}"
+  --preference_interval "${PREFERENCE_INTERVAL:-4}"
+  --temporal_pair_offsets "${TEMPORAL_PAIR_OFFSETS:-1}"
+  --event_sampling_boost "${EVENT_SAMPLING_BOOST:-1}"
+  --event_loss_boost "${EVENT_LOSS_BOOST:-1}"
+  --event_delta_threshold "${EVENT_DELTA_THRESHOLD:-0.03}"
+  --value_distribution_bins "${VALUE_DISTRIBUTION_BINS:-0}"
+  --value_support_min -1.0
+  --value_support_max 1.0
   --return_mode nstep
   --target_mode progress
-  --value_output_activation sigmoid
+  --value_output_activation "$VALUE_OUTPUT_ACTIVATION"
   --mse_loss_weight 1.0
   --temporal_consistency_loss_weight "$TEMPORAL_CONSISTENCY_WEIGHT"
+  --conditional_lipschitz_loss_weight "$CONDITIONAL_LIPSCHITZ_WEIGHT"
+  --lipschitz_position_scale_m "$LIPSCHITZ_POSITION_SCALE_M"
+  --lipschitz_pixel_scale "$LIPSCHITZ_PIXEL_SCALE"
   --max_grad_norm 1.0
   --samples_per_epoch "$SAMPLES_PER_EPOCH"
   --val_split "$VAL_SPLIT"
@@ -311,8 +344,19 @@ TRAIN_CMD=(
   --run_name_prefix "$WANDB_RUN_PREFIX"
 )
 
+if [ -n "${VAL_SHARDS:-}" ]; then
+    TRAIN_CMD+=(--val_shards "$VAL_SHARDS")
+fi
+
+if [ "${DISABLE_PERSISTENT_WORKERS:-0}" = "1" ]; then
+    TRAIN_CMD+=(--disable_persistent_workers)
+fi
 if [ "$TASK_DOMAIN_CONDITIONING" = "1" ]; then
     TRAIN_CMD+=(--task_domain_conditioning)
+fi
+
+if [ -n "${POTENTIAL_CONFIG:-}" ]; then
+    TRAIN_CMD+=(--potential_config "$POTENTIAL_CONFIG")
 fi
 
 if [ "$SUCCESS_ONLY" = "1" ]; then
@@ -329,9 +373,18 @@ fi
 if [ "$FREEZE_VISION_TOWER" = "1" ]; then
     TRAIN_CMD+=(--freeze_vision_tower)
 fi
+if [ "${RELATIONAL_CRITIC:-0}" = "1" ]; then
+    TRAIN_CMD+=(--relational_critic --val_clip_stride "${VAL_CLIP_STRIDE:-32}" --val_batches "${VAL_BATCHES:-128}")
+fi
+
 if [ -n "$LORA_TARGET_MODULES" ]; then
     TRAIN_CMD+=(--lora_target_modules "$LORA_TARGET_MODULES")
 fi
+
+TRAIN_CMD+=(--qwen_logits_to_keep "${QWEN_LOGITS_TO_KEEP:-1}")
+case "${DISABLE_GRADIENT_CHECKPOINTING:-0}" in
+    1|true|yes|on) TRAIN_CMD+=(--disable_gradient_checkpointing) ;;
+esac
 
 if [ -n "$RESUME_CHECKPOINT" ]; then
     TRAIN_CMD+=(--resume_from "$RESUME_CHECKPOINT")
@@ -351,6 +404,7 @@ echo "TB3 source balance mode: $TB3_BALANCE_MODE"
 echo "TB3 image canonicalization: $TB3_IMAGE_MODE -> ${TB3_IMAGE_SIZE}x${TB3_IMAGE_SIZE} (no rotation or reflection)"
 echo "Task-domain conditioning: $TASK_DOMAIN_CONDITIONING"
 echo "Temporal consistency weight: $TEMPORAL_CONSISTENCY_WEIGHT"
+echo "Conditional Lipschitz weight: $CONDITIONAL_LIPSCHITZ_WEIGHT (fixed input metric; position unit ${LIPSCHITZ_POSITION_SCALE_M}m, pixel RMS unit $LIPSCHITZ_PIXEL_SCALE)"
 echo "Progress distance mode: $PROGRESS_DISTANCE_MODE"
 echo "Qwen source-video timestamp rate: ${QWEN_VIDEO_FPS} Hz"
 echo "Scratch root: $SCRATCH_ROOT"

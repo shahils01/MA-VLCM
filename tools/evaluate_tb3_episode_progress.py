@@ -196,6 +196,9 @@ def inspect_episode_shard(shard_path, load_frames=False):
     episode_success = None
     state_episode_success = None
     latest_state_step = -1
+    episode_prefixes = set()
+    target_schema = None
+    synthetic_rewind = False
     with tarfile.open(shard_path, "r") as archive:
         for member in archive.getmembers():
             if not member.isfile():
@@ -204,6 +207,9 @@ def inspect_episode_shard(shard_path, load_frames=False):
             if step is None:
                 continue
             if member.name.endswith(".overhead.png"):
+                episode_prefixes.add(re.split(r"_step_?\d+", member.name)[0])
+                if len(episode_prefixes) > 1:
+                    raise ValueError("Shard contains multiple episodes; extract each forward/rewind episode into a separate inference shard")
                 steps.add(step)
                 if load_frames:
                     extracted = archive.extractfile(member)
@@ -215,6 +221,7 @@ def inspect_episode_shard(shard_path, load_frames=False):
                 if extracted is not None:
                     payload = json.loads(extracted.read().decode("utf-8"))
                     if isinstance(payload, dict):
+                        target_schema = payload.get("schema", target_schema)
                         value = payload.get("target", payload.get("team_progress"))
                         if "episode_success" in payload:
                             episode_success = bool(payload["episode_success"])
@@ -227,6 +234,7 @@ def inspect_episode_shard(shard_path, load_frames=False):
                 extracted = archive.extractfile(member)
                 if extracted is not None:
                     state = json.loads(extracted.read().decode("utf-8"))
+                    synthetic_rewind = synthetic_rewind or bool(state.get("synthetic_rewind", False))
                     episode_meta = state.get("episode_meta", {})
                     if state_episode_id is None:
                         state_episode_id = episode_meta.get("episode_id")
@@ -250,6 +258,8 @@ def inspect_episode_shard(shard_path, load_frames=False):
         "targets": targets,
         "frames": frames,
         "frame_count": len(ordered_steps),
+        "target_schema": target_schema,
+        "synthetic_rewind": synthetic_rewind,
         "episode_success": (
             episode_success
             if episode_success is not None
@@ -352,7 +362,6 @@ def _ensure_inference_args(args):
     for name, value in defaults.items():
         if not hasattr(args, name):
             setattr(args, name, value)
-    args.dataset_type = "tb3_lab"
     args.target_mode = "progress"
     args.return_mode = "nstep"
     args.batch_size = 1
@@ -388,7 +397,7 @@ def load_model_from_checkpoint(checkpoint_path, device):
         key.removeprefix("module."): value
         for key, value in checkpoint["model"].items()
     }
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    missing, unexpected = model.load_state_dict(state_dict, strict=True)
     if missing:
         print(f"  WARNING: {len(missing)} missing keys (first 5): {missing[:5]}")
     if unexpected:
@@ -429,19 +438,27 @@ def _move_inputs(inputs, device, dtype):
 def infer_episode(model, model_args, model_dtype, episode, device, clip_stride):
     args = SimpleNamespace(**vars(model_args))
     args.clip_stride = clip_stride
+    args.val_clip_stride = 0  # dense episode inference uses the requested stride
     args.target_mode = "progress"
     args.batch_size = 1
     args.num_workers = 0
     # Checkpoint training may use adjacent clips, but episode inference emits
     # one prediction for every complete clip window.
     args.temporal_consistency_loss_weight = 0.0
+    args.conditional_lipschitz_loss_weight = 0.0
+    # Preserve auxiliary-head architecture on model_args, but inference needs
+    # neither target components, event filtering, nor future temporal pairs.
+    args.potential_aux_loss_weight = 0.0
+    args.temporal_pair_offsets = "1"
+    args.event_sampling_boost = 1.0
+    args.event_loss_boost = 1.0
     loader = webdataset_loader(
         args,
         shards=episode["path"],
         batch_size=1,
         num_workers=0,
         shuffle=False,
-        dataset_type="tb3_lab",
+        dataset_type=getattr(args, "dataset_type", "tb3_lab"),
         # The episode was already selected from the held-out shards. Training
         # checkpoints may retain balance_tb3_sources=True, but balancing a
         # single explicit tar path is neither valid nor useful for inference.
@@ -544,7 +561,7 @@ def _plot_curves(axis, episode, results, through_step=None):
         [targets[step] for step in target_steps],
         color="#1f77b4",
         linewidth=2.5,
-        label="Ground-truth progress",
+        label="Ground-truth signed potential" if episode.get("target_schema") == "tb3_potential_v1" else "Ground-truth progress",
     )
     for name in MODEL_ORDER:
         if name not in results:
@@ -560,9 +577,10 @@ def _plot_curves(axis, episode, results, through_step=None):
             label=MODEL_LABELS[name],
         )
     axis.set_xlim(episode["steps"][0], max(episode["steps"][-1], 1))
-    axis.set_ylim(-0.05, 1.05)
+    signed = episode.get("target_schema") == "tb3_potential_v1"
+    axis.set_ylim(-1.05 if signed else -0.05, 1.05)
     axis.set_xlabel("Episode step")
-    axis.set_ylabel("Normalized progress")
+    axis.set_ylabel("Signed potential" if signed else "Normalized progress")
     axis.grid(True, alpha=0.3)
 
 
@@ -571,7 +589,7 @@ def save_static_plot(path, episode, results):
     fig, axis = plt.subplots(figsize=(12, 6))
     _plot_curves(axis, episode, results)
     axis.legend(loc="best")
-    axis.set_title(f"Progress comparison: {episode['episode_id']}")
+    axis.set_title(f"Critic predictions: {episode['episode_id']}")
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -720,7 +738,9 @@ def main():
     aggregate_summary = {}
     for index, episode in enumerate(episodes, start=1):
         outcome_label = (
-            "success"
+            "synthetic_rewind"
+            if episode.get("synthetic_rewind")
+            else "success"
             if episode["episode_success"] is True
             else "failure"
             if episode["episode_success"] is False

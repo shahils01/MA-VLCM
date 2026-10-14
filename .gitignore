@@ -24,3 +24,4 @@ docs/paper/*.fdb_latexmk
 docs/paper/*.fls
 docs/paper/*.log
 data/
+.pytest_cache/

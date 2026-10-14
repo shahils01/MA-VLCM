@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .distributional_value import categorical_value
 
 
 @dataclass
@@ -49,6 +50,18 @@ class ModelConfig:
     use_moe: bool = False
     moe_experts: int = 4
     moe_top_k: int = 2
+
+    # Distributional value output; zero preserves legacy scalar checkpoints.
+    value_distribution_bins: int = 0
+    value_support_min: float = -1.0
+    value_support_max: float = 1.0
+    # Critic scoring uses hidden states, not language-generation logits.
+    qwen_logits_to_keep: int = 1
+    critic_readout: str = "mean"  # mean (legacy) | query
+    agent_pooling: str = "mean"  # mean (legacy) | attention_max
+    potential_aux_heads: bool = False
+    trajectory_preference_head: bool = False
+    relational_critic: bool = False
 
     # Debug
     debug_save_video: bool = False
@@ -417,14 +430,70 @@ class MultimodalValueModel(nn.Module):
             # Preserve an existing checkpoint at initialization; domain-specific
             # offsets are learned without changing the critic-head dimensions.
             nn.init.zeros_(self.task_domain_embedding.weight)
+        self.agent_history = None
+        self.agent_visual_grounding = None
+        if cfg.relational_critic:
+            if self.visual_only or cfg.critic_readout != "query":
+                raise ValueError("relational critic requires Qwen query readout")
+            from .relational_critic import CausalAgentHistory, AgentVisualGrounding
+            self.agent_history = CausalAgentHistory(cfg.d_model, cfg.temporal_heads,
+                cfg.temporal_layers, cfg.video_frames, cfg.temporal_dropout)
+            self.agent_visual_grounding = AgentVisualGrounding(lm_hidden,
+                cfg.d_model, cfg.temporal_heads, cfg.temporal_dropout)
         head_input_dim = lm_hidden + cfg.d_model
-        self.value_head = nn.Linear(head_input_dim, 1)
+        if cfg.critic_readout not in ("mean", "query"):
+            raise ValueError("unsupported critic readout")
+        if cfg.critic_readout == "query":
+            if self.visual_only:
+                raise ValueError("critic query requires the Qwen backbone")
+            # Replace the final assistant-prompt token with a learned critic
+            # query. Sequence length and video/RoPE positions stay unchanged.
+            self.critic_query = nn.Parameter(torch.empty(lm_hidden))
+            nn.init.normal_(self.critic_query, std=0.02)
+        if cfg.agent_pooling == "attention_max":
+            self.agent_attention = nn.Linear(cfg.d_model, 1)
+            self.agent_pool_fusion = nn.Linear(2 * cfg.d_model, cfg.d_model)
+        elif cfg.agent_pooling != "mean":
+            raise ValueError("unsupported agent pooling")
+        if cfg.potential_aux_heads:
+            # Targets supervise representations; they never become inputs.
+            self.potential_head = nn.Linear(head_input_dim, 4)
+        if cfg.value_distribution_bins not in (0,) and cfg.value_distribution_bins < 2:
+            raise ValueError("value_distribution_bins must be zero or >=2")
+        if cfg.trajectory_preference_head:
+            self.preference_head = nn.Sequential(nn.Linear(head_input_dim, 256), nn.GELU(), nn.Linear(256, 1))
+        self.value_head = nn.Linear(head_input_dim, cfg.value_distribution_bins or 1)
         self.success_head = nn.Linear(head_input_dim, 1)
         nn.init.zeros_(self.success_head.weight)
         nn.init.zeros_(self.success_head.bias)
         # Initialize bias to roughly the mean TD target (return over clip_len)
         # to prevent max_grad_norm from choking the MSE loss component.
-        nn.init.constant_(self.value_head.bias, 50.0)
+        nn.init.constant_(self.value_head.bias, 0.0 if cfg.value_distribution_bins else 50.0)
+
+    def _value_prediction(self, features):
+        raw = self.value_head(features)
+        if self.cfg.value_distribution_bins:
+            return categorical_value(raw, self.cfg.value_support_min, self.cfg.value_support_max), raw
+        return raw.squeeze(-1), None
+
+    def _potential_outputs(self, features):
+        if not self.cfg.potential_aux_heads:
+            return {}
+        raw = self.potential_head(features)
+        return {"potential_components": torch.cat(
+                    (F.softplus(raw[:, :1]), raw[:, 1:3].sigmoid()), dim=-1),
+                "collision_logit": raw[:, 3]}
+
+    @staticmethod
+    def _last_valid_positions(attention_mask, inputs_embeds):
+        if attention_mask is None:
+            return torch.full((inputs_embeds.shape[0],), inputs_embeds.shape[1] - 1,
+                              device=inputs_embeds.device, dtype=torch.long)
+        indices = torch.arange(attention_mask.shape[1], device=attention_mask.device)
+        positions = indices[None, :].expand_as(attention_mask).masked_fill(~attention_mask.bool(), -1).amax(dim=1)
+        if (positions < 0).any():
+            raise ValueError("critic query requires a nonempty prompt")
+        return positions
 
     def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
         # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
@@ -495,9 +564,23 @@ class MultimodalValueModel(nn.Module):
         if empty_graph.any():
             node_mask = node_mask.clone()
             node_mask[empty_graph] = True
+        if self.cfg.relational_critic:
+            frame_features = []
+            for frame_index in range(robot_obs.shape[1]):
+                nodes = robot_obs[:, frame_index, :, :self.robot_node_dim].contiguous()
+                edges = self._adj_to_batched_edge_index(adj[:, frame_index].contiguous())
+                frame_features.append(self.robot_gnn(nodes, edges))
+            history = self.agent_history(torch.stack(frame_features, dim=1), node_mask)
+            robot_node_feats = history[:, -1]
         node_weights = node_mask.to(robot_node_feats.dtype).unsqueeze(-1)
         robot_team_feat = (robot_node_feats * node_weights).sum(dim=1)
         robot_team_feat = robot_team_feat / node_weights.sum(dim=1).clamp(min=1.0)
+        if self.cfg.agent_pooling == "attention_max":
+            scores = self.agent_attention(robot_node_feats).squeeze(-1)
+            scores = scores.masked_fill(~node_mask, torch.finfo(scores.dtype).min)
+            weighted = (robot_node_feats * scores.softmax(dim=1).unsqueeze(-1)).sum(dim=1)
+            maximum = robot_node_feats.masked_fill(~node_mask.unsqueeze(-1), torch.finfo(robot_node_feats.dtype).min).amax(dim=1)
+            robot_team_feat = self.agent_pool_fusion(torch.cat((weighted, maximum), dim=-1))
 
         if self.visual_only:
             output = None
@@ -556,15 +639,18 @@ class MultimodalValueModel(nn.Module):
                 )
                 robot_team_feat = robot_team_feat + domain_feature
             value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
-            value = self.value_head(value_head_input).squeeze(-1)
+            value, value_logits = self._value_prediction(value_head_input)
             if return_features:
                 return {
                     "value": value,
+                    "value_logits": value_logits,
                     "success_logit": self.success_head(value_head_input).squeeze(-1),
                     "vlm_feature": pooled,
                     "vlm_multidepth_features": multidepth_features,
                     "robot_team_feature": robot_team_feat,
                     "value_features": value_head_input,
+                    **self._potential_outputs(value_head_input),
+                    **({"preference_score": self.preference_head(value_head_input).squeeze(-1)} if self.cfg.trajectory_preference_head else {}),
                 }
             return value
 
@@ -577,14 +663,18 @@ class MultimodalValueModel(nn.Module):
         inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
 
         # Pool team graph features to one token and inject at <obs>.
-        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
+        obs_token = self.obs_to_lm(robot_node_feats if self.cfg.relational_critic else robot_team_feat.unsqueeze(1))
         obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
 
         obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
         if obs_token_id is not None and obs_token_id >= 0:
             obs_mask = input_ids.eq(obs_token_id)
 
-            if obs_mask.any():
+            if self.cfg.relational_critic:
+                from .relational_critic import inject_agent_tokens
+                inputs_embeds = inject_agent_tokens(inputs_embeds, input_ids,
+                    obs_token_id, obs_token, node_mask)
+            elif obs_mask.any():
                 # Avoid in-place updates that can break autograd version tracking.
                 obs_mask = obs_mask.unsqueeze(-1)
                 if input_ids.shape[0] == bsz:
@@ -601,15 +691,32 @@ class MultimodalValueModel(nn.Module):
                     )
                 inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
 
+        query_positions = None
+        if self.cfg.critic_readout == "query":
+            query_positions = self._last_valid_positions(attn_mask, inputs_embeds)
+            final_ids = input_ids.gather(1, query_positions[:, None]).squeeze(1)
+            # Never replace a visual placeholder: the loader must append the
+            # assistant generation prompt after the video and state text.
+            config = self.backbone.model.config
+            for name in ("image_token_id", "video_token_id"):
+                special_id = getattr(config, name, None)
+                if special_id is not None and final_ids.eq(special_id).any():
+                    raise ValueError("critic query cannot replace a visual token")
+            query_mask = torch.arange(input_ids.shape[1], device=input_ids.device)[None, :].eq(query_positions[:, None])
+            query = self.critic_query.to(inputs_embeds.dtype).view(1, 1, -1)
+            inputs_embeds = torch.where(query_mask.unsqueeze(-1), query, inputs_embeds)
         inputs.pop("input_ids", None)
         inputs["inputs_embeds"] = inputs_embeds
         output = self.backbone.model(
-            **inputs, output_hidden_states=True, return_dict=True
+            **inputs, output_hidden_states=True, return_dict=True,
+            use_cache=False, logits_to_keep=self.cfg.qwen_logits_to_keep,
         )
 
         final_hidden = output.hidden_states[-1]
         attn = inputs.get("attention_mask")
-        if attn is not None:
+        if query_positions is not None:
+            pooled = final_hidden[torch.arange(bsz, device=final_hidden.device), query_positions]
+        elif attn is not None:
             mask = attn.unsqueeze(-1)
             pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
         else:
@@ -632,17 +739,36 @@ class MultimodalValueModel(nn.Module):
                         h_pooled = h[:, -1, :]
                     multidepth_features.append(h_pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device))
 
+        if self.cfg.relational_critic:
+            visual_mask = input_ids.eq(self.backbone.model.config.video_token_id)
+            image_id = getattr(self.backbone.model.config, "image_token_id", None)
+            if image_id is not None:
+                visual_mask = visual_mask | input_ids.eq(image_id)
+            if attn_mask is not None:
+                visual_mask = visual_mask & attn_mask.bool()
+            robot_node_feats = self.agent_visual_grounding(robot_node_feats,
+                final_hidden, visual_mask, pooled, node_mask)
+            scores = self.agent_attention(robot_node_feats).squeeze(-1)
+            # Autocast can make scores bf16 even when LayerNorm features are fp32.
+            scores = scores.masked_fill(~node_mask, torch.finfo(scores.dtype).min)
+            weighted = (robot_node_feats * scores.softmax(dim=1).unsqueeze(-1)).sum(dim=1)
+            maximum = robot_node_feats.masked_fill(~node_mask.unsqueeze(-1),
+                torch.finfo(robot_node_feats.dtype).min).amax(dim=1)
+            robot_team_feat = self.agent_pool_fusion(torch.cat((weighted, maximum), dim=-1))
         value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
-        value = self.value_head(value_head_input).squeeze(-1)
+        value, value_logits = self._value_prediction(value_head_input)
         # print('value shape = ', value.shape)
         
         if return_features:
             return {
                 "value": value,
+                    "value_logits": value_logits,
                 "success_logit": self.success_head(value_head_input).squeeze(-1),
                 "vlm_feature": pooled,
                 "vlm_multidepth_features": multidepth_features,
                 "robot_team_feature": robot_team_feat,
                 "value_features": value_head_input,
+                **self._potential_outputs(value_head_input),
+                    **({"preference_score": self.preference_head(value_head_input).squeeze(-1)} if self.cfg.trajectory_preference_head else {}),
             }
         return value

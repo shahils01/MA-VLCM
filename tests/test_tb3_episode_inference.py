@@ -120,6 +120,7 @@ def test_episode_inference_disables_training_source_balancing(monkeypatch, tmp_p
 
     def fake_loader(*args, **kwargs):
         captured.update(kwargs)
+        captured['inference_args'] = args[0]
         return []
 
     monkeypatch.setattr(episode_evaluator, "webdataset_loader", fake_loader)
@@ -127,6 +128,8 @@ def test_episode_inference_disables_training_source_balancing(monkeypatch, tmp_p
         balance_tb3_sources=True,
         clip_len=16,
         vl_backend="vjepa2",
+        temporal_consistency_loss_weight=1.0,
+        conditional_lipschitz_loss_weight=1.0,
     )
     episode = {
         "path": str(tmp_path / "episode.tar"),
@@ -146,6 +149,10 @@ def test_episode_inference_disables_training_source_balancing(monkeypatch, tmp_p
     assert rows == []
     assert captured["shards"] == episode["path"]
     assert captured["balance_tb3_sources"] is False
+    assert captured['inference_args'].temporal_consistency_loss_weight == 0.0
+    assert captured['inference_args'].conditional_lipschitz_loss_weight == 0.0
+    assert model_args.temporal_consistency_loss_weight == 1.0
+    assert model_args.conditional_lipschitz_loss_weight == 1.0
 
 
 def test_episode_selection_includes_requested_failures(monkeypatch, tmp_path):
@@ -186,3 +193,32 @@ def test_episode_selection_includes_requested_failures(monkeypatch, tmp_path):
     assert len(selected) == 5
     assert sum(item["episode_success"] is False for item in selected) == 2
     assert sum(item["episode_success"] is True for item in selected) == 3
+
+
+def test_signed_inference_preserves_target_contract():
+    args = episode_evaluator._ensure_inference_args(SimpleNamespace(
+        dataset_type="tb3_potential_v1", target_schema="tb3_potential_v1",
+        value_output_activation="tanh", potential_config={"obstacle_weight":2.0}))
+    assert args.dataset_type == "tb3_potential_v1"
+    assert args.value_output_activation == "tanh"
+    assert args.potential_config == {"obstacle_weight":2.0}
+
+
+def test_mixed_forward_and_rewind_shard_is_rejected(tmp_path):
+    import pytest
+    path=tmp_path/"mixed.tar"
+    with tarfile.open(path,"w") as archive:
+        _add_bytes(archive,"ep000001_step00000.overhead.png",_png_bytes())
+        _add_bytes(archive,"ep000001_rewind_step00000.overhead.png",_png_bytes())
+    with pytest.raises(ValueError,match="multiple episodes"):
+        inspect_episode_shard(path)
+
+
+def test_signed_plot_keeps_negative_targets_visible():
+    plt,_=episode_evaluator._plot_modules()
+    figure,axis=plt.subplots()
+    episode={"steps":[0,1],"targets":{0:-.9,1:.8},"target_schema":"tb3_potential_v1"}
+    episode_evaluator._plot_curves(axis,episode,{})
+    assert axis.get_ylim()[0] <= -1
+    assert axis.get_ylabel() == "Signed potential"
+    plt.close(figure)

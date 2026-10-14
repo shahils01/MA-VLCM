@@ -4,6 +4,10 @@ set -e
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export DATASET_PROFILE="${DATASET_PROFILE:-tb3_isaac}"
+# Fresh VLCM training: NEVER load a previous critic checkpoint.
+export TRAIN_FROM_SCRATCH=1
+export DEFAULT_RESUME_CHECKPOINT=
+export RESUME_CHECKPOINT=
 export BACKBONE_PROFILE=qwen3_vl
 export BATCH_SIZE="${BATCH_SIZE:-16}"
 export GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-2}"
@@ -24,5 +28,7 @@ export QWEN_VIDEO_FPS="${QWEN_VIDEO_FPS:-5.0}"
 export TB3_TRAIN_SOURCES="${TB3_TRAIN_SOURCES:-hf://datasets/adi2440/tb3-isaac-vlcm/**/*.tar;hf://datasets/adi2440/tb3-isaac-avoid-obstacles-vlcm/**/*.tar}"
 export WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-tb3_combined_qwen3_vl_2b}"
 export TEMPORAL_CONSISTENCY_WEIGHT="${TEMPORAL_CONSISTENCY_WEIGHT:-0.05}"
+
+source "$SCRIPT_DIR/require_both_tb3_sources.sh" "${1:-${DATA_DIR:-$TB3_TRAIN_SOURCES}}"
 
 exec bash "$SCRIPT_DIR/lora_run_train_tb3_lab.sh" "$@"

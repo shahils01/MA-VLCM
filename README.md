@@ -279,7 +279,7 @@ bash scripts/lora_run_train_tb3_lab.sh
 For private repositories, export a token without placing it in a script:
 
 ```bash
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
+export HF_TOKEN="<your Hugging Face token>"
 ```
 
 Resume from a specific checkpoint:
@@ -544,3 +544,300 @@ disabled for the MVP. `temporal_order_accuracy` and
 `value_order_correlation` implement the transferable TOPReward criterion for
 successful prefixes. Token-probability scoring is intentionally not applied to
 V-JEPA2.
+
+
+## Signed scene potential experiment (`tb3_potential_v1`)
+
+The new opt-in path trains a scene potential in `[-1, 1]` with a `tanh`
+output. It does not interpret the potential itself as an instantaneous reward.
+For agent i, let q_i be remaining distance outside the goal radius, divided by
+its initial remaining distance (floored at the goal radius for short episodes).
+Let C_agent and C_obstacle be the maximum squared clearance-risk ramp across
+robot pairs and robot/obstacle pairs. A ramp is zero outside the configured
+clearance band and reaches one at contact. Then:
+
+```text
+U = mean(q_i) + agent_weight * C_agent + obstacle_weight * C_obstacle
+Phi = (1 - U) / (1 + U)
+```
+
+Safe completion gives Phi=1; a safe initial state typically gives Phi=0;
+retreat and increasing risk lower Phi. A collision flag or geometric overlap
+sets Phi=-1. Worst-case hazard aggregation prevents one dangerous pair from
+being diluted by a larger team. Goal attraction remains a team average: one
+agent's progress can outweigh another's retreat. The configurable weights are
+initial experiment settings, not calibrated safety guarantees. Potential fields
+can have local optima, and Euclidean attraction can penalize a necessary detour.
+Use `distance_mode=route_required` when verified route distances are available
+for every frame; set `PROGRESS_DISTANCE_MODE=route_required` during training too.
+
+This target replaces the supervised progress label. `reward.json` is not the
+training target in `target_mode=progress`; changing that file alone has no effect.
+The relabeler preserves original image/state/action/reward bytes in new shards,
+replacing only `progress.json`. It refuses to overwrite a source or destination.
+Model prompts for this schema describe signed scene quality and omit timestep,
+future episode outcome, and termination reason. Endpoint prompts match each
+clip's final state. Resume detects schema, activation, or potential-config
+changes and resets the value head, optimizer, scheduler, EMA, and epoch count.
+
+Relabel an existing locally cached dataset:
+
+```bash
+python scripts/relabel_tb3_potential_dataset.py /path/to/source_shards \
+  --output-dir /path/to/new_potential_shards \
+  --config configs/potential_v1.json --include-rewind
+```
+
+Rewinds append synthetic reversed episodes inside the same shard as their
+source, so the normal shard split cannot put the original and rewind on
+opposite sides. Rewind velocity/command signs are reversed, original action
+arrays are omitted, and samples are marked synthetic. These examples teach
+undoing visible progress; they are not simulator-validated collision rollouts
+and cannot supply unseen near-collision or obstacle-contact scenes. Include
+real failed, stalled, near-collision, and recovery rollouts when available.
+The adjacent temporal loss matches signed target changes; it does not impose
+monotonic progress. Evaluate held-out retreat, near-contact, collision, stall,
+and recovery cases in addition to successful-trajectory correlation.
+
+Obstacle tasks require a verified layout in `state.json` as `obstacles`, or
+`--layouts` with entries such as:
+
+```json
+{
+  "static_obstacles/agents_03/worker_00/episode_000066.tar::ep000066": {
+    "obstacles": [{"pos": [0.6, 0.6], "size_m": [0.3, 0.3]}]
+  }
+}
+```
+
+Each key is the shard path relative to the input directory, followed by `::`
+and its episode prefix. Circles use `radius_m`; rectangles use `size_m` and must
+be axis-aligned. Coordinates and robot radii must share the dataset's world
+frame. Missing/empty geometry for an obstacle task is an error. The sampled
+Hugging Face obstacle shard lacks layout and route metadata; its seed alone
+has not been verified sufficient to reconstruct the original simulator layout.
+Do not label unknown layouts using candidate sites from a different code version.
+
+Train only after relabeling and reviewing label/delta audits:
+
+```bash
+BACKBONE_PROFILE=vjepa2 bash scripts/lora_run_train_tb3_potential.sh \
+  /path/to/new_potential_shards
+```
+
+Use `BACKBONE_PROFILE=qwen3_vl` for Qwen. This separate launcher keeps the
+existing progress launchers and checkpoints available. Match its potential
+config to the one used for relabeling. The normal offline inference path reads
+checkpoint activation metadata and supports tanh; live inference also decodes
+tanh, but its legacy ground-truth progress plot remains a different quantity.
+No training or data upload is performed by adding this feature.
+
+The companion Palmetto MARL wrapper decodes tanh checkpoints and uses
+Psi=(Phi+1)/2 for discounted shaping, `scale * (gamma * Psi_next - Psi_current)`.
+The affine shift avoids paying positive rewards for a stationary negative Phi.
+Signed checkpoints require `vlcm_progress_delta_terminal` and smoothing=0.
+True absorbing terminations have next potential zero; time-limit truncations
+retain the final observation's potential (using existing bad-mask metadata).
+The success/failure anchors provide the task objective. Training a state
+potential does not train a policy-specific V/Q return critic; MAPPO's separate
+return head still learns returns from rollout rewards. Persistent safety costs
+and failure outcomes need their own objective if repeated dangerous states must
+continue receiving penalties after the potential saturates.
+
+Relevant distinctions: [VLAC](https://arxiv.org/html/2509.15937) samples both
+frame-pair directions. [RoboMeter](https://arxiv.org/html/2603.02115) combines
+progress, success, trajectory preferences, and video rewinds. This experiment
+uses geometry targets and rewinds, without claiming to reproduce their models
+or preference objectives. [SimpleVLA-RL](https://arxiv.org/html/2509.09674) uses
+binary trajectory success, while [TOPReward](https://arxiv.org/html/2602.19313)
+uses pretrained completion-token probabilities; neither implies that simply
+rescaling progress to [-1,1] resolves failure coverage.
+
+
+### Mandatory combined Isaac critic training
+
+**ALWAYS** train both VJEPA and Qwen VLCM critics with BOTH
+`adi2440/tb3-isaac-vlcm` (go-to-goal) and
+`adi2440/tb3-isaac-avoid-obstacles-vlcm` (obstacle avoidance).
+The backbone launchers and signed-potential launcher enforce both sources,
+set both task domains, and enable equal domain sampling. Local relabeled data
+must contain `goal_to_goal` and `static_obstacles` shard directories. Missing
+cardinalities within the obstacle dataset are allowed; missing domains are not.
+The signed training entry point independently checks this contract.
+
+These launchers start fresh VLCM training with `TRAIN_FROM_SCRATCH=1` and never
+resume a previous critic checkpoint. Standard pretrained VJEPA/Qwen backbone
+weights remain the initialization; critic head, adapters, optimizer, and
+scheduler are new. Keep the video clip length at 16. For the combined signed
+runs, use batch 32 and four gradient accumulation steps (effective batch 128).
+W&B records exact PyTorch current and peak allocated/reserved GPU memory in
+GiB, alongside sampled system memory, to support later batch tuning.
+
+Legacy obstacle states lack layouts. `recover_tb3_obstacle_layouts.py` can
+recover the three occupied sites from their recorded brown cuboids using the
+configured top-down camera (height 5 m, ground width 3.048 m), 0.3 m square
+boxes of height 1 m, and five candidate sites. It checks every video frame,
+requires an unchanged unambiguous layout, and rejects unsupported canvases or
+unexplained brown geometry. The recovered geometry is explicitly audited as
+image-derived rather than simulator ground truth. Pass its layout manifest to
+the relabeler; do not silently disable obstacle repulsion on these episodes.
+Future collection saves the actual simulator layouts directly.
+
+
+VJEPA host-memory settings: use at least 128 GiB for the current batch-32
+training job, four data-loader workers, `LOADER_PREFETCH_FACTOR=1`, and
+`DISABLE_PERSISTENT_WORKERS=1`. GPU memory and host RAM are separate budgets.
+The previous 64 GiB job completed epoch 1 but exhausted host RAM at epoch 2;
+training and validation had eight persistent workers each with two prefetched
+batches per worker. The new settings release phase workers and limit queued
+batches. Do not infer the host-memory requirement from W&B GPU memory or the
+main Python process alone; include all workers and pinned buffers.
+
+
+### Signed-potential episode inference
+
+Use `scripts/run_tb3_episode_inference_all.sh` with explicit
+`QWEN3_VL_CHECKPOINT` and `VJEPA2_CHECKPOINT` paths for new run checkpoints.
+Inference preserves the saved dataset type, target schema, and output
+activation. Signed plots show the full [-1, 1] range.
+
+Relabeled training shards contain both a demonstration and its synthetic
+rewind. Extract each episode into a separate evaluation shard before using
+this full-episode evaluator; mixed episodes are rejected to prevent step
+collisions. Select them using the original training split manifest, since
+resplitting a domain independently changes held-out membership. Synthetic
+rewinds are labeled as such, not as real failed-policy episodes.
+
+Legacy progress-model and signed-model native errors use different targets.
+Report their ranges and compare score-change signs against the same signed
+target transitions when assessing downstream reward usefulness.
+
+## Conditional temporal regularization for signed critics
+
+The Qwen and VJEPA signed launcher now defaults to
+`TEMPORAL_CONSISTENCY_WEIGHT=1.0` (previously 0.1) and
+`CONDITIONAL_LIPSCHITZ_WEIGHT=1.0`. Both are tunable initial settings, not
+validated improvements. Both datasets, fresh critic initialization, batch 32,
+four accumulation steps, and 16-frame clips remain required.
+
+The adjacent clips end at t and t+1. With predicted potential f and target Phi:
+
+```
+L = 0.5 * [MSE(f_t, Phi_t) + MSE(f_next, Phi_next)]
+  + lambda_T * SmoothL1(f_next - f_t, Phi_next - Phi_t; beta=0.02)
+  + lambda_L * mean_valid[relu(abs(f_next - f_t) - d(x_t,x_next))^2]
+```
+
+Temporal supervision permits both signs of change, including collision-driven
+decreases. It does not penalize a legitimate decrease merely for decreasing.
+The Lipschitz penalty is one-sided: flatter-than-unit slopes are allowed.
+It is a sampled soft constraint, not a certificate of global 1-Lipschitzness.
+One-sided penalty rationale: https://arxiv.org/abs/1709.08894.
+
+The condition fixes episode, task/domain/instruction, agent identities/goals,
+and obstacle geometry. Same-named episodes in different shards, step resets,
+and shard wraparound cannot produce temporal training pairs. Dynamic observed
+state text may change within a pair. Pairs with changed static conditions are
+excluded from the Lipschitz penalty. Changes of collision status are also
+excluded because the existing target has a discontinuous override to -1; they
+still receive endpoint and signed-delta supervision. Target semantics and
+collision penalties have not been changed.
+
+`d` is a fixed joint input metric, never a trainable feature norm or a target
+delta. It combines RGB video RMS at 32x32 across all 16 frames, last-frame
+state distance (matching the model's graph consumption), and last adjacency
+RMS. Default state scales are 0.1m for positions/current and initial goal
+distances, 1 for cos/sin yaw and traversability, 0.22m/s for linear velocity,
+and 2.84rad/s for angular velocity. State squared distances are averaged over
+nodes, not feature dimensions. Video values are in [0,1], with RMS divided by
+0.1; adjacency has unit scale. The joint distance is the square root of the
+sum of modality squared distances. Units matter: a 1-Lipschitz claim is always
+relative to this declared input metric. Change the spatial unit through
+`LIPSCHITZ_POSITION_SCALE_M` and RGB unit through `LIPSCHITZ_PIXEL_SCALE`.
+
+The loader sends only the scalar distance and validity mask to the GPU. Both
+losses reuse the existing adjacent-clip model pass, without a third pass or
+second-order gradients through the vision-language backbone.
+
+W&B logs separate train and validation epoch MSE, temporal and Lipschitz terms,
+valid/excluded pair counts, prediction violation rates, and target violation
+rates. Counts/components reduce over distributed ranks. Audit target violation
+rates before tightening the metric: too-tight bounds can conflict with hazard
+labels. The two illustrative held-out forward episodes checked on 2026-10-05
+had no target or prediction bound violations under the initial metric, despite
+the latest critics' missed target decreases. This small audit is not full-data
+calibration and does not establish that Lipschitz regularization will improve
+accuracy. Stronger delta supervision must be evaluated on held-out trajectories.
+
+Regression checks:
+
+```
+PYTHONPATH=src python -m pytest -q tests/test_critic_regularization.py \
+  tests/test_signed_potential_loader.py tests/test_signed_potential.py \
+  tests/test_tb3_training_contract.py tests/test_tb3_combined_compatibility.py \
+  tests/test_training_sampling.py
+PYTHONPATH=src python tests/test_tb3_lab_loader.py
+bash -n scripts/*.sh
+```
+
+
+### Categorical signed-potential critic (2026-10-05)
+
+The signed-potential launcher defaults to categorical cross-entropy over 21
+uniform centers from -1 to 1. Soft targets interpolate between adjacent centers;
+inference returns their probability-weighted expectation without an extra tanh.
+The labels remain geometry-derived `tb3_potential_v1`, not episode time.
+Both adjacent endpoints receive categorical supervision; temporal delta and
+conditional sampled Lipschitz losses operate on the expected values. W&B logs
+CE separately from diagnostic scalar MSE and regularizer components.
+`LOSS_TYPE=mse` explicitly retains the previous scalar/tanh baseline.
+ALWAYS use both goal and obstacle datasets, fresh critic/adapters/optimizer,
+and 16-frame clips. `VAL_SHARDS` supports an explicit episode holdout.
+The categorical head size and support are saved in checkpoint arguments and
+restored by offline inference; old scalar checkpoints retain their old shape.
+
+
+### Qwen 8-frame, 75-epoch experiment (2026-10-06)
+
+The user-requested `scripts/lora_submit_train_tb3_qwen8_75.sh RUN_ROOT`
+experiment uses 8-frame clips and 75 epochs, fresh critic/adapters/optimizer,
+and ALWAYS both `adi2440/tb3-isaac-vlcm` and
+`adi2440/tb3-isaac-avoid-obstacles-vlcm`, including the verified 500 appended
+suboptimal episodes and the preserved validation split. Batch size is 32,
+accumulation is 4, and the sampling budget is 5,000 clips per epoch. Keep the
+21-bin categorical signed-potential objective and both regularizer weights
+at 1.0. Save and validate every epoch, selecting checkpoints by validation
+quality and responses to real negative changes. VJEPA remains on standby.
+This explicitly authorized experiment overrides the usual 16-frame default.
+
+
+### Qwen full accuracy run (2026-10-06)
+
+See [README_full_run.md](README_full_run.md) for the fresh 8-frame, 224x224,
+75-epoch experiment, ALWAYS both datasets, profiling and matched ablations.
+
+### Smooth APF + trajectory preference iteration (2026-10-08)
+
+The isolated `qwen_smooth_pref_diverse1000_20261008_01` run ALWAYS trains on both Isaac datasets, fresh Qwen only, 8 frames/224 pixels/75 epochs. Targets use causal Gaussian sigma 1/window 5 smoothing with immediate collision override; raw APF labels remain available. `--apf_target_transform` must match the labels. Optional `--preference_loss_weight`, `--preference_shards` and `--preference_interval` enable a separate pooled-trajectory preference head and BCE, supervised from recorded outcomes. These labels never enter model inputs. Full collection/training contract is in the run's `README_iteration.md`.
+
+
+## Optional relational Qwen critic
+
+The native224 iteration uses `--relational_critic --critic_readout query --agent_pooling attention_max`: causal histories of all agent observations, individual `<obs>` tokens, visual cross-attention and masked agent attention. It accepts the same video/prompt/robot-observation/adjacency inputs. Checkpoint arguments retain the architecture flag, LoRA rank and preprocessing configuration for standard offline inference and `tools/evaluate_tb3_episode_progress.py`. Defaults preserve legacy checkpoints. Validation clip thinning is disabled for offline episode inference. Native AO collection configures the actual overhead camera and recorded image to 224x224, with the actor observation shape unchanged. Both HF task domains are mandatory for every critic training run.
+
+### Experiment tracking and completed relational evaluation
+
+The [run register](docs/experiments/vlcm_run_register.md) records exact W&B names,
+configuration changes, dataset revisions and completed inference comparisons.
+The [relational checkpoint report](docs/experiments/relational_native224_20261014/README.md)
+compares epochs22/63/75 on100 held-out forward episodes, split equally between
+go-to-goal and avoid-obstacles. It includes plots and metrics; checkpoints and raw
+trajectories remain outside Git.
+
+The validated75-epoch native224 launch/profile and matched-evaluation scripts are
+archived in `scripts/experiments/relational_native224/`. These are the exact
+Palmetto experiment drivers, with recorded run paths and readiness checks; they
+do not submit jobs automatically. Collection-only helpers are in
+`tools/collection/`: native camera capture preserves the actor image shape, and
+simulated action perturbations include timed recovery. The Isaac collector
+integration remains in the Ground_Robot_MARL project.

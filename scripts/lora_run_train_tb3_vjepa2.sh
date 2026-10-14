@@ -4,10 +4,18 @@ set -e
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export DATASET_PROFILE="${DATASET_PROFILE:-tb3_isaac}"
+# Fresh VLCM training: NEVER load a previous critic checkpoint.
+export TRAIN_FROM_SCRATCH=1
+export DEFAULT_RESUME_CHECKPOINT=
+export RESUME_CHECKPOINT=
 export BACKBONE_PROFILE=vjepa2
 export BATCH_SIZE="${BATCH_SIZE:-16}"
 export GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-2}"
-export NUM_WORKERS="${NUM_WORKERS:-12}"
+# VJEPA preprocessing uses substantial host RAM. Bound buffered batches and
+# release training workers before creating validation/next-epoch workers.
+export NUM_WORKERS="${NUM_WORKERS:-4}"
+export LOADER_PREFETCH_FACTOR="${LOADER_PREFETCH_FACTOR:-1}"
+export DISABLE_PERSISTENT_WORKERS="${DISABLE_PERSISTENT_WORKERS:-1}"
 export TB3_DATASET_TYPE="${TB3_DATASET_TYPE:-tb3_progress_v2}"
 export TB3_TARGET_SCHEMA="${TB3_TARGET_SCHEMA:-tb3_progress_v2}"
 export ROBOT_OBS_DIM="${ROBOT_OBS_DIM:-9}"
@@ -26,5 +34,7 @@ export TEMPORAL_CONSISTENCY_WEIGHT="${TEMPORAL_CONSISTENCY_WEIGHT:-0.05}"
 export PROGRESS_DISTANCE_MODE="${PROGRESS_DISTANCE_MODE:-route_if_available}"
 export TB3_TRAIN_SOURCES="${TB3_TRAIN_SOURCES:-hf://datasets/adi2440/tb3-isaac-vlcm/**/*.tar;hf://datasets/adi2440/tb3-isaac-avoid-obstacles-vlcm/**/*.tar}"
 export WANDB_RUN_PREFIX="${WANDB_RUN_PREFIX:-tb3_combined_vjepa2_vitl}"
+
+source "$SCRIPT_DIR/require_both_tb3_sources.sh" "${1:-${DATA_DIR:-$TB3_TRAIN_SOURCES}}"
 
 exec bash "$SCRIPT_DIR/lora_run_train_tb3_lab.sh" "$@"

@@ -8,6 +8,8 @@ import glob
 import functools
 import inspect
 import re
+import time
+import random
 from collections import deque
 
 from tqdm import tqdm
@@ -84,6 +86,16 @@ import webdataset as wds
 
 from .model import ModelConfig, MultimodalValueModel
 from .sampling import balanced_tb3_shards, split_tb3_shards_by_stratum
+from .distributional_value import categorical_value_loss
+from .trajectory_preference import trajectory_preference_loss, preference_loader_args
+from .critic_improvements import (potential_component_target, event_weights, weighted_mean,
+                                  potential_auxiliary_loss, change_metrics)
+from .potential import POTENTIAL_SCHEMA, PotentialConfig
+from .critic_regularization import (
+    tb3_condition_key, fixed_tb3_clip_distance, temporal_delta_loss,
+    conditional_lipschitz_loss, conditional_lipschitz_diagnostics,
+)
+from dataclasses import asdict
 
 
 def _episode_id_to_int64(episode_id):
@@ -177,6 +189,7 @@ def parse_args():
         ),
     )
     p.add_argument("--target_schema", type=str, default="")
+    p.add_argument("--potential_config", default="", help="JSON file with signed-potential configuration; defaults to PotentialConfig.")
     p.add_argument(
         "--tb3_image_mode",
         type=str,
@@ -240,6 +253,14 @@ def parse_args():
         action="store_true",
         help="Use VLM image processor in dataloader",
     )
+    p.add_argument("--loader_prefetch_factor", type=int, default=2,
+                   help="Number of batches prefetched per data-loader worker")
+    p.add_argument("--disable_persistent_workers", action="store_true",
+                   help="Release worker processes and their buffers between epochs/phases")
+    p.add_argument("--disable_gradient_checkpointing", action="store_true",
+                   help="Use available GPU memory to avoid PEFT activation recomputation")
+    p.add_argument("--qwen_logits_to_keep", type=int, default=1,
+                   help="Unused Qwen LM logits to compute per sample; 0 retains all tokens for profiling")
     p.add_argument(
         "--debug_save_video",
         action="store_true",
@@ -261,7 +282,7 @@ def parse_args():
         "--value_output_activation",
         type=str,
         default="identity",
-        choices=["identity", "sigmoid"],
+        choices=["identity", "sigmoid", "tanh"],
         help="Activation applied to value-head outputs before loss/inference.",
     )
     p.add_argument("--n_step", type=int, default=50)
@@ -285,8 +306,21 @@ def parse_args():
         "--loss_type",
         type=str,
         default="contrastive_mse",
-        choices=["mse", "contrastive", "contrastive_mse"],
+        choices=["mse", "categorical_ce", "contrastive", "contrastive_mse"],
     )
+    p.add_argument("--critic_readout", choices=["mean", "query"], default="mean")
+    p.add_argument("--relational_critic", action="store_true")
+    p.add_argument("--val_clip_stride", type=int, default=0)
+    p.add_argument("--val_batches", type=int, default=0)
+    p.add_argument("--agent_pooling", choices=["mean", "attention_max"], default="mean")
+    p.add_argument("--potential_aux_loss_weight", type=float, default=0.0)
+    p.add_argument("--temporal_pair_offsets", default="1")
+    p.add_argument("--event_sampling_boost", type=float, default=1.0)
+    p.add_argument("--event_loss_boost", type=float, default=1.0)
+    p.add_argument("--event_delta_threshold", type=float, default=0.03)
+    p.add_argument("--value_distribution_bins", type=int, default=0)
+    p.add_argument("--value_support_min", type=float, default=-1.0)
+    p.add_argument("--value_support_max", type=float, default=1.0)
     p.add_argument("--contrastive_margin", type=float, default=0.0)
     p.add_argument(
         "--mse_loss_weight",
@@ -294,6 +328,10 @@ def parse_args():
         default=1.0,
         help="Weight for MSE loss component in contrastive_mse mode",
     )
+    p.add_argument("--apf_target_transform", default="raw", choices=("raw", "causal_gaussian_sigma1_window5_collision_override"))
+    p.add_argument("--preference_loss_weight", type=float, default=0.0)
+    p.add_argument("--preference_shards", default="")
+    p.add_argument("--preference_interval", type=int, default=4)
     p.add_argument(
         "--success_loss_weight", type=float, default=0.0,
         help="Optional BCE weight for the success-probability evaluation head.",
@@ -306,6 +344,18 @@ def parse_args():
             "Weight for Smooth-L1 consistency between adjacent predicted and "
             "target progress changes (0 disables the extra forward pass)."
         ),
+    )
+    p.add_argument(
+        "--conditional_lipschitz_loss_weight", type=float, default=0.0,
+        help="One-sided sampled 1-Lipschitz penalty on fixed-condition adjacent TB3 clips.",
+    )
+    p.add_argument(
+        "--lipschitz_position_scale_m", type=float, default=0.1,
+        help="Fixed spatial unit for the TB3 joint input metric (metres).",
+    )
+    p.add_argument(
+        "--lipschitz_pixel_scale", type=float, default=0.1,
+        help="Fixed RGB RMS unit for the TB3 joint input metric, pixels in [0,1].",
     )
     p.add_argument(
         "--max_grad_norm",
@@ -515,7 +565,60 @@ def parse_args():
     p.add_argument("--resize_width", type=int, default=672)
     p.add_argument("--resize_height", type=int, default=336)
 
-    return p.parse_args()
+    args = p.parse_args()
+    if not math.isfinite(args.preference_loss_weight) or args.preference_loss_weight < 0 or args.preference_interval < 1:
+        p.error("preference weight must be nonnegative and interval positive")
+    if args.preference_loss_weight > 0 and (not args.preference_shards or args.clip_len != 8):
+        p.error("current trajectory preference loader requires its manifest directory and 8-frame clips")
+    try:
+        offsets = tuple(int(value) for value in args.temporal_pair_offsets.split(","))
+        if not offsets or min(offsets) < 1 or 1 not in offsets:
+            raise ValueError
+    except ValueError:
+        p.error("temporal_pair_offsets must be positive integers including 1")
+    for name in ("event_sampling_boost", "event_loss_boost"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) < 1:
+            p.error(f"{name} must be finite and >=1")
+    if not math.isfinite(args.event_delta_threshold) or args.event_delta_threshold <= 0:
+        p.error("event_delta_threshold must be finite and positive")
+    if not math.isfinite(args.potential_aux_loss_weight) or args.potential_aux_loss_weight < 0:
+        p.error("potential_aux_loss_weight must be finite and nonnegative")
+    if args.critic_readout == "query" and args.vl_backend != "qwen3_vl":
+        p.error("critic query requires Qwen")
+    if (args.potential_aux_loss_weight > 0 or args.event_sampling_boost > 1 or args.event_loss_boost > 1 or offsets != (1,)) and (args.target_schema != POTENTIAL_SCHEMA or args.loss_type != "categorical_ce"):
+        p.error("APF improvements require signed categorical supervision")
+    if args.qwen_logits_to_keep < 0:
+        p.error("qwen_logits_to_keep must be nonnegative")
+    for name in ("temporal_consistency_loss_weight", "conditional_lipschitz_loss_weight"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) < 0:
+            p.error(f"{name} must be finite and nonnegative")
+    for name in ("lipschitz_position_scale_m", "lipschitz_pixel_scale"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
+            p.error(f"{name} must be finite and positive")
+    if args.conditional_lipschitz_loss_weight > 0:
+        if args.target_mode != "progress" or not args.dataset_type.startswith("tb3") or args.robot_obs_dim != 9:
+            p.error("conditional Lipschitz regularization requires TB3 progress targets and nine-feature graphs")
+    if args.target_mode == "progress" and (args.temporal_consistency_loss_weight > 0 or args.conditional_lipschitz_loss_weight > 0) and args.loss_type not in {"mse", "categorical_ce"}:
+        p.error("paired progress supervision requires mse or categorical_ce")
+    if args.loss_type == "categorical_ce":
+        if args.target_mode != "progress" or args.value_output_activation != "identity" or args.value_distribution_bins < 2:
+            p.error("categorical_ce requires progress targets, identity activation and >=2 bins")
+        if args.target_schema != POTENTIAL_SCHEMA or (args.value_support_min, args.value_support_max) != (-1.0, 1.0):
+            p.error("categorical_ce currently requires signed potential labels and support [-1,1]")
+    elif args.value_distribution_bins != 0:
+        p.error("categorical value head requires --loss_type categorical_ce")
+    if args.target_schema == POTENTIAL_SCHEMA:
+        if args.target_mode != "progress" or args.value_output_activation != ("identity" if args.loss_type == "categorical_ce" else "tanh"):
+            p.error("signed potential requires progress targets and tanh scalar or identity categorical output")
+        if not str(args.dataset_type).startswith("tb3"):
+            p.error("tb3_potential_v1 requires a tb3 dataset")
+        with open(args.potential_config) if args.potential_config else io.StringIO("{}") as source:
+            args.potential_config = asdict(PotentialConfig(**json.load(source)))
+        if args.progress_distance_mode != args.potential_config["distance_mode"]:
+            p.error("signed potential input distances must match potential_config distance_mode")
+    else:
+        args.potential_config = None
+    return args
 
 
 def _parse_int_csv(value: str):
@@ -581,13 +684,27 @@ def build_model(args, device):
         use_moe=args.use_moe,
         moe_experts=args.moe_experts,
         moe_top_k=args.moe_top_k,
+        value_distribution_bins=getattr(args, "value_distribution_bins", 0),
+        value_support_min=getattr(args, "value_support_min", -1.0),
+        value_support_max=getattr(args, "value_support_max", 1.0),
+        qwen_logits_to_keep=getattr(args, "qwen_logits_to_keep", 1),
+        critic_readout=getattr(args, "critic_readout", "mean"),
+        agent_pooling=getattr(args, "agent_pooling", "mean"),
+        potential_aux_heads=float(getattr(args, "potential_aux_loss_weight", 0.0)) > 0,
+        trajectory_preference_head=float(getattr(args, "preference_loss_weight", 0.0)) > 0,
+        relational_critic=getattr(args, "relational_critic", False),
         debug_save_video=args.debug_save_video,
         contrastive_multidepth=getattr(args, "contrastive_multidepth", False),
         contrastive_depth_offsets=tuple(
             getattr(args, "contrastive_depth_offsets_list", [0])
         ),
     )
-    return MultimodalValueModel(cfg, device=device)
+    if cfg.relational_critic and cfg.agent_pooling != "attention_max":
+        raise ValueError("relational critic requires attention_max agent pooling")
+    model = MultimodalValueModel(cfg, device=device)
+    if cfg.relational_critic and float(getattr(args, "success_loss_weight", 0.0)) == 0:
+        model.success_head.requires_grad_(False)
+    return model
 
 
 def _parse_lora_targets(args):
@@ -614,7 +731,11 @@ def _apply_peft(model, args):
     lora_scope = getattr(args, "lora_scope", "all")
 
     # Checkpoint transformer activations for both VLM and video-only LoRA runs.
-    if hasattr(model.backbone.model, "gradient_checkpointing_enable"):
+    if getattr(args, "disable_gradient_checkpointing", False):
+        if hasattr(model.backbone.model, "gradient_checkpointing_disable"):
+            model.backbone.model.gradient_checkpointing_disable()
+        print("[PEFT] Gradient checkpointing DISABLED")
+    elif hasattr(model.backbone.model, "gradient_checkpointing_enable"):
         model.backbone.model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
@@ -665,7 +786,7 @@ def _apply_peft(model, args):
     if args.peft == "qlora":
         model.backbone.model = prepare_model_for_kbit_training(
             model.backbone.model,
-            use_gradient_checkpointing=True,
+            use_gradient_checkpointing=not getattr(args, "disable_gradient_checkpointing", False),
             gradient_checkpointing_kwargs={"use_reentrant": False},
         )
 
@@ -1026,8 +1147,18 @@ def _initial_progress_distances(agents, progress_metadata, mode="euclidean"):
 
 def _progress_target_from_sample(
     sample, state_json, target_schema="", initial_goal_distances=None,
-    progress_distance_mode="euclidean",
+    progress_distance_mode="euclidean", potential_config=None,
 ):
+    if str(target_schema).lower() == POTENTIAL_SCHEMA:
+        label = _json_from_sample(sample, "progress.json")
+        if not isinstance(label, dict) or label.get("schema") != POTENTIAL_SCHEMA:
+            raise ValueError("tb3_potential_v1 requires relabeled progress.json; legacy progress is incompatible")
+        if potential_config is not None and label.get("potential_config") != potential_config:
+            raise ValueError("potential label configuration differs from training configuration")
+        value = float(label["target"])
+        if not math.isfinite(value) or not -1 <= value <= 1:
+            raise ValueError("potential target must be finite and in [-1,1]")
+        return value
     if str(target_schema).lower() == "tb3_progress_v2":
         agents = sorted(state_json.get("agents", []), key=lambda item: item.get("id", 0))
         current = np.asarray(
@@ -1075,6 +1206,8 @@ def _progress_target_from_sample(
 def _apply_value_output_activation(value, args):
     if getattr(args, "value_output_activation", "identity") == "sigmoid":
         return torch.sigmoid(value)
+    if getattr(args, "value_output_activation", "identity") == "tanh":
+        return torch.tanh(value)
     return value
 
 
@@ -1092,7 +1225,17 @@ def _reset_value_head_for_progress(model, accelerator=None):
     nn.init.xavier_uniform_(head.weight)
     nn.init.zeros_(head.bias)
     if accelerator is not None:
-        accelerator.print("  ✓ Value head reset for sigmoid progress target")
+        accelerator.print("  ✓ Value head reset for bounded state target")
+
+
+def _target_contract_changed(ckpt, args):
+    """A target or activation migration must start with fresh optimization state."""
+    return any(_ckpt_arg(ckpt, key, default) != getattr(args, key, default)
+               for key, default in (("target_mode", "return"), ("target_schema", ""),
+                                    ("value_output_activation", "identity"),
+                                    ("potential_config", None),
+                                    ("value_distribution_bins", 0),
+                                    ("value_support_min", -1.0), ("value_support_max", 1.0)))
 
 
 def _save_debug_video(batch, args, accelerator, tag="train"):
@@ -1471,7 +1614,7 @@ def _qwen_video_metadata(frame_count, fps):
 
 def _build_tb3_prompt(
     state_json, sample, obs_lines, step_idx, outcome, termination_reason,
-    progress_distance_mode="euclidean",
+    progress_distance_mode="euclidean", target_schema="",
 ):
     domain, num_agents, num_obstacles, instruction = _tb3_task_context(
         state_json, sample
@@ -1492,6 +1635,14 @@ def _build_tb3_prompt(
         )
     else:
         progress_description = "normalized Euclidean geometric team progress"
+    target_description = f"{progress_description} from 0 to 1"
+    prediction_request = "Predict the current normalized task progress from the video and team state. "
+    episode_context = f"Timestep: {step_idx}. Episode outcome token: {outcome}. Termination reason: {termination_reason or 'none'}. "
+    if target_schema == POTENTIAL_SCHEMA:
+        target_description = "signed scene potential from -1 to 1, combining remaining goal distance and worst team/obstacle clearance risk"
+        prediction_request = "Predict current scene quality. Retreat and increasing collision risk lower the potential; safe goal completion increases it. "
+        # Do not expose time or future episode outcome as shortcuts for the new target.
+        episode_context = ""
     header = (
         "You are an expert vision-language critic for a multi-agent TurtleBot3 team. "
         f"This is a {environment_label} {domain_label} task with exactly {num_agents} agents "
@@ -1501,12 +1652,10 @@ def _build_tb3_prompt(
         "the image center. Frames are center-cropped only; they are never rotated or reflected. "
         "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided "
         "by the structured observations. The target is "
-        f"{progress_description} from 0 to 1. "
+        f"{target_description}. "
         "Traversability information is unavailable. "
         f"Task domain: {domain}. Task instruction: {instruction} "
-        "Predict the current normalized task progress from the video and team state. "
-        f"Timestep: {step_idx}. Episode outcome token: {outcome}. "
-        f"Termination reason: {termination_reason or 'none'}. "
+        f"{prediction_request}{episode_context}"
     )
     return header + " ".join(obs_lines)
 
@@ -1553,6 +1702,17 @@ class SequenceWebDataset(IterableDataset):
         task_domains="goal_to_goal,static_obstacles",
         progress_distance_mode="euclidean",
         qwen_video_fps=5.0,
+        potential_config=None,
+        include_lipschitz=False,
+        lipschitz_position_scale_m=0.1,
+        lipschitz_pixel_scale=0.1,
+        qwen_critic_query=False,
+        include_potential_components=False,
+        relational_critic=False,
+        temporal_pair_offsets=(1,),
+        event_sampling_boost=1.0,
+        event_delta_threshold=0.03,
+        apf_target_transform="raw",
     ):
         if isinstance(shards, str):
             if shards.startswith("hf://datasets/"):
@@ -1601,6 +1761,7 @@ class SequenceWebDataset(IterableDataset):
         self.shards = shards
         self.clip_len = clip_len
         self.clip_stride = clip_stride
+        self.relational_critic = bool(relational_critic)
         self.text_mode = text_mode
         self.robot_source = robot_source
         self.reward_reduce = reward_reduce
@@ -1617,6 +1778,18 @@ class SequenceWebDataset(IterableDataset):
         self.gamma = gamma
         self.keep_raw_video = keep_raw_video
         self.include_next = include_next
+        self.qwen_critic_query = bool(qwen_critic_query)
+        self.include_potential_components = bool(include_potential_components)
+        self.temporal_pair_offsets = tuple(temporal_pair_offsets) if shuffle_shards and include_next else (1,)
+        if not self.temporal_pair_offsets or min(self.temporal_pair_offsets) < 1 or 1 not in self.temporal_pair_offsets:
+            raise ValueError("temporal pair offsets must be positive and include 1")
+        self.event_sampling_boost = float(event_sampling_boost) if shuffle_shards else 1.0
+        self.event_delta_threshold = event_delta_threshold
+        self.include_lipschitz = bool(include_lipschitz)
+        self.lipschitz_position_scale_m = lipschitz_position_scale_m
+        self.lipschitz_pixel_scale = lipschitz_pixel_scale
+        if self.include_lipschitz and (not include_next or not dataset_type.startswith("tb3") or robot_obs_dim != 9):
+            raise ValueError("conditional Lipschitz pairs require adjacent TB3 nine-feature clips")
         self.vlm_max_text_len = vlm_max_text_len
         self.vlm_truncation = vlm_truncation
         self.vlm_padding = vlm_padding
@@ -1631,6 +1804,8 @@ class SequenceWebDataset(IterableDataset):
         self._max_return_horizon = max_return_horizon
         self.success_only = bool(success_only)
         self.target_schema = str(target_schema)
+        self.potential_config = potential_config
+        self.apf_target_transform = apf_target_transform
         self.tb3_image_mode = str(tb3_image_mode)
         self.progress_distance_mode = str(progress_distance_mode)
         self.qwen_video_fps = float(qwen_video_fps)
@@ -1737,6 +1912,8 @@ class SequenceWebDataset(IterableDataset):
                 dataset = dataset.split_by_worker()
 
         current_ep = None
+        current_source = None
+        previous_frame_step = None
         buffer = deque()
         episode_frame_count = 0
         tb3_initial_goal_distances = None
@@ -1769,7 +1946,10 @@ class SequenceWebDataset(IterableDataset):
                             return_tensors="pt",
                         )
                     elif self.vl_backend == "qwen3_vl":
-                        if "<obs>" not in text:
+                        if self.relational_critic:
+                            real_agents = int(clip[-1]["robot_obs"].shape[0])
+                            text = " ".join(["<obs>"] * real_agents) + "\n" + text
+                        elif "<obs>" not in text:
                             text = f"<obs>\n{text}"
                         messages = [
                             {
@@ -1783,7 +1963,7 @@ class SequenceWebDataset(IterableDataset):
                         inputs = self.vlm_processor.apply_chat_template(
                             messages,
                             tokenize=True,
-                            add_generation_prompt=False,
+                            add_generation_prompt=self.qwen_critic_query,
                             return_dict=True,
                             return_tensors="pt",
                             padding=self.vlm_padding,
@@ -1841,11 +2021,12 @@ class SequenceWebDataset(IterableDataset):
                         )
                     return packed
 
-                text = clip[0]["text"]
+                text = clip[-1 if self.target_schema == POTENTIAL_SCHEMA else 0]["text"]
                 inputs = _proc(raw_video, text)
                 next_inputs = None
                 if next_clip is not None:
-                    next_inputs = _proc(raw_next_video, text)
+                    next_text = next_clip[-1]["text"] if self.target_schema == POTENTIAL_SCHEMA else text
+                    next_inputs = _proc(raw_next_video, next_text)
             else:
                 raise RuntimeError("Dataloader proprocessor not set.")
 
@@ -1901,13 +2082,64 @@ class SequenceWebDataset(IterableDataset):
                 out["next_progress"] = next_progress.view(1)
             if success is not None:
                 out["success"] = success.view(1)
+            if self.target_mode == "progress":
+                out["raw_progress"] = torch.tensor(clip[-1]["raw_progress"], dtype=torch.float32)
+                if next_clip is not None:
+                    out["next_raw_progress"] = torch.tensor(next_clip[-1]["raw_progress"], dtype=torch.float32)
+            preference = clip[-1].get("preference")
+            if preference is not None:
+                for name in ("pair_id", "side", "label"):
+                    out["preference_" + name] = torch.tensor(preference[name])
+            if self.include_potential_components:
+                out["potential_components"] = clip[-1]["potential_components"]
+                if next_clip is not None:
+                    out["next_potential_components"] = next_clip[-1]["potential_components"]
             out["inputs"] = inputs
             if next_clip is not None:
                 out["next_inputs"] = next_inputs
                 out["next_robot_obs"] = next_robot_obs
                 out["next_adj"] = next_adj
+                if self.include_lipschitz:
+                    conditions = {frame["condition_key"] for frame in clip + next_clip}
+                    same_condition = len(conditions) == 1
+                    continuous = clip[-1]["pair_collision"] == next_clip[-1]["pair_collision"]
+                    out["lipschitz_valid"] = torch.tensor(same_condition and continuous)
+                    # Never move raw clips to the GPU or retain an extra copy.
+                    out["lipschitz_distance"] = torch.tensor(
+                        fixed_tb3_clip_distance(clip, next_clip, self.lipschitz_position_scale_m,
+                                               self.lipschitz_pixel_scale) if same_condition else 0.,
+                        dtype=torch.float32,
+                    )
 
             return out
+
+        def _emit_windows(frame_buffer, frame_count, flush=False):
+            required_gap = (1 if flush else max(self.temporal_pair_offsets)) if self.include_next else 0
+            while len(frame_buffer) >= self.clip_len + required_gap:
+                start = frame_count - len(frame_buffer)
+                if start % self.clip_stride == 0:
+                    frames = list(frame_buffer)
+                    clip = frames[:self.clip_len]
+                    next_clip = None
+                    offset = 0
+                    if self.include_next:
+                        choices = [offset for offset in self.temporal_pair_offsets if self.clip_len + offset <= len(frames)]
+                        offset = random.choice(choices) if self.shuffle_shards else 1
+                        next_clip = frames[offset:offset + self.clip_len]
+                    # Future labels only choose TRAINING windows/pairs; every
+                    # forward consumes a causal clip ending at its own target.
+                    ends = frames[self.clip_len - 1:self.clip_len + offset]
+                    labels = [float(frame.get("raw_progress", frame["progress"])) for frame in ends] if self.target_mode == "progress" else []
+                    event = (any(value <= -1 + 1e-6 for value in labels) or
+                             any(abs(b - a) >= self.event_delta_threshold for a, b in zip(labels, labels[1:])))
+                    keep = event or self.event_sampling_boost == 1 or random.random() < 1 / self.event_sampling_boost
+                    if keep:
+                        out = _process_clip_data(clip, next_clip)
+                        if out is not None:
+                            if self.include_next:
+                                out["pair_offset"] = torch.tensor(offset)
+                            yield out
+                frame_buffer.popleft()
 
         for sample in dataset:
             key = sample.get("__key__", "")
@@ -1924,13 +2156,23 @@ class SequenceWebDataset(IterableDataset):
             if current_ep is None:
                 current_ep = ep_id
 
-            # Reset buffer on new episode
-            if ep_id != current_ep:
+            source = sample.get("__url__")
+            frame_match = re.search(r"_step(\d+)$", key)
+            frame_step = int(frame_match.group(1)) if frame_match else None
+            # Repeated shards and different domains can reuse an episode ID.
+            # Never form a temporal pair across a shard boundary or wraparound.
+            wrapped = frame_step is not None and previous_frame_step is not None and frame_step <= previous_frame_step
+            if ep_id != current_ep or source != current_source or wrapped:
+                # Retain short-gap tail pairs, including terminal collisions;
+                # never pair across episode/shard boundaries or repetitions.
+                yield from _emit_windows(buffer, episode_frame_count, flush=True)
                 buffer = deque()
                 current_ep = ep_id
                 episode_frame_count = 0
                 tb3_initial_goal_distances = None
                 tb3_progress_distance_mode = self.progress_distance_mode
+            current_source = source
+            previous_frame_step = frame_step
 
             # Image loading — handle RWARE topdown off-by-one:
             # rware_topdown[N] matches overhead[N-1], so apply
@@ -1990,6 +2232,9 @@ class SequenceWebDataset(IterableDataset):
                     image = image.resize((rw, th), Image.LANCZOS)
 
             progress = None
+            potential_components = None
+            condition_key = None
+            pair_collision = False
             success = None
 
             # Apply RWARE topdown to the PREVIOUS buffer frame
@@ -2445,7 +2690,19 @@ class SequenceWebDataset(IterableDataset):
                     target_schema=self.target_schema,
                     initial_goal_distances=tb3_initial_goal_distances,
                     progress_distance_mode=tb3_progress_distance_mode,
+                    potential_config=self.potential_config,
                 )
+                if self.target_schema == POTENTIAL_SCHEMA:
+                    actual_transform = progress_metadata.get("target_transform", "raw")
+                    if actual_transform != self.apf_target_transform:
+                        raise ValueError("APF label transform differs from training configuration")
+                if self.include_potential_components:
+                    potential_components = potential_component_target(progress_metadata)
+                if self.include_lipschitz:
+                    condition_key = tb3_condition_key(state_json, current_ep)
+                    pair_collision = bool(progress_metadata.get("collision", False)) or (
+                        self.target_schema == POTENTIAL_SCHEMA and progress == -1.
+                    ) or any(bool(agent.get("collision", False)) for agent in agents)
 
                 episode_meta = state_json.get("episode_meta", {})
                 agents = state_json.get("agents", [])
@@ -2508,6 +2765,7 @@ class SequenceWebDataset(IterableDataset):
                         outcome,
                         termination_reason,
                         progress_distance_mode=tb3_progress_distance_mode,
+                        target_schema=self.target_schema,
                     )
                 else:
                     text = self.text_prompt_template + " " + " ".join(obs_lines)
@@ -2544,33 +2802,18 @@ class SequenceWebDataset(IterableDataset):
                     "reward": reward,
                     "done": done,
                     "progress": progress,
+                    "raw_progress": float(progress_metadata.get("raw_target", progress)) if self.dataset_type.startswith("tb3") else progress,
+                    "preference": progress_metadata.get("preference") if self.dataset_type.startswith("tb3") else None,
                     "success": success,
+                    "condition_key": condition_key,
+                    "pair_collision": pair_collision,
+                    "potential_components": potential_components,
                 }
             )
             episode_frame_count += 1
 
-            # Sliding window yield logic
-            min_len = self.clip_len + (1 if self.include_next else 0)
-
-            # While we have enough data to yield at least one clip
-            while len(buffer) >= min_len:
-                # Check if the clip starting at buffer[0] is valid according to stride
-                # The start index of the clip at buffer[0] is (episode_frame_count - len(buffer))
-                current_start_index = episode_frame_count - len(buffer)
-
-                if current_start_index % self.clip_stride == 0:
-                    buf_list = list(buffer)
-                    clip = buf_list[: self.clip_len]
-                    next_clip = None
-                    if self.include_next:
-                        next_clip = buf_list[1 : 1 + self.clip_len]
-
-                    out_sample = _process_clip_data(clip, next_clip)
-                    if out_sample is not None:
-                        yield out_sample
-
-                # Pop the oldest frame to slide the window
-                buffer.popleft()
+            yield from _emit_windows(buffer, episode_frame_count)
+        yield from _emit_windows(buffer, episode_frame_count, flush=True)
 
 
 def _validate_qwen_visual_batch(inputs):
@@ -2654,6 +2897,8 @@ def webdataset_loader(
     args, shards, batch_size, num_workers, shuffle=False, dataset_type=None,
     balance_tb3_sources=None,
 ):
+    # Infer the declared dataset format for auxiliary loaders as well as the main loader.
+    dataset_type = dataset_type or getattr(args, "dataset_type", None) or "default"
     # Support local glob patterns while leaving remote URL patterns to WebDataset.
     if (
         isinstance(shards, str)
@@ -2680,7 +2925,7 @@ def webdataset_loader(
     dataset = SequenceWebDataset(
         shards=shards,
         clip_len=args.clip_len,
-        clip_stride=args.clip_stride,
+        clip_stride=(getattr(args, "val_clip_stride", 0) or args.clip_stride) if not shuffle else args.clip_stride,
         text_mode=args.text_mode,
         robot_source=args.robot_source,
         reward_reduce=args.reward_reduce,
@@ -2702,6 +2947,7 @@ def webdataset_loader(
         include_next=(
             getattr(args, "target_mode", "return") != "progress"
             or float(getattr(args, "temporal_consistency_loss_weight", 0.0)) > 0.0
+            or float(getattr(args, "conditional_lipschitz_loss_weight", 0.0)) > 0.0
         ),
         vlm_max_text_len=args.vl_max_text_len,
         # Truncating a Qwen3-VL prompt can remove visual placeholder tokens and
@@ -2726,6 +2972,17 @@ def webdataset_loader(
         task_domains=getattr(args, "task_domains", "goal_to_goal,static_obstacles"),
         progress_distance_mode=getattr(args, "progress_distance_mode", "euclidean"),
         qwen_video_fps=getattr(args, "qwen_video_fps", 5.0),
+        potential_config=getattr(args, "potential_config", None),
+        include_lipschitz=float(getattr(args, "conditional_lipschitz_loss_weight", 0.0)) > 0,
+        lipschitz_position_scale_m=getattr(args, "lipschitz_position_scale_m", 0.1),
+        lipschitz_pixel_scale=getattr(args, "lipschitz_pixel_scale", 0.1),
+        qwen_critic_query=getattr(args, "critic_readout", "mean") == "query",
+        relational_critic=getattr(args, "relational_critic", False),
+        include_potential_components=float(getattr(args, "potential_aux_loss_weight", 0.0)) > 0,
+        temporal_pair_offsets=tuple(int(value) for value in str(getattr(args, "temporal_pair_offsets", "1")).split(",")),
+        event_sampling_boost=getattr(args, "event_sampling_boost", 1.0) if shuffle else 1.0,
+        event_delta_threshold=getattr(args, "event_delta_threshold", 0.03),
+        apf_target_transform=getattr(args, "apf_target_transform", "raw"),
     )
 
     def _collate(batch):
@@ -2775,6 +3032,12 @@ def webdataset_loader(
             out["next_progress"] = torch.stack(
                 [b["next_progress"] for b in batch], dim=0
             ).view(-1)
+        if "lipschitz_distance" in batch[0]:
+            out["lipschitz_distance"] = torch.stack([b["lipschitz_distance"] for b in batch])
+            out["lipschitz_valid"] = torch.stack([b["lipschitz_valid"] for b in batch])
+        for name in ("potential_components", "next_potential_components", "pair_offset", "success", "raw_progress", "next_raw_progress", "preference_pair_id", "preference_side", "preference_label"):
+            if name in batch[0]:
+                out[name] = torch.stack([b[name] for b in batch])
         return out
 
     loader_kwargs = dict(
@@ -2784,17 +3047,18 @@ def webdataset_loader(
         pin_memory=True,
     )
     if num_workers > 0:
-        loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 2
+        prefetch = int(getattr(args, "loader_prefetch_factor", 2))
+        if prefetch < 1:
+            raise ValueError("loader_prefetch_factor must be positive")
+        loader_kwargs["persistent_workers"] = not getattr(args, "disable_persistent_workers", False)
+        loader_kwargs["prefetch_factor"] = prefetch
     return DataLoader(dataset, **loader_kwargs)
 
 
 def _temporal_consistency_loss(pred, next_pred, target, next_target):
     """Match adjacent prediction changes to adjacent progress-target changes."""
 
-    predicted_delta = next_pred.view(-1) - pred.view(-1)
-    target_delta = next_target.view(-1) - target.view(-1)
-    return F.smooth_l1_loss(predicted_delta, target_delta, beta=0.02)
+    return temporal_delta_loss(pred, next_pred, target, next_target)
 
 
 def _contrastive_pairwise_loss(scores, rewards, margin=0.0):
@@ -2954,8 +3218,29 @@ def run_epoch(
     total_loss = 0.0
     step = 0
     observed_episode_ids = set()
+    component_sums = {}
+    component_samples = 0
+    lipschitz_counts = {}
+    event_counts = {}
+    phase_started = time.perf_counter()
 
     phase = "train" if train else "val"
+    preference_weight = float(getattr(args, "preference_loss_weight", 0))
+    preference_iterator = None
+    if preference_weight > 0:
+        if args.preference_interval < 1 or not args.preference_shards:
+            raise ValueError("preference supervision needs shards and a positive interval")
+        import glob as preference_glob
+        preference_paths = sorted(preference_glob.glob(os.path.join(args.preference_shards, phase, "*.tar")))
+        if not preference_paths:
+            raise ValueError("missing split-specific preference trajectories")
+        cache = getattr(run_epoch, "_preference_loaders", {})
+        cache_key = (phase, args.preference_shards)
+        if cache_key not in cache:
+            cache[cache_key] = webdataset_loader(preference_loader_args(args), preference_paths, 8, 2, shuffle=train, dataset_type=getattr(args, "dataset_type", "tb3_potential_v1"), balance_tb3_sources=False)
+            run_epoch._preference_loaders = cache
+        preference_iterator = iter(cache[cache_key])
+    preference_total = preference_hits = preference_pairs = 0
     show_pbar = accelerator.is_main_process
     pbar = tqdm(
         loader,
@@ -2993,7 +3278,8 @@ def run_epoch(
         temporal_weight = float(
             getattr(args, "temporal_consistency_loss_weight", 0.0)
         )
-        use_next = target_mode != "progress" or temporal_weight > 0.0
+        lipschitz_weight = float(getattr(args, "conditional_lipschitz_loss_weight", 0.0))
+        use_next = target_mode != "progress" or temporal_weight > 0.0 or lipschitz_weight > 0.0
         if use_next:
             next_inputs = _move_inputs(batch["next_inputs"])
             next_robot_obs = batch["next_robot_obs"].to(accelerator.device)
@@ -3015,12 +3301,16 @@ def run_epoch(
             _save_debug_video(batch, args, accelerator, tag="train")
             run_epoch._debug_saved = True
 
+        aux_weight = float(getattr(args, "potential_aux_loss_weight", 0.0))
+        event_boost = float(getattr(args, "event_loss_boost", 1.0)) if train else 1.0
+        pair_weights = event_weights(batch.get("raw_progress", progress_target), batch.get("next_raw_progress", next_progress_target),
+                                     boost=event_boost, threshold=getattr(args, "event_delta_threshold", 0.03)).to(accelerator.device) if target_mode == "progress" else None
         with accelerator.accumulate(model):
             with torch.set_grad_enabled(train):
                 return_features = (
                     args.loss_type in ("contrastive", "contrastive_mse")
                     and getattr(args, "contrastive_multidepth", False)
-                ) or float(getattr(args, "success_loss_weight", 0.0)) > 0.0
+                ) or args.loss_type == "categorical_ce" or float(getattr(args, "success_loss_weight", 0.0)) > 0.0 or aux_weight > 0
                 model_out = model(
                     inputs, robot_obs, adj, return_features=return_features
                 )
@@ -3035,6 +3325,14 @@ def run_epoch(
                     vlm_multidepth_features = None
                 pred = _apply_value_output_activation(pred, args)
 
+                categorical_loss = None
+                if args.loss_type == "categorical_ce":
+                    if progress_target is None:
+                        raise RuntimeError("categorical_ce requires signed progress labels")
+                    target = progress_target
+                    categorical_loss = weighted_mean(categorical_value_loss(model_out["value_logits"], target, args.value_support_min, args.value_support_max, reduction="none"), pair_weights)
+                    loss = categorical_loss
+                    mse_loss = F.mse_loss(pred.float().view(-1), target.float().view(-1))
                 if args.loss_type in ("contrastive", "contrastive_mse", "mse"):
                     if target_mode == "progress":
                         if progress_target is None:
@@ -3122,30 +3420,65 @@ def run_epoch(
                         loss = loss_fn(pred, target)
 
                 temporal_consistency_loss = None
-                if target_mode == "progress" and temporal_weight > 0.0:
+                lipschitz_loss = None
+                if target_mode == "progress" and (temporal_weight > 0.0 or lipschitz_weight > 0.0):
                     if next_progress_target is None:
                         raise RuntimeError(
-                            "temporal consistency requires next_progress targets"
+                            "temporal/Lipschitz regularization requires next_progress targets"
                         )
                     next_model_out = model(
                         next_inputs,
                         next_robot_obs,
                         next_adj,
-                        return_features=False,
+                        return_features=args.loss_type == "categorical_ce" or aux_weight > 0,
                     )
+                    if args.loss_type == "categorical_ce":
+                        next_categorical_loss = weighted_mean(categorical_value_loss(next_model_out["value_logits"], next_progress_target, args.value_support_min, args.value_support_max, reduction="none"), pair_weights)
+                        categorical_loss = .5 * (categorical_loss + next_categorical_loss)
+                        loss = categorical_loss
+                    next_features = next_model_out if isinstance(next_model_out, dict) else None
                     if isinstance(next_model_out, dict):
                         next_model_out = next_model_out["value"]
                     temporal_next_pred = _apply_value_output_activation(
                         next_model_out, args
                     )
-                    temporal_consistency_loss = _temporal_consistency_loss(
-                        pred,
-                        temporal_next_pred,
-                        progress_target,
-                        next_progress_target,
-                    )
-                    loss = loss + temporal_weight * temporal_consistency_loss
+                    # Supervise both endpoints, including clipped training windows
+                    # whose next endpoint is not otherwise sampled by clip_stride.
+                    next_mse = F.mse_loss(temporal_next_pred.float().view(-1), next_progress_target.float().view(-1))
+                    if args.loss_type != "categorical_ce":
+                        loss = loss + .5 * (next_mse - mse_loss)
+                    mse_loss = .5 * (mse_loss + next_mse)
+                    if temporal_weight > 0.0:
+                        temporal_consistency_loss = weighted_mean(F.smooth_l1_loss(
+                            temporal_next_pred.float().view(-1) - pred.float().view(-1),
+                            next_progress_target.float().view(-1) - progress_target.float().view(-1),
+                            beta=0.02, reduction="none"), pair_weights)
+                        loss = loss + temporal_weight * temporal_consistency_loss
+                    if lipschitz_weight > 0.0:
+                        distance = batch["lipschitz_distance"].to(accelerator.device)
+                        valid = batch["lipschitz_valid"].to(accelerator.device)
+                        lipschitz_loss = conditional_lipschitz_loss(pred, temporal_next_pred, distance, valid)
+                        loss = loss + lipschitz_weight * lipschitz_loss
+                        diagnostics = conditional_lipschitz_diagnostics(
+                            pred, temporal_next_pred, progress_target, next_progress_target, distance, valid,
+                        )
+                        for name, count in diagnostics.items():
+                            lipschitz_counts[name] = lipschitz_counts.get(name, 0) + count
 
+                auxiliary_metrics = {}
+                if aux_weight > 0:
+                    auxiliary_loss, auxiliary_metrics = potential_auxiliary_loss(
+                        model_out, batch["potential_components"].to(accelerator.device))
+                    if use_next:
+                        next_aux, next_aux_metrics = potential_auxiliary_loss(
+                            next_features, batch["next_potential_components"].to(accelerator.device))
+                        auxiliary_loss = .5 * (auxiliary_loss + next_aux)
+                        auxiliary_metrics = {name: .5 * (value + next_aux_metrics[name]) for name, value in auxiliary_metrics.items()}
+                    loss = loss + aux_weight * auxiliary_loss
+                if target_mode == "progress" and use_next:
+                    for name, value in change_metrics(pred, temporal_next_pred, progress_target, next_progress_target,
+                                                     getattr(args, "event_delta_threshold", .03)).items():
+                        event_counts[name] = event_counts.get(name, 0) + value
                 success_weight = float(getattr(args, "success_loss_weight", 0.0))
                 if success_weight > 0.0:
                     success_target = batch.get("success")
@@ -3157,7 +3490,24 @@ def run_epoch(
                         success_target.to(accelerator.device).view(-1),
                     )
                     loss = loss + success_weight * success_loss
+                if preference_weight > 0 and (step - 1) % args.preference_interval == 0:
+                    preference_batch = next(preference_iterator)
+                    preference_output = model(_move_inputs(preference_batch["inputs"]),
+                        preference_batch["robot_obs"].to(accelerator.device),
+                        preference_batch["adj"].to(accelerator.device), return_features=True)
+                    preference_loss, preference_accuracy = trajectory_preference_loss(
+                        preference_output["preference_score"], preference_batch)
+                    loss = loss + preference_weight * preference_loss
+                    auxiliary_metrics["preference_ce_loss"] = preference_loss
+                    preference_total += preference_loss.detach().item()
+                    preference_hits += preference_accuracy
+                    preference_pairs += 1
                 if train:
+                    # Main, paired-frame and preference forwards share one backward.
+                    # A zero-valued anchor keeps optional-head DDP hooks consistent
+                    # across microbatches without find_unused multi-forward traversal.
+                    if getattr(args, "relational_critic", False) and accelerator.num_processes > 1:
+                        loss = loss + sum(p.reshape(-1)[0] * 0. for p in model.parameters() if p.requires_grad)
                     accelerator.backward(loss)
                     if args.max_grad_norm > 0 and accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(
@@ -3182,6 +3532,17 @@ def run_epoch(
                                     )
 
         total_loss += loss.item()
+        if target_mode == "progress":
+            samples = int(pred.numel())
+            component_samples += samples
+            for name, value in auxiliary_metrics.items():
+                component_sums[name] = component_sums.get(name, 0.) + value.detach().item() * samples
+            for name, value in (("progress_mse_loss", mse_loss),
+                                ("categorical_ce_loss", categorical_loss),
+                                ("temporal_consistency_loss", temporal_consistency_loss),
+                                ("conditional_lipschitz_loss", lipschitz_loss)):
+                if value is not None:
+                    component_sums[name] = component_sums.get(name, 0.) + value.detach().item() * samples
         avg_loss = total_loss / step
 
         # Update progress bar
@@ -3217,15 +3578,80 @@ def run_epoch(
                             log_dict["train/mse_loss"] = mse_loss.item()
                     elif target_mode == "progress":
                         log_dict["train/progress_mse_loss"] = mse_loss.item()
+                        if categorical_loss is not None:
+                            log_dict["train/categorical_ce_loss"] = categorical_loss.item()
                         if temporal_consistency_loss is not None:
                             log_dict["train/temporal_consistency_loss"] = (
                                 temporal_consistency_loss.item()
                             )
+                        if lipschitz_loss is not None:
+                            log_dict["train/conditional_lipschitz_loss"] = lipschitz_loss.item()
+                    log_dict.update({f"train/{name}": value.detach().item() for name, value in auxiliary_metrics.items()})
+                    if torch.cuda.is_available():
+                        device = accelerator.device
+                        gib = 1024 ** 3
+                        log_dict.update({
+                            "memory/allocated_gib": torch.cuda.memory_allocated(device) / gib,
+                            "memory/reserved_gib": torch.cuda.memory_reserved(device) / gib,
+                            "memory/peak_allocated_gib": torch.cuda.max_memory_allocated(device) / gib,
+                            "memory/peak_reserved_gib": torch.cuda.max_memory_reserved(device) / gib,
+                            "memory/device_total_gib": torch.cuda.get_device_properties(device).total_memory / gib,
+                            "train/effective_batch_size": args.batch_size * args.grad_accum_steps * accelerator.num_processes,
+                        })
                     wandb.log(log_dict)
             except ImportError:
                 pass
 
     pbar.close()
+    # Component and violation diagnostics are reported for validation too.
+    # Reduce across distributed ranks so this remains an epoch-level measure.
+    if component_samples:
+        names = sorted(component_sums)
+        counts = ["lipschitz_valid_pairs", "lipschitz_excluded_pairs",
+                  "lipschitz_prediction_violations", "lipschitz_target_violations"]
+        totals = torch.tensor([component_samples] + [component_sums[name] for name in names]
+                              + [lipschitz_counts.get(name, 0) for name in counts],
+                              device=accelerator.device, dtype=torch.float64)
+        totals = accelerator.reduce(totals, reduction="sum").cpu().tolist()
+        epoch_metrics = {f"{phase}/epoch_{name}": totals[index + 1] / totals[0] for index, name in enumerate(names)}
+        elapsed_seconds = max(time.perf_counter() - phase_started, 1e-9)
+        epoch_metrics.update({
+            f"{phase}/epoch_seconds": elapsed_seconds,
+            f"{phase}/clips_per_second": totals[0] / elapsed_seconds,
+            f"{phase}/consumed_clips": totals[0],
+        })
+        reduced_counts = dict(zip(counts, totals[len(names) + 1:]))
+        if lipschitz_counts:
+            valid_count = reduced_counts["lipschitz_valid_pairs"]
+            epoch_metrics.update({f"{phase}/{name}": value for name, value in reduced_counts.items()})
+            for kind in ("prediction", "target"):
+                epoch_metrics[f"{phase}/lipschitz_{kind}_violation_rate"] = (
+                    reduced_counts[f"lipschitz_{kind}_violations"] / valid_count if valid_count else 0.
+                )
+        if event_counts:
+            event_names = sorted(event_counts)
+            event_totals = accelerator.reduce(torch.tensor([event_counts[name] for name in event_names],
+                device=accelerator.device, dtype=torch.float64), reduction="sum").cpu().tolist()
+            reduced = dict(zip(event_names, event_totals))
+            epoch_metrics.update({f"{phase}/{name}": value for name, value in reduced.items()})
+            for label, numerator, denominator in (("drop_direction_recall", "drop_direction_hits", "drop_pairs"),
+                    ("recovery_direction_recall", "recovery_direction_hits", "recovery_pairs"),
+                    ("false_drop_rate", "false_drop_pairs", "quiet_pairs"),
+                    ("change_mae", "change_abs_error_sum", "change_pairs")):
+                epoch_metrics[f"{phase}/{label}"] = reduced[numerator] / max(1, reduced[denominator])
+        if preference_pairs:
+            epoch_metrics.update({f"{phase}/trajectory_preference_ce": preference_total / preference_pairs,
+                f"{phase}/trajectory_preference_accuracy": preference_hits / preference_pairs,
+                f"{phase}/trajectory_preference_pairs": preference_pairs})
+        run_epoch.last_metrics = epoch_metrics
+        accelerator.print("Critic diagnostics: " + json.dumps(epoch_metrics, sort_keys=True))
+        if accelerator.is_main_process:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log(epoch_metrics)
+            except ImportError:
+                pass
     accelerator.print(
         f"{phase}: consumed {step} batches and observed "
         f"{len(observed_episode_ids)} unique episode IDs on process "
@@ -3317,6 +3743,13 @@ def _compute_epoch_batch_counts(
 
 def main():
     args = parse_args()
+    if args.target_schema == POTENTIAL_SCHEMA or os.environ.get("TB3_REQUIRE_BOTH_DOMAINS") == "1":
+        from .tb3_training_contract import REQUIRED_DOMAINS, require_both_tb3_sources
+        if set(args.task_domains.split(",")) != set(REQUIRED_DOMAINS) or not args.balance_tb3_sources:
+            raise ValueError("ALWAYS train Isaac VLCM critics with both task domains and balanced sampling")
+        require_both_tb3_sources(args.train_shards)
+        if args.val_shards:
+            require_both_tb3_sources(args.val_shards)
     _resolve_contrastive_depth_args(args)
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -3327,6 +3760,8 @@ def main():
     loss_str = "ContrastiveMSE"
     if args.loss_type == "mse":
         loss_str = "MSE"
+    elif args.loss_type == "categorical_ce":
+        loss_str = "CategoricalCE"
     elif args.loss_type == "contrastive":
         loss_str = "Contrastive"
 
@@ -3410,6 +3845,8 @@ def main():
         find_unused = (
             args.ddp_find_unused_parameters or (args.peft != "none") or args.freeze_vl
         )
+        if getattr(args, "relational_critic", False):
+            find_unused = False
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=find_unused)
 
     # IterableDataset dispatch makes Accelerate infer one shared leading batch
@@ -3453,7 +3890,7 @@ def main():
     if (
         not args.resume_from
         and getattr(args, "target_mode", "return") == "progress"
-        and getattr(args, "value_output_activation", "identity") == "sigmoid"
+        and (getattr(args, "value_output_activation", "identity") in {"sigmoid", "tanh"} or args.loss_type == "categorical_ce")
     ):
         _reset_value_head_for_progress(model, accelerator)
     if args.fsdp:
@@ -3750,11 +4187,11 @@ def main():
         raw_model.load_state_dict(ckpt["model"], strict=False)
         accelerator.print("  ✓ Model weights restored")
         saved_target_mode = _ckpt_arg(ckpt, "target_mode", "return")
-        target_mode_changed = saved_target_mode != getattr(args, "target_mode", "return")
+        target_mode_changed = _target_contract_changed(ckpt, args)
         if (
             target_mode_changed
             and getattr(args, "target_mode", "return") == "progress"
-            and getattr(args, "value_output_activation", "identity") == "sigmoid"
+            and (getattr(args, "value_output_activation", "identity") in {"sigmoid", "tanh"} or args.loss_type == "categorical_ce")
         ):
             _reset_value_head_for_progress(raw_model, accelerator)
         if target_mode_changed and target_model is not None:
@@ -3766,8 +4203,7 @@ def main():
         # Restore optimizer state
         if target_mode_changed:
             accelerator.print(
-                "  • Target mode changed from "
-                f"{saved_target_mode!r} to {args.target_mode!r}; "
+                "  • Target contract changed; "
                 "starting optimizer, scheduler, EMA, and epoch count fresh."
             )
         elif "optimizer" in ckpt:
@@ -3822,7 +4258,7 @@ def main():
                 args.gamma,
                 args,
                 train=False,
-                max_steps=max(math.ceil(microbatches_per_epoch * 0.25), 10),
+                max_steps=getattr(args, "val_batches", 0) or max(math.ceil(microbatches_per_epoch * 0.25), 10),
             )
 
         accelerator.print(

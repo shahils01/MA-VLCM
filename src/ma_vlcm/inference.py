@@ -983,6 +983,7 @@ def main():
     # Restore training args as a namespace (acts as defaults)
     saved_args_dict = ckpt.get("args", {})
     args = SimpleNamespace(**saved_args_dict)
+    args.val_clip_stride = 0  # validation thinning is not an inference setting
 
     # Override dataset_type if requested (for mixed dataset checkpoints)
     if cli_args.dataset_type is not None:

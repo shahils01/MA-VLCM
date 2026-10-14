@@ -1,0 +1,8 @@
+{
+  "robot_radius_m": 0.105,
+  "goal_radius_m": 0.2,
+  "clearance_band_m": 0.3,
+  "agent_weight": 2.0,
+  "obstacle_weight": 2.0,
+  "distance_mode": "euclidean"
+}

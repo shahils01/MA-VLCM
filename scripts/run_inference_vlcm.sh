@@ -18,10 +18,11 @@ echo "Date: $(date)"
 # ── Paths (edit these) ──────────────────────────────────────────────────────
 CHECKPOINT="/scratch/aparame/Research/VLCM_checkpoints/50StepReturn_ContrastiveMSE_20260304_025223_epoch_10.pt"
 TEST_DATA_DIR="/scratch/aparame/Research/VLCM_Data_Collection/RWARE/data_test_iid"
-OUTPUT_FILE="inference_results.csv"
+OUTPUT_FILE="${OUTPUT_FILE:-inference_results.csv}"
+PLOT_DIR="${PLOT_DIR:-0.5B_b_rware_iid}"
 
 # ── Environment ─────────────────────────────────────────────────────────────
-export HF_TOKEN=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
+export HF_TOKEN="${HF_TOKEN:-}"
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
@@ -43,26 +44,15 @@ if [ -n "$CONTAINER_PATH" ] && [ -f "$CONTAINER_PATH" ]; then
     echo "Running via Apptainer container: $CONTAINER_PATH"
     apptainer exec --nv -B "$REPO_ROOT:$REPO_ROOT" -B "$BASE_SCRATCH:$BASE_SCRATCH" \
       --env HF_TOKEN="$HF_TOKEN" \
-      "$CONTAINER_PATH" python3 inference.py \
+      "$CONTAINER_PATH" python3 -m ma_vlcm.inference \
         --checkpoint "$CHECKPOINT" \
         --test_shards "$TEST_DATA_DIR" \
         --batch_size 4 \
         --num_workers 8 \
         --max_samples 200\
         --dataset_type rware\
-        --plot_dir "0.5B_b_rware_iid"\
+        --plot_dir "$PLOT_DIR"\
         --run_mc_dropout
-else
-    echo "Running natively (no container)"
-    python3 inference.py \
-        --checkpoint "$CHECKPOINT" \
-        --test_shards "$TEST_DATA_DIR" \
-        --batch_size 4 \
-        --num_workers 8 \
-        --output_file "$OUTPUT_FILE" \
-        --plot_dir "$PLOT_DIR" \
-        --max_samples 100 \
-        --dataset_type rware
 else
     echo "Running natively (no container)"
     export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
@@ -75,7 +65,7 @@ else
         --output_file "$OUTPUT_FILE" \
         --plot_dir "$PLOT_DIR" \
         --max_samples 100 \
-        --baseline
+        --dataset_type rware
 fi
 
 echo "Done. Results written to: $OUTPUT_FILE"

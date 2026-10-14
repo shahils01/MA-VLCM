@@ -83,6 +83,8 @@ def distance(a, b):
 def apply_value_output_activation(value, args):
     if getattr(args, "value_output_activation", "identity") == "sigmoid":
         return torch.sigmoid(value)
+    if getattr(args, "value_output_activation", "identity") == "tanh":
+        return torch.tanh(value)
     return value
 
 

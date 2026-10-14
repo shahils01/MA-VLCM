@@ -26,4 +26,6 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-32}}"
 export PYTHONUNBUFFERED=1
 export DATASET_PROFILE="${DATASET_PROFILE:-tb3_isaac}"
 
+# ALWAYS train with BOTH tb3-isaac-vlcm and tb3-isaac-avoid-obstacles-vlcm.
+# The backbone launcher enforces both sources and fresh critic training.
 bash scripts/lora_run_train_tb3_vjepa2.sh

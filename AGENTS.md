@@ -228,3 +228,19 @@ bash -n scripts/*.sh
   integration path.
 - Be careful around files with existing uncommitted changes. Read them first,
   make only task-scoped edits, and do not revert user work.
+
+
+## Required Isaac VLCM training contract
+
+- ALWAYS train VJEPA and Qwen critics using BOTH
+  `adi2440/tb3-isaac-vlcm` and `adi2440/tb3-isaac-avoid-obstacles-vlcm`,
+  including when training their locally relabeled signed potential shards.
+- Require both `goal_to_goal` and `static_obstacles` domains and balanced domain
+  sampling. Reject missing-domain inputs instead of falling back to one task.
+- Start fresh VLCM training: never resume an earlier critic checkpoint. Standard
+  pretrained backbone weights are allowed; initialize new adapters, critic head,
+  optimizer, and scheduler. Default to 16-frame clips; the user-authorized
+  Qwen experiment of 2026-10-06 uses 8-frame clips and 75 epochs.
+- Audit obstacle geometry before signed relabeling. Historical image-derived
+  layouts must pass the calibrated recovery checks; do not disable obstacle
+  penalties or replace ambiguous geometry with assumed occupied sites.
