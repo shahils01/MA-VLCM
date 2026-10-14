@@ -91,6 +91,8 @@ from .trajectory_preference import trajectory_preference_loss, preference_loader
 from .critic_improvements import (potential_component_target, event_weights, weighted_mean,
                                   potential_auxiliary_loss, change_metrics)
 from .potential import POTENTIAL_SCHEMA, PotentialConfig
+from .tb3_task_prompt import (TEXT_INPUT_CONTRACT, build_tb3_task_prompt,
+                              tb3_task_context as _tb3_task_context, validate_task_instruction)
 from .critic_regularization import (
     tb3_condition_key, fixed_tb3_clip_distance, temporal_delta_loss,
     conditional_lipschitz_loss, conditional_lipschitz_diagnostics,
@@ -129,7 +131,8 @@ def parse_args():
         help="Number of clip samples consumed globally per training epoch",
     )
     p.add_argument("--text_mode", type=str, default="raw", choices=["raw", "emb"])
-    p.add_argument("--text_prompt_template", type=str, default=None)
+    p.add_argument("--text_prompt_template", type=str, default=None,
+                   help="Literal task instruction; TB3 never appends frame state or labels")
     p.add_argument(
         "--run_name_prefix",
         type=str,
@@ -566,6 +569,8 @@ def parse_args():
     p.add_argument("--resize_height", type=int, default=336)
 
     args = p.parse_args()
+    args.text_input_contract = (TEXT_INPUT_CONTRACT if str(args.dataset_type).startswith("tb3")
+                                else "not_applicable_tb3")
     if not math.isfinite(args.preference_loss_weight) or args.preference_loss_weight < 0 or args.preference_interval < 1:
         p.error("preference weight must be nonnegative and interval positive")
     if args.preference_loss_weight > 0 and (not args.preference_shards or args.clip_len != 8):
@@ -1233,6 +1238,7 @@ def _target_contract_changed(ckpt, args):
     return any(_ckpt_arg(ckpt, key, default) != getattr(args, key, default)
                for key, default in (("target_mode", "return"), ("target_schema", ""),
                                     ("value_output_activation", "identity"),
+                                    ("text_input_contract", ""),
                                     ("potential_config", None),
                                     ("value_distribution_bins", 0),
                                     ("value_support_min", -1.0), ("value_support_max", 1.0)))
@@ -1543,53 +1549,15 @@ def _canonicalize_tb3_image(image, mode, resize_width, resize_height):
     return image
 
 
-def _tb3_task_context(state_json, sample=None):
-    """Return a canonical domain-specific instruction and prompt metadata."""
-
-    agents = state_json.get("agents", [])
-    num_agents = int(state_json.get("num_agents", len(agents)))
-    task_name = str(state_json.get("task", "")).strip()
-    stored_instruction = str(state_json.get("task_instruction", "")).strip()
-    if not stored_instruction and sample is not None:
-        task_value = sample.get("task.txt")
-        if isinstance(task_value, bytes):
-            stored_instruction = task_value.decode("utf-8", errors="replace").strip()
-        elif isinstance(task_value, str):
-            stored_instruction = task_value.strip()
-
-    domain = str(state_json.get("task_domain", "")).strip().lower().replace("-", "_")
-    evidence = f"{task_name} {stored_instruction}".lower().replace("-", "_")
-    if not domain:
-        if "static obstacle" in evidence or re.search(r"marl(?:_hpc)?_v(?:1|3(?:\.0)?)", evidence):
-            domain = "static_obstacles"
-        else:
-            domain = "goal_to_goal"
-
-    if domain == "static_obstacles":
-        num_obstacles = int(state_json.get("num_static_obstacles", 3))
-        instruction = (
-            f"Coordinate exactly {num_agents} TurtleBot3 agents so every agent reaches "
-            f"its assigned goal while avoiding all {num_obstacles} static obstacles "
-            "and collisions with teammates."
-        )
-    else:
-        num_obstacles = 0
-        instruction = (
-            f"Coordinate exactly {num_agents} TurtleBot3 agents so every agent reaches "
-            "its assigned goal while avoiding collisions with teammates. This "
-            "goal-to-goal environment has no static obstacles."
-        )
-    return domain, num_agents, num_obstacles, instruction
-
-
 def _task_domain_id_from_text(text):
     """Map the canonical textual prompt to a compact conditioning ID."""
 
     normalized = str(text or "").lower().replace("-", "_")
-    if "task domain: static_obstacles" in normalized or "static obstacle" in normalized:
-        return 2
+    # The GTG task explicitly says there are "no static obstacles".
     if "task domain: goal_to_goal" in normalized or "goal_to_goal" in normalized:
         return 1
+    if "task domain: static_obstacles" in normalized or "static obstacle" in normalized:
+        return 2
     return 0
 
 
@@ -1616,48 +1584,8 @@ def _build_tb3_prompt(
     state_json, sample, obs_lines, step_idx, outcome, termination_reason,
     progress_distance_mode="euclidean", target_schema="",
 ):
-    domain, num_agents, num_obstacles, instruction = _tb3_task_context(
-        state_json, sample
-    )
-    environment = str(state_json.get("environment", "simulation")).lower()
-    environment_label = (
-        "physical indoor"
-        if environment in {"physical", "real", "lab_hardware"}
-        else "simulated indoor"
-    )
-    domain_label = "static-obstacle navigation" if domain == "static_obstacles" else "goal-to-goal navigation"
-    if progress_distance_mode == "route_required":
-        progress_description = "normalized collision-free route progress"
-    elif progress_distance_mode == "route_if_available":
-        progress_description = (
-            "normalized route progress when route metadata is available, "
-            "otherwise normalized Euclidean progress"
-        )
-    else:
-        progress_description = "normalized Euclidean geometric team progress"
-    target_description = f"{progress_description} from 0 to 1"
-    prediction_request = "Predict the current normalized task progress from the video and team state. "
-    episode_context = f"Timestep: {step_idx}. Episode outcome token: {outcome}. Termination reason: {termination_reason or 'none'}. "
-    if target_schema == POTENTIAL_SCHEMA:
-        target_description = "signed scene potential from -1 to 1, combining remaining goal distance and worst team/obstacle clearance risk"
-        prediction_request = "Predict current scene quality. Retreat and increasing collision risk lower the potential; safe goal completion increases it. "
-        # Do not expose time or future episode outcome as shortcuts for the new target.
-        episode_context = ""
-    header = (
-        "You are an expert vision-language critic for a multi-agent TurtleBot3 team. "
-        f"This is a {environment_label} {domain_label} task with exactly {num_agents} agents "
-        f"and exactly {num_obstacles} static obstacles. "
-        "The overhead image and structured positions use one aligned world frame in meters: "
-        "+X points right in the image, +Y points up in the image, and the world origin is at "
-        "the image center. Frames are center-cropped only; they are never rotated or reflected. "
-        "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided "
-        "by the structured observations. The target is "
-        f"{target_description}. "
-        "Traversability information is unavailable. "
-        f"Task domain: {domain}. Task instruction: {instruction} "
-        f"{prediction_request}{episode_context}"
-    )
-    return header + " ".join(obs_lines)
+    """Compatibility wrapper: legacy frame metadata is deliberately ignored."""
+    return build_tb3_task_prompt(state_json, sample)
 
 
 class SequenceWebDataset(IterableDataset):
@@ -1770,6 +1698,8 @@ class SequenceWebDataset(IterableDataset):
         self.vl_model_name = vl_model_name
         self.robot_obs_dim = robot_obs_dim
         self.text_prompt_template = text_prompt_template
+        if str(dataset_type).startswith("tb3") and text_prompt_template is not None:
+            validate_task_instruction(text_prompt_template)
         self.dataset_type = dataset_type
         self.rware_config = rware_config
         self.return_mode = return_mode
@@ -2724,51 +2654,9 @@ class SequenceWebDataset(IterableDataset):
                     )
                 )
 
-                obs_lines = []
-                visible_agents = (
-                    agents if self.num_robots is None else agents[: self.num_robots]
+                text = build_tb3_task_prompt(
+                    state_json, sample, task_instruction=self.text_prompt_template
                 )
-                for ag in visible_agents:
-                    ag_id = ag.get("id", 0)
-                    color = ag.get("color", "unknown")
-                    pos = ag.get("pos", [0.0, 0.0])
-                    yaw = ag.get("yaw", 0.0)
-                    vel = ag.get("vel", [0.0, 0.0])
-                    if isinstance(vel, dict):
-                        v_lin = float(vel.get("linear", 0.0))
-                        v_ang = float(vel.get("angular", 0.0))
-                    else:
-                        v_lin = float(vel[0]) if len(vel) > 0 else 0.0
-                        v_ang = float(vel[1]) if len(vel) > 1 else 0.0
-                    goal_label = ag.get("goal_label", "?")
-                    goal_pos = ag.get("goal_pos", [0.0, 0.0])
-                    dist_to_goal = ag.get("dist_to_goal", 0.0)
-                    min_neighbor_dist = ag.get("min_neighbor_dist", 0.0)
-                    reached = "yes" if ag.get("reached", False) else "no"
-                    collision = "yes" if ag.get("collision", False) else "no"
-
-                    obs_lines.append(
-                        f"Agent {ag_id} ({color}): position ({pos[0]:.2f}, {pos[1]:.2f}), "
-                        f"heading {yaw:.2f} rad, linear_vel {v_lin:.2f} m/s, angular_vel {v_ang:.2f} rad/s, "
-                        f"goal {goal_label} at ({goal_pos[0]:.2f}, {goal_pos[1]:.2f}), "
-                        f"dist_to_goal {dist_to_goal:.2f}m, min_neighbor_dist {min_neighbor_dist:.2f}m, "
-                        f"reached: {reached}, collision: {collision}."
-                    )
-
-                step_idx = episode_meta.get("step", episode_frame_count)
-                if self.text_prompt_template is None:
-                    text = _build_tb3_prompt(
-                        state_json,
-                        sample,
-                        obs_lines,
-                        step_idx,
-                        outcome,
-                        termination_reason,
-                        progress_distance_mode=tb3_progress_distance_mode,
-                        target_schema=self.target_schema,
-                    )
-                else:
-                    text = self.text_prompt_template + " " + " ".join(obs_lines)
 
             else:
                 # Default MA-VLCM behavior

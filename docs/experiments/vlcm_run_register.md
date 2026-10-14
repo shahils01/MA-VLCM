@@ -1,5 +1,7 @@
 # VLCM run register
 
+> **Input audit:** all three recorded runs used state-augmented task text with collision/reached flags. Their metrics apply to that legacy contract. Task-only critic readiness requires fresh training. [Audit and literature](task_only_input_audit.md).
+
 The last three Qwen VLCM training runs, ordered oldest to newest. Full W&B names link directly to each run. Run 3 status and epoch were refreshed on October 14, 2026 (America/New_York); runs 1 and 2 retain their verified completed status from October 13.
 
 | Run | Exact W&B name | Changes from preceding run | Data: GTG / AO episodes | LoRA rank / alpha | A100 GPUs / effective batch | Status |
@@ -68,7 +70,7 @@ GTG revision: `a4156c6d887b830d38c9bf6e2aa9b1130414bf2b`. AO revision: `8c44ba97
 | 63 | 0.0611 | 0.0346 | 0.0877 | 92.4% | 40.2% |
 | 75 | 0.0550 | 0.0270 | 0.0830 | 96.5% | 36.7% |
 
-Epoch75 is the GTG candidate. AO remains weak on declining risk potentials; epoch63 has lower AO RMSE (0.167 vs0.179) and better AO drop/recovery direction than75. These are matched diagnostic-holdout results, not policy-learning success rates. [Comparison plot](relational_native224_20261014/comparison_overview.png).
+Epoch75 ranked best for GTG under the legacy text contract; that does not validate task-only policy deployment. AO remains weak on declining risk potentials; epoch63 has lower AO RMSE (0.167 vs0.179) and better AO drop/recovery direction than75. These are matched diagnostic-holdout results, not policy-learning success rates. [Comparison plot](relational_native224_20261014/comparison_overview.png).
 
 ## Maintenance
 

@@ -841,3 +841,18 @@ do not submit jobs automatically. Collection-only helpers are in
 `tools/collection/`: native camera capture preserves the actor image shape, and
 simulated action perturbations include timed recovery. The Isaac collector
 integration remains in the Ground_Robot_MARL project.
+
+## Required TB3 task-only text contract
+
+TB3 critic text contains only the task instruction. Frame-wise collision/reached
+flags, outcomes, step counters, current state descriptions and reward components
+must never be appended to it. Numerical robot observations and adjacency remain
+separate model inputs. All TB3 training and inference entry points share
+`ma_vlcm.tb3_task_prompt`; literal `--text_prompt_template` overrides receive no
+state suffix. Fresh checkpoints record `text_input_contract=task_instruction_only_v1`.
+
+The earlier runs in the [register](docs/experiments/vlcm_run_register.md) used
+legacy state-augmented text. Their collision results do not validate a clean
+vision-language critic. See the [input audit and paper comparison](docs/experiments/task_only_input_audit.md).
+Existing stored labels remain usable; train a fresh critic with the corrected
+loader. Legacy checkpoint inference warns about the changed text distribution.

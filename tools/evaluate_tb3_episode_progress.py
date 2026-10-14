@@ -25,6 +25,8 @@ from PIL import Image
 import torch
 from tqdm import tqdm
 
+from ma_vlcm.tb3_task_prompt import TEXT_INPUT_CONTRACT, warn_legacy_text_contract
+
 from ma_vlcm.train import (
     _apply_peft,
     _apply_value_output_activation,
@@ -389,6 +391,7 @@ def load_model_from_checkpoint(checkpoint_path, device):
     print(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = _load_checkpoint_file(checkpoint_path)
     saved_args = checkpoint.get("args", {})
+    warn_legacy_text_contract(saved_args)
     model_args = _ensure_inference_args(SimpleNamespace(**saved_args))
     model = build_model(model_args, device=device)
     model = _apply_peft(model, model_args)
@@ -690,6 +693,7 @@ def main():
         "num_failed_episodes": args.num_failed_episodes,
         "clip_stride": args.clip_stride,
         "fps": args.fps,
+        "text_input_contract": TEXT_INPUT_CONTRACT,
     }
     # Frames are empty during selection, but keep the manifest explicitly lean.
     for episode in manifest["episodes"]:
@@ -719,6 +723,8 @@ def main():
             "backend": model_args.vl_backend,
             "model_name": model_args.vl_model_name,
             "clip_len": int(model_args.clip_len),
+            "text_input_contract": TEXT_INPUT_CONTRACT,
+            "checkpoint_text_input_contract": getattr(model_args, "text_input_contract", "legacy_state_augmented_text"),
             "dtype": str(model_dtype),
         }
         for episode in episodes:

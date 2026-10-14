@@ -1,5 +1,8 @@
 # Relational native224 inference and validation analysis
 
+> **Input-contract limitation:** these checkpoints were trained and evaluated with current robot state appended to task text, including collision/reached flags. The metrics below describe that legacy input setting and do not validate a task-only vision-language critic. See the [input audit](../task_only_input_audit.md). Fresh training is required under the corrected task-only contract.
+
+
 Training run: [relational_native224_2500_qwen3_vl_clip8_epoch75_20261012_20261013_010607](https://wandb.ai/i2rLAB/VLCM_Training_RWARE/runs/nku3ga22). Training job 17141648 completed all 75 epochs with exit 0:0.
 
 | Checkpoint | Composite validation loss | Scalar validation MSE | Reward-drop direction recall | Recovery direction recall |
@@ -22,7 +25,7 @@ No training configuration was changed; no recurring monitor was reactivated.
 
 Epoch75 has lowest overall MAE (0.0550), GTG MAE (0.0270), and AO MAE (0.0830). Epoch63 has lower overall RMSE (0.1238 vs0.1310) and AO RMSE (0.1672 vs0.1791). Epoch75 GTG drop/recovery recalls are96.5%/97.9%, versus AO36.7%/86.0%. Epoch63 AO drop/recovery recalls are40.2%/89.5%.
 
-All32 observed AO collision onsets are assigned negative potential by63 and75. However, for339 AO drops between adjacent non-collision frames, direction recall falls from41.3% (22) to34.5% (63) to30.7% (75). This is a material weakness for reward-driven obstacle avoidance despite good collision recognition and smooth plots. Prefer75 for a controlled GTG policy experiment;63 is the more conservative AO checkpoint among the late candidates, but offline evidence does not establish AO sole-critic readiness.
+All32 observed AO collision onsets are assigned negative potential by63 and75. However, for339 AO drops between adjacent non-collision frames, direction recall falls from41.3% (22) to34.5% (63) to30.7% (75). This is a material weakness for reward-driven obstacle avoidance despite good collision recognition and smooth plots. These rankings apply to the legacy state-augmented text contract. Neither checkpoint is validated for policy learning under the corrected task-only contract.
 
 The earlier provisional preference for63 is refined by the full episode results:75 is better on GTG; AO shows a tradeoff. No policy training was launched.
 

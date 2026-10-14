@@ -1,6 +1,8 @@
 # Relational native224 experiment drivers
 
-These scripts archive the executed Palmetto training/profile and inference workflow.
+These scripts archive the Palmetto training/profile and inference workflow.
+Following the task-text audit, the training driver now rejects frozen sources
+that lack the shared task-only prompt module.
 They retain the recorded run paths, frozen checkpoint choices, and readiness checks.
 Stage the required scripts inside a new scratch run/evaluation directory and update
 the recorded roots before reusing them; do not rerun the completed experiment paths.

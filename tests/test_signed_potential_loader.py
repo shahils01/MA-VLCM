@@ -48,7 +48,9 @@ class SignedPotentialLoaderTests(unittest.TestCase):
 
     def test_signed_prompt_has_no_time_or_outcome_shortcut(self):
         text=_build_tb3_prompt({"agents":[{"id":0}],"task_domain":"goal_to_goal"},{},[],123,"success","all_reached",target_schema="tb3_potential_v1")
-        self.assertIn("-1 to 1",text)
+        self.assertIn("assigned goal",text)
+        self.assertNotIn("potential",text)
+        self.assertNotIn("progress",text)
         self.assertNotIn("Timestep:",text)
         self.assertNotIn("outcome token",text)
         self.assertNotIn("all_reached",text)

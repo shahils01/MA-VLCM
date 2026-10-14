@@ -19,6 +19,7 @@ from PIL import Image
 import torch
 
 from .model import ModelConfig, MultimodalValueModel
+from .tb3_task_prompt import build_tb3_task_prompt, warn_legacy_text_contract
 
 try:
     import rclpy
@@ -712,39 +713,7 @@ class Tb3LiveInferenceNode(Node):
         return adj
 
     def _build_prompt(self, state_json):
-        agents = state_json.get("agents", [])
-        meta = state_json.get("episode_meta", {})
-        obs_lines = []
-        for ag in agents:
-            pos = ag.get("pos", [0.0, 0.0])
-            goal = ag.get("goal_pos", [0.0, 0.0])
-            vel = ag.get("vel", [0.0, 0.0])
-            reached = "yes" if ag.get("reached", False) else "no"
-            collision = "yes" if ag.get("collision", False) else "no"
-            obs_lines.append(
-                f"Agent {ag.get('id', 0)} ({ag.get('color', 'unknown')}): "
-                f"position ({pos[0]:.2f}, {pos[1]:.2f}), "
-                f"heading {ag.get('yaw', 0.0):.2f} rad, "
-                f"linear_vel {float(vel[0]):.2f} m/s, angular_vel {float(vel[1]):.2f} rad/s, "
-                f"goal {ag.get('goal_label', '?')} at ({goal[0]:.2f}, {goal[1]:.2f}), "
-                f"dist_to_goal {ag.get('dist_to_goal', 0.0):.2f}m, "
-                f"min_neighbor_dist {ag.get('min_neighbor_dist', 0.0):.2f}m, "
-                f"reached: {reached}, collision: {collision}."
-            )
-        header = (
-            "You are an expert vision language critic model for multi-agent teams able to critique task progress for a multi-agent policy. "
-            f"This is a real indoor TurtleBot3 lab environment with {len(agents)} agents observed from a bird's-eye webcam view. "
-            "The visual input is a native overhead camera view of multiple TurtleBot3 robots moving on the floor; the robots may not have visible IDs, labels, or color markers in the image. "
-            "Robot identity, goal assignment, goal coordinates, and distance-to-goal are provided by the structured observations rather than by visual labels. "
-            "The target is bounded task progress from 0 to 1: agents should reach their assigned goals while avoiding collisions and unsafe spacing. "
-            "Task domain: goal_to_goal. "
-            "Traversability information is unavailable in this environment. "
-            "Predict the current normalized task progress of the policy based on these observations: "
-            f"Timestep: {meta.get('step', self.step_index)}. "
-            f"Episode outcome token: {meta.get('outcome', 'running')}. "
-            f"Termination reason: {meta.get('termination_reason', '') or 'none'}. "
-        )
-        return header + " ".join(obs_lines)
+        return build_tb3_task_prompt(state_json)
 
     def run_inference(self, frames_snapshot, prompt_snapshot, obs_snapshot, adj_snapshot):
         frames = [
@@ -807,6 +776,7 @@ def main():
 
     cli_args = parse_args()
     ckpt, model_args = _load_checkpoint(cli_args.checkpoint)
+    warn_legacy_text_contract(model_args)
 
     if cli_args.device:
         device = torch.device(cli_args.device)

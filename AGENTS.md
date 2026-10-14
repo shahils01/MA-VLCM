@@ -244,3 +244,14 @@ bash -n scripts/*.sh
 - Audit obstacle geometry before signed relabeling. Historical image-derived
   layouts must pass the calibrated recovery checks; do not disable obstacle
   penalties or replace ambiguous geometry with assumed occupied sites.
+
+
+## Required TB3 task-only language input
+
+- Natural-language critic input must contain only the task instruction. Never
+  serialize collision/reached/success/failure flags, current state, episode
+  time/outcome/termination, or reward/progress/APF labels into the task text.
+- Use the shared `ma_vlcm.tb3_task_prompt` builder for TB3 training and inference.
+  Keep numerical robot observations and adjacency as separate channels.
+- Treat state-augmented checkpoints as legacy: their old evaluations do not
+  establish task-only critic readiness. Use fresh training for this input contract.

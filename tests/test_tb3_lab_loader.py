@@ -25,11 +25,11 @@ class _FakeProcessor:
         self.tokenizer = _FakeTokenizer()
 
     def __call__(self, text, videos, return_tensors="pt", padding="max_length", truncation=True, max_length=256):
-        assert "Traversability information is unavailable" in text
-        assert "exactly 3 agents" in text
-        assert "exactly 3 static obstacles" in text
-        assert "Task domain: static_obstacles" in text
-        assert "+X points right in the image, +Y points up in the image" in text
+        assert "exactly 3 TurtleBot3 agents" in text
+        assert "all 3 static obstacles" in text
+        for forbidden in ("collision:", "reached:", "dist_to_goal", "Timestep:",
+                          "outcome token", "position (", "The target is"):
+            assert forbidden not in text
         assert len(videos) >= 1
         return {
             "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),

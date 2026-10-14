@@ -13,6 +13,11 @@ set -euo pipefail
 RUN_ROOT=${1:?provide a new experiment run root}
 test -f "$RUN_ROOT/UPLOAD_READY.json"
 test -f "$RUN_ROOT/READY.json"
+# Do not restart a frozen source snapshot that serialized state flags in text.
+if [ ! -f "$RUN_ROOT/source/src/ma_vlcm/tb3_task_prompt.py" ]; then
+    echo "Restage current task-only critic source in the new run before training." >&2
+    exit 2
+fi
 export BACKBONE_PROFILE=qwen3_vl
 export CONTAINER_PATH=/home/aparame/Research/MA-VLCM/ma_vlcm.sif
 export MA_VLCM_SCRATCH_ROOT=/scratch/aparame/ma_vlcm

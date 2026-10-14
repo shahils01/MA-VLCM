@@ -62,7 +62,9 @@
       "model_input": "8 frames, 224x224",
       "fresh": true,
       "both_domains": true,
-      "gtg_revision": "a4156c6d887b830d38c9bf6e2aa9b1130414bf2b"
+      "gtg_revision": "a4156c6d887b830d38c9bf6e2aa9b1130414bf2b",
+      "text_input_contract": "legacy_state_augmented_text",
+      "input_audit": "Current collision/reached flags were serialized in task text. Existing results do not establish task-only critic readiness; fresh training required."
     },
     {
       "version": 2,
@@ -121,7 +123,9 @@
       "model_input": "8 frames, 224x224",
       "fresh": true,
       "both_domains": true,
-      "gtg_revision": "a4156c6d887b830d38c9bf6e2aa9b1130414bf2b"
+      "gtg_revision": "a4156c6d887b830d38c9bf6e2aa9b1130414bf2b",
+      "text_input_contract": "legacy_state_augmented_text",
+      "input_audit": "Current collision/reached flags were serialized in task text. Existing results do not establish task-only critic readiness; fresh training required."
     },
     {
       "version": 3,
@@ -838,8 +842,12 @@
           }
         },
         "results_local": "docs/experiments/relational_native224_20261014",
-        "interpretation": "Epoch75 best GTG and lowest overall MAE. Epoch63 lower AO RMSE and better AO drop/recovery direction than75. All checkpoints still miss many non-collision AO risk decreases; AO sole-critic readiness not established."
-      }
+        "interpretation": "Epoch75 best GTG and lowest overall MAE. Epoch63 lower AO RMSE and better AO drop/recovery direction than75. All checkpoints still miss many non-collision AO risk decreases; AO sole-critic readiness not established.",
+        "text_input_contract": "legacy_state_augmented_text",
+        "task_only_readiness_validated": false
+      },
+      "text_input_contract": "legacy_state_augmented_text",
+      "input_audit": "Current collision/reached flags were serialized in task text. Existing results do not establish task-only critic readiness; fresh training required."
     }
   ]
 }

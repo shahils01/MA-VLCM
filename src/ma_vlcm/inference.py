@@ -30,6 +30,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Reuse model and data utilities from the training script
+from .tb3_task_prompt import warn_legacy_text_contract
 from .model import ModelConfig, MultimodalValueModel
 from .train import (
     build_model,
@@ -1029,6 +1030,8 @@ def main():
         args.quantization_config = None
 
     args.text_prompt_template = getattr(args, "text_prompt_template", None)
+    if str(getattr(args, "dataset_type", "")).startswith("tb3"):
+        warn_legacy_text_contract(args)
 
     # ── 2. Determine device ─────────────────────────────────────────────────
     if cli_args.device:

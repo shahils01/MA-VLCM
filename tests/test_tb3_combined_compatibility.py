@@ -186,7 +186,14 @@ def test_task_prompts_distinguish_domain_agent_count_and_obstacle_count():
         outcome="running",
         termination_reason="",
     )
-    assert "exactly 3 agents" in prompt
-    assert "exactly 3 static obstacles" in prompt
-    assert "Task domain: static_obstacles" in prompt
-    assert "+X points right in the image, +Y points up in the image" in prompt
+    assert "exactly 3 TurtleBot3 agents" in prompt
+    assert "all 3 static obstacles" in prompt
+    assert "Agent 0." not in prompt
+    assert "Timestep:" not in prompt
+    assert "Predict" not in prompt
+
+
+def test_task_only_prompts_keep_distinct_domain_ids():
+    for domain,expected in [("goal_to_goal",1),("static_obstacles",2)]:
+        prompt=_build_tb3_prompt({"task_domain":domain,"agents":[{}, {}, {}]}, {}, [], 0, "", "")
+        assert _task_domain_id_from_text(prompt)==expected
