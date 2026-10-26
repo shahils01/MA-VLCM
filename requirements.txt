@@ -4,3 +4,6 @@ webdataset
 accelerate
 wandb
 datasets
+huggingface_hub
+numpy
+Pillow
