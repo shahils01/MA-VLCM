@@ -1,0 +1,460 @@
+{
+  "episodes": 2000,
+  "recorded_frames": 68562,
+  "successes": 497,
+  "success_rate": 0.2485,
+  "team_sizes": {
+    "3": 500,
+    "4": 500,
+    "5": 500,
+    "6": 500
+  },
+  "policy_stages": {
+    "initial": 500,
+    "intermediate": 500,
+    "trained": 500,
+    "finetuned": 500
+  },
+  "policy_checkpoints": 4,
+  "outcomes": {
+    "out_of_bounds": 1498,
+    "success": 497,
+    "timeout": 5
+  },
+  "collision_frames": 1641,
+  "episodes_with_collisions": 106,
+  "first_image_sizes": {
+    "[128, 128]": 2000
+  },
+  "unique_instructions": 1,
+  "unique_stream_seeds": 17,
+  "unique_initial_scenarios": 2000,
+  "repeated_initial_scenario_groups": 0,
+  "formation_patterns": {
+    "polygon": 2000
+  },
+  "formation_spacings": [
+    0.5
+  ],
+  "robot_center_bounds": [
+    [
+      -1.1975,
+      1.1975,
+      -1.1975,
+      1.1975
+    ]
+  ],
+  "episodes_with_control_reward_stream": 0,
+  "excluded_timeout_or_unfinished": 5,
+  "capture_hz": [
+    5.0
+  ],
+  "control_hz": [
+    20.0
+  ],
+  "seconds_per_episode": {
+    "min": 0.2,
+    "p05": 1.6975,
+    "median": 6.7,
+    "p95": 10.7,
+    "max": 20.0,
+    "mean": 6.583625,
+    "std": 2.7409666377712445
+  },
+  "frames_per_episode": {
+    "min": 2.0,
+    "p05": 10.0,
+    "median": 35.0,
+    "p95": 55.0,
+    "max": 101.0,
+    "mean": 34.281,
+    "std": 13.69934447336806
+  },
+  "sampled_rewards": {
+    "min": -1.0,
+    "p05": -0.01325743063353002,
+    "median": -0.0015392707427963614,
+    "p95": -0.00022671267142868612,
+    "max": 1.0,
+    "mean": -0.0177015018176968,
+    "std": 0.16975129759185406
+  },
+  "sampled_proxy_returns": {
+    "min": -1.1044514179229736,
+    "p05": -0.9238967299461365,
+    "median": -0.3934599459171295,
+    "p95": 0.759227740764618,
+    "max": 1.0,
+    "mean": -0.2616780162654895,
+    "std": 0.5180672176279836
+  },
+  "zero_reward_fraction": 0.029170677634841456,
+  "initial_position_8x8_occupied_bins": 64,
+  "initial_position_8x8_counts": [
+    [
+      66,
+      114,
+      109,
+      90,
+      97,
+      100,
+      114,
+      58
+    ],
+    [
+      115,
+      201,
+      190,
+      166,
+      184,
+      156,
+      175,
+      85
+    ],
+    [
+      113,
+      169,
+      163,
+      178,
+      178,
+      161,
+      186,
+      124
+    ],
+    [
+      105,
+      156,
+      166,
+      164,
+      144,
+      157,
+      177,
+      97
+    ],
+    [
+      116,
+      192,
+      149,
+      164,
+      172,
+      188,
+      162,
+      103
+    ],
+    [
+      113,
+      177,
+      155,
+      177,
+      172,
+      155,
+      176,
+      101
+    ],
+    [
+      106,
+      168,
+      181,
+      185,
+      176,
+      182,
+      184,
+      104
+    ],
+    [
+      59,
+      122,
+      121,
+      104,
+      119,
+      94,
+      120,
+      45
+    ]
+  ],
+  "nonself_graph_density": {
+    "min": 0.0,
+    "p05": 0.1666666716337204,
+    "median": 0.6666666865348816,
+    "p95": 1.0,
+    "max": 1.0,
+    "mean": 0.6268832158489753,
+    "std": 0.2987769211819646
+  },
+  "observation_ranges": {
+    "position_x": {
+      "min": -1.203993797302246,
+      "p05": -0.8304213523864745,
+      "median": 0.1426095962524414,
+      "p95": 0.981592011451721,
+      "max": 1.2045845985412598,
+      "mean": 0.11891035840755446,
+      "std": 0.5492089443798632
+    },
+    "position_y": {
+      "min": -1.2006030082702637,
+      "p05": -0.8087721347808837,
+      "median": 0.26553869247436523,
+      "p95": 1.0508277773857113,
+      "max": 1.2071219682693481,
+      "mean": 0.21711748934927938,
+      "std": 0.5681383216978104
+    },
+    "sin_yaw": {
+      "min": -1.0,
+      "p05": -0.5777384340763092,
+      "median": 0.7683619260787964,
+      "p95": 0.9975895583629608,
+      "max": 1.0,
+      "mean": 0.6180888888030839,
+      "std": 0.46499859202384186
+    },
+    "cos_yaw": {
+      "min": -1.0,
+      "p05": -0.791738748550415,
+      "median": 0.49867069721221924,
+      "p95": 0.9644599497318264,
+      "max": 1.0,
+      "mean": 0.34991604262358394,
+      "std": 0.5284895439542255
+    },
+    "velocity_0": {
+      "min": -0.22000111639499664,
+      "p05": -0.13800137490034103,
+      "median": 0.040790118277072906,
+      "p95": 0.18261693567037582,
+      "max": 0.22517596185207367,
+      "mean": 0.042501767728181816,
+      "std": 0.0948082149560638
+    },
+    "velocity_1": {
+      "min": -0.24147266149520874,
+      "p05": -0.08339714631438255,
+      "median": 0.10029143840074539,
+      "p95": 0.20619690120220183,
+      "max": 0.23404894769191742,
+      "mean": 0.08640131166135884,
+      "std": 0.08961223791807311
+    },
+    "relative_goal_x": {
+      "min": -1.2679921388626099,
+      "p05": -0.44907379150390625,
+      "median": -0.004315763711929321,
+      "p95": 0.4635935842990858,
+      "max": 1.4232012033462524,
+      "mean": 1.924671034957688e-09,
+      "std": 0.2598368900962667
+    },
+    "relative_goal_y": {
+      "min": -1.3207238912582397,
+      "p05": -0.46061754822731016,
+      "median": -0.011610627174377441,
+      "p95": 0.4777605623006821,
+      "max": 1.3253546953201294,
+      "mean": 4.8609378842773195e-09,
+      "std": 0.26928322114695225
+    },
+    "distance_to_goal": {
+      "min": 0.00033754375181160867,
+      "p05": 0.03695176988840103,
+      "median": 0.21750499308109283,
+      "p95": 0.7714974820613854,
+      "max": 1.6934374570846558,
+      "mean": 0.2891218360488353,
+      "std": 0.23756520482592694
+    },
+    "nearest_robot_distance": {
+      "min": 0.07601228356361389,
+      "p05": 0.36935122311115265,
+      "median": 0.5915734767913818,
+      "p95": 1.1322212696075435,
+      "max": 2.679285764694214,
+      "mean": 0.6515957107960095,
+      "std": 0.2429827942659402
+    }
+  },
+  "groups": [
+    {
+      "stage": "finetuned",
+      "agents": 3,
+      "episodes": 125,
+      "successes": 108,
+      "success_rate": 0.864,
+      "outcomes": {
+        "success": 108,
+        "out_of_bounds": 17
+      }
+    },
+    {
+      "stage": "finetuned",
+      "agents": 4,
+      "episodes": 125,
+      "successes": 80,
+      "success_rate": 0.64,
+      "outcomes": {
+        "success": 80,
+        "out_of_bounds": 45
+      }
+    },
+    {
+      "stage": "finetuned",
+      "agents": 5,
+      "episodes": 125,
+      "successes": 50,
+      "success_rate": 0.4,
+      "outcomes": {
+        "out_of_bounds": 75,
+        "success": 50
+      }
+    },
+    {
+      "stage": "finetuned",
+      "agents": 6,
+      "episodes": 125,
+      "successes": 27,
+      "success_rate": 0.216,
+      "outcomes": {
+        "out_of_bounds": 97,
+        "success": 27,
+        "timeout": 1
+      }
+    },
+    {
+      "stage": "initial",
+      "agents": 3,
+      "episodes": 125,
+      "successes": 0,
+      "success_rate": 0.0,
+      "outcomes": {
+        "out_of_bounds": 125
+      }
+    },
+    {
+      "stage": "initial",
+      "agents": 4,
+      "episodes": 125,
+      "successes": 0,
+      "success_rate": 0.0,
+      "outcomes": {
+        "out_of_bounds": 125
+      }
+    },
+    {
+      "stage": "initial",
+      "agents": 5,
+      "episodes": 125,
+      "successes": 0,
+      "success_rate": 0.0,
+      "outcomes": {
+        "out_of_bounds": 125
+      }
+    },
+    {
+      "stage": "initial",
+      "agents": 6,
+      "episodes": 125,
+      "successes": 0,
+      "success_rate": 0.0,
+      "outcomes": {
+        "out_of_bounds": 125
+      }
+    },
+    {
+      "stage": "intermediate",
+      "agents": 3,
+      "episodes": 125,
+      "successes": 37,
+      "success_rate": 0.296,
+      "outcomes": {
+        "out_of_bounds": 87,
+        "success": 37,
+        "timeout": 1
+      }
+    },
+    {
+      "stage": "intermediate",
+      "agents": 4,
+      "episodes": 125,
+      "successes": 55,
+      "success_rate": 0.44,
+      "outcomes": {
+        "success": 55,
+        "out_of_bounds": 70
+      }
+    },
+    {
+      "stage": "intermediate",
+      "agents": 5,
+      "episodes": 125,
+      "successes": 9,
+      "success_rate": 0.072,
+      "outcomes": {
+        "out_of_bounds": 116,
+        "success": 9
+      }
+    },
+    {
+      "stage": "intermediate",
+      "agents": 6,
+      "episodes": 125,
+      "successes": 2,
+      "success_rate": 0.016,
+      "outcomes": {
+        "out_of_bounds": 123,
+        "success": 2
+      }
+    },
+    {
+      "stage": "trained",
+      "agents": 3,
+      "episodes": 125,
+      "successes": 88,
+      "success_rate": 0.704,
+      "outcomes": {
+        "success": 88,
+        "timeout": 2,
+        "out_of_bounds": 35
+      }
+    },
+    {
+      "stage": "trained",
+      "agents": 4,
+      "episodes": 125,
+      "successes": 24,
+      "success_rate": 0.192,
+      "outcomes": {
+        "out_of_bounds": 100,
+        "success": 24,
+        "timeout": 1
+      }
+    },
+    {
+      "stage": "trained",
+      "agents": 5,
+      "episodes": 125,
+      "successes": 14,
+      "success_rate": 0.112,
+      "outcomes": {
+        "out_of_bounds": 111,
+        "success": 14
+      }
+    },
+    {
+      "stage": "trained",
+      "agents": 6,
+      "episodes": 125,
+      "successes": 3,
+      "success_rate": 0.024,
+      "outcomes": {
+        "out_of_bounds": 122,
+        "success": 3
+      }
+    }
+  ],
+  "conclusion": "Suitable for an initial in-distribution return-regression experiment. It does not establish generalization to new tasks, instructions, visual environments, robot embodiments or behavior policies. Success/failure coverage must be checked per team size. Use scenario-separated validation and compare against a constant-return baseline.",
+  "dataset": "../Ground_Robot_MARL/datasets/formation_vlcm_polygon_3to6",
+  "dataset_revision": "main",
+  "image_hz": 5.0,
+  "gamma_per_control_step": 0.99,
+  "return_source": "sampled"
+}

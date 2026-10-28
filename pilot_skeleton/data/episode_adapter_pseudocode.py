@@ -20,12 +20,18 @@ class EpisodeAdapter:
             files = HfApi().list_repo_files(
                 repo_id=str(dataset_root), repo_type="dataset", revision=revision
             )
+            file_set = set(files)
             return [
                 {
                     "repo_id": str(dataset_root),
                     "revision": revision,
                     "tar_path": path,
-                    "summary_path": path.removesuffix(".tar") + ".summary.json",
+                    "summary_path": next(
+                        candidate for candidate in (
+                            path.removesuffix(".tar") + ".summary.json",
+                            path.removesuffix(".tar") + ".json",
+                        ) if candidate in file_set
+                    ),
                 }
                 for path in sorted(files)
                 if path.endswith(".tar") and Path(path).name.startswith("episode_")
@@ -33,8 +39,15 @@ class EpisodeAdapter:
 
         else:
             paths = sorted(root.glob("**/episode_*.tar"))
-        return [{"tar_path": path, "summary_path": path.with_suffix(".summary.json")}
-                for path in paths]
+        return [
+            {
+                "tar_path": path,
+                "summary_path": next(candidate for candidate in (
+                    path.with_suffix(".summary.json"), path.with_suffix(".json")
+                ) if candidate.exists()),
+            }
+            for path in paths
+        ]
 
     def load_episode(self, episode_reference):
         tar_path = episode_reference["tar_path"]
@@ -147,7 +160,9 @@ class EpisodeAdapter:
                 ])
                 previous = index
         else:
-            interval_rewards.extend([[] for _ in image_indices[1:]])
+            interval_rewards.extend([
+                [episode["rewards"][index]] for index in image_indices[1:]
+            ])
         clips = []
 
         for anchor in range(0, len(image_indices), stride):
@@ -160,10 +175,18 @@ class EpisodeAdapter:
             target = 0.0
             control_offset = 0
             for index in range(anchor + 1, target_stop):
-                for reward in interval_rewards[index]:
-                    target += gamma ** control_offset * reward
-                    control_offset += 1
-            target_valid = episode["control_rewards_available"] and (
+                if episode["control_rewards_available"]:
+                    for reward in interval_rewards[index]:
+                        target += gamma ** control_offset * reward
+                        control_offset += 1
+                else:
+                    control_offset += max(1, round(
+                        (episode["timestamps"][image_indices[index]]
+                         - episode["timestamps"][image_indices[index - 1]])
+                        * episode["control_hz"]
+                    ))
+                    target += gamma ** control_offset * interval_rewards[index][0]
+            target_valid = (
                 (target_stop == len(image_indices) and episode["terminated"])
                 or (horizon > 0 and target_stop - anchor - 1 == horizon)
             )

@@ -104,3 +104,16 @@ The proposed Iteration 1 model aligns with these works at the representation lev
 The model is fetched through Hugging Face Transformers from the model ID in config; dataset access should be explicit and separate. The formation dataset upload preserves the collection folder layout and stores one `.tar` plus one `.summary.json` per episode; it is not a tabular `datasets.load_dataset()` export. The pilot adapter reads those archives directly from a local directory or downloads an individual archive from the HF dataset repo on demand. Pass the dataset repo ID and a revision (default `main`) or a local dataset directory. Keep episode-level train/validation/test splits separate from archive discovery. For private HF assets, authenticate on the cluster using Clemson-approved secret handling; never put an access token in this repository or a Slurm script.
 
 The Slurm file is a template for Clemson Palmetto 2. Current RCD docs describe `--gpus` requests and the `work1` default for batch jobs; GPU models include H100, L40S, A100, and others. Check your allocation and available hardware with `sinfo`, then edit requested GPU/partition/time and paths to match your account. Build or install the Python environment before submitting the training job, and place Hugging Face cache/checkpoints on approved persistent or scratch storage with enough capacity. Create the log directory before `sbatch` because Slurm opens output files before the script starts. See [Clemson Slurm job submission](https://docs.rcd.clemson.edu/palmetto/job_management/submit/) and [Palmetto 2 scheduler guidance](https://docs.rcd.clemson.edu/palmetto/job_management/sched/).
+
+The batch file defaults to the older HF dataset, `shulnak09/formation-vlcm-polygon-3to6`. It can also read a local collection directory via `PILOT_DATASET`. When archives include `control_rewards.json`, targets use raw control-step rewards. The old HF archives contain sampled 5 Hz rewards, so they train against a discounted sampled-reward proxy; this does not reconstruct the full 20 Hz return, and evaluation measures fit to that proxy.
+
+The Python entry point trains and evaluates the model; the `.sbatch` file requests the GPU and launches it under Slurm. To submit from the MA-VLCM checkout after preparing its `.venv` and copying the dataset:
+
+```bash
+cd /path/to/Postdoc/MA-VLCM
+mkdir -p logs
+wandb login
+sbatch pilot_skeleton/slurm/train_stage1_palmetto.sbatch
+```
+
+The batch script enables W&B and logs train/validation MSE each epoch plus held-out test metrics. Install `wandb` in `.venv`; authenticate without putting a key in the script or repository (for noninteractive jobs, provide `WANDB_API_KEY` through your approved cluster secret or environment setup). Set `WANDB_PROJECT`, `WANDB_ENTITY`, `WANDB_RUN_NAME`, or `WANDB_MODE=offline` before `sbatch` to customize the run. Use `PILOT_DATASET`, `RUN_DIR`, and `EPOCHS` to change the data path, output directory, or epoch count. Check progress with `squeue -u "$USER"`; Slurm stdout/stderr go under `MA-VLCM/logs`, while model checkpoints and metrics go to `pilot_runs/iteration1`.

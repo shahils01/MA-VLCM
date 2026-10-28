@@ -11,8 +11,8 @@ class PilotConfig:
     model_revision: str = "main"
     output_dir: str = "pilot_runs/iteration1"
     feature_cache: str = "pilot_runs/iteration1/features"
-    clip_length: int = 8
-    clip_stride: int = 2
+    clip_length: int = 6
+    clip_stride: int = 1
     horizon: int = 0  # 0 means discount all rewards through episode termination
     image_hz: float = 5.0
     gamma: float = 0.99  # per 20 Hz control-step discount
@@ -26,6 +26,10 @@ class PilotConfig:
     test_fraction: float = 0.1
     seed: int = 42
     num_workers: int = 0
+    wandb_project: str = "vlcm_Qwen_vl_2B"
+    wandb_entity: str = ""
+    wandb_run_name: str = ""
+    wandb_mode: str = "online"
 
     def to_dict(self):
         return asdict(self)

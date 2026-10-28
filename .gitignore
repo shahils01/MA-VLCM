@@ -24,3 +24,5 @@ train_sample/
 test_data/
 ma_vlcm_container.sif
 ma_vlcm.def
+.hf_cache/
+!reports/*.json

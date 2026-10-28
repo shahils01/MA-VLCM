@@ -9,16 +9,14 @@ data contract, and experiment sequence.
 The pilot reads each episode `.tar` directly from a local collection directory or
 from the Hugging Face dataset repo. It uses the overhead images and task
 instruction as input, and learns to predict a discounted reward return at the
-last frame in each clip. Inputs are sampled at 5 Hz. Return targets require
-the 20 Hz `control_rewards.json` stream. The target discounts every reward
-through the episode's true termination; when collection images are at 10 Hz,
-the adapter combines two image intervals while selecting every other image.
-Robot observations and adjacency are loaded for the next iteration but are not
-passed to the Iteration 1 model.
-
-Older 5 Hz archives contain only the reward at each saved image. Their missing
-20 Hz rewards cannot be reconstructed, so they are excluded from expected-return
-training until recollected with the control-step reward stream.
+last frame in each clip. Inputs are sampled at 5 Hz. When available, targets
+use the 20 Hz `control_rewards.json` stream. Older archives can train using
+sampled frame rewards as a discounted proxy return; those labels do not
+reconstruct the full 20 Hz return, so evaluation measures fit to the proxy.
+Targets run through true episode termination. When collection images are at
+10 Hz, the adapter combines two image intervals while selecting every other
+image. Robot observations and adjacency are loaded for the next iteration but
+are not passed to the Iteration 1 model.
 
 Install the MA-VLCM requirements, then run from the workspace root:
 

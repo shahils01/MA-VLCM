@@ -1,370 +1,146 @@
-import math
+"""SmolVLM image-language features + framewise GAT + temporal value regression."""
+
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Optional
-from types import SimpleNamespace
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
+
+from gat import GraphAttentionEncoder
 
 
 @dataclass
 class ModelConfig:
-    # Backbone
-    vl_backend: str = "llava_video"
-    vl_model_name: str = "llava-hf/LLaVA-NeXT-Video-7B-32K-hf"
-    vl_dtype: str = "bfloat16"  # float16 | bfloat16 | float32
-    vl_max_text_len: int = 256
-    freeze_vl: bool = False
-    quantization_config: Optional[Any] = None
-
-    # Video
-    video_channels: int = 3
-    video_height: int = 224
-    video_width: int = 224
-    video_frames: int = 8
-    video_preprocessed: bool = False
-    video_mean: tuple = (0.5, 0.5, 0.5)
-    video_std: tuple = (0.5, 0.5, 0.5)
-
-    # Robots / graph
-    num_robots: int = 8
-    robot_obs_dim: int = 16
-
-    # Text (placeholder: supply pre-embedded text vectors)
-    text_dim: int = 512
-
-    # Model dims
-    d_model: int = 256
-    temporal_layers: int = 2
-    temporal_heads: int = 4
-    temporal_dropout: float = 0.1
-
-    # GNN
-    gnn_layers: int = 4
-
-    # Fusion
-    fusion_hidden: int = 512
-    use_moe: bool = False
-    moe_experts: int = 4
-    moe_top_k: int = 2
-
-    # Debug
-    debug_save_video: bool = False
+    model_id: str = "HuggingFaceTB/SmolVLM-500M-Instruct"
+    model_revision: str = "main"
+    backbone_mode: str = "frozen"  # frozen | lora | full
+    vl_dtype: str = "bfloat16"
+    vl_hidden_dim: int = 960
+    vl_batch_size: int = 4
+    image_size: int = 512
+    robot_obs_dim: int = 10
+    clip_len: int = 6
+    d_model: int = 128
+    gnn_layers: int = 1
+    attention_heads: int = 4
+    temporal_layers: int = 1
+    dropout: float = 0.2
+    lora_rank: int = 8
 
 
+class SmolVLMBackbone(nn.Module):
+    """Encode each image with its instruction; skip generation and vocabulary logits."""
 
-
-class LLaVAVideoBackbone(nn.Module):
-    """Backbone wrapper for LLaVA-style video models using HF interfaces."""
-
-    def __init__(self, cfg: ModelConfig, device: torch.device):
+    def __init__(self, cfg, device):
         super().__init__()
+        from transformers import AutoProcessor, Idefics3Model
+
         self.cfg = cfg
-        self.device = device
-
-        if cfg.vl_dtype == "float16":
-            dtype = torch.float16
-        elif cfg.vl_dtype == "float32":
-            dtype = torch.float32
-        else:
-            dtype = torch.bfloat16
-
-        try:
-            from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, LlavaNextVideoProcessor
-            from transformers.models.llava_next_video import LlavaNextVideoForConditionalGeneration
-            try:
-                from transformers.models.auto.modeling_auto import AutoModelForVision2Seq
-            except Exception:
-                AutoModelForVision2Seq = None
-        except Exception as e:
-            raise ImportError("LLaVA-Video backend requires transformers installed.") from e
-
-        self.processor = LlavaNextVideoProcessor.from_pretrained(cfg.vl_model_name)
-        self.tokenizer = getattr(self.processor, "tokenizer", None) or AutoTokenizer.from_pretrained(
-            cfg.vl_model_name
+        dtype = getattr(torch, cfg.vl_dtype) if device.type == "cuda" else torch.float32
+        self.processor = AutoProcessor.from_pretrained(
+            cfg.model_id, revision=cfg.model_revision, size={"longest_edge": cfg.image_size}
         )
-        if "<obs>" not in self.tokenizer.get_vocab():
-            self.tokenizer.add_special_tokens({"additional_special_tokens": ["<obs>"]})
+        self.model = Idefics3Model.from_pretrained(
+            cfg.model_id, revision=cfg.model_revision, torch_dtype=dtype,
+            attn_implementation="sdpa",
+        ).to(device)
+        self.hidden_size = self.model.config.text_config.hidden_size
+        self.frozen = cfg.backbone_mode == "frozen"
+        self.model.requires_grad_(cfg.backbone_mode == "full")
+        if cfg.backbone_mode == "lora":
+            from peft import LoraConfig, get_peft_model
 
-        model_kwargs = {"torch_dtype": dtype}
-        if cfg.quantization_config is not None:
-            model_kwargs["quantization_config"] = cfg.quantization_config
-        self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
-            cfg.vl_model_name, **model_kwargs
-        )
-        if "<obs>" in self.tokenizer.get_vocab() and hasattr(self.model, "resize_token_embeddings"):
-            self.model.resize_token_embeddings(len(self.tokenizer))
+            self.model = get_peft_model(self.model, LoraConfig(
+                r=cfg.lora_rank, lora_alpha=2 * cfg.lora_rank, lora_dropout=0.05,
+                target_modules=r"text_model\..*\.(q_proj|v_proj)$",
+            ))
+        if not self.frozen:
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        self.train(not self.frozen)
 
-        self.model.to(device)
-        if cfg.freeze_vl:
-            for p in self.model.parameters():
-                p.requires_grad = False
+    def train(self, mode=True):
+        return super().train(mode and not self.frozen)
 
-        self._dtype = dtype
-
-    def get_input_embeddings(self):
-        if hasattr(self.model, "get_input_embeddings"):
-            return self.model.get_input_embeddings()
-        if hasattr(self.model, "language_model") and hasattr(self.model.language_model, "get_input_embeddings"):
-            return self.model.language_model.get_input_embeddings()
-        if hasattr(self.model, "model") and hasattr(self.model.model, "get_input_embeddings"):
-            return self.model.model.get_input_embeddings()
-        raise AttributeError("Could not access input embeddings on LLaVA backbone.")
-
-    def _move_inputs_to_device(self, inputs):
-        moved = {}
-        for k, v in inputs.items():
-            if torch.is_tensor(v):
-                if k in ("pixel_values", "pixel_values_videos", "video_values", "video", "videos"):
-                    moved[k] = v.to(self.device, dtype=self._dtype)
-                else:
-                    moved[k] = v.to(self.device)
-            else:
-                moved[k] = v
-        return moved
-
-    def prepare_inputs(self, text, videos, padding=False, truncation=False, max_length=None):
-        # For LLaVA video prompts, truncation can break special token alignment.
-        # Only pass max_length when truncation is explicitly enabled.
-        if truncation and max_length is None:
-            max_length = self.cfg.vl_max_text_len
-        inputs = self.processor(
-            text=text,
-            videos=videos,
-            return_tensors="pt",
-            padding=padding,
-            truncation=truncation,
-            max_length=max_length,
-        )
-        return self._move_inputs_to_device(inputs)
-
-
-class TemporalTransformer(nn.Module):
-    def __init__(self, d_model: int, layers: int, heads: int, dropout: float):
-        super().__init__()
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=heads, dropout=dropout, batch_first=True
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers)
-        self.pos_emb = nn.Parameter(torch.zeros(1, 1024, d_model))
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        # x: [B, T, D]
-        t = x.size(1)
-        pos = self.pos_emb[:, :t, :]
-        x = self.dropout(x + pos)
-        return self.encoder(x)
-
-
-class RobotEncoder(nn.Module):
-    def __init__(self, in_dim: int, d_model: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, d_model),
-            nn.GELU(),
-            nn.Linear(d_model, d_model),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class DenseGraphEncoder(nn.Module):
-    """Simple dense adjacency message passing. adj is [B, T, N, N]."""
-
-    def __init__(self, d_model: int, layers: int):
-        super().__init__()
-        self.layers = nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(layers)])
-
-    def forward(self, node_feats, adj):
-        # node_feats: [B, T, N, D]
-        # adj: [B, T, N, N]
-        h = node_feats
-        for layer in self.layers:
-            # normalize adjacency to avoid scale blowup
-            deg = adj.sum(dim=-1, keepdim=True).clamp(min=1.0)
-            adj_norm = adj / deg
-            agg = torch.matmul(adj_norm, h)  # [B, T, N, D]
-            h = F.gelu(layer(agg))
-        return h
-
-
-class MoEFeedForward(nn.Module):
-    def __init__(self, d_model: int, hidden: int, experts: int, top_k: int):
-        super().__init__()
-        self.experts = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(d_model, hidden),
-                    nn.GELU(),
-                    nn.Linear(hidden, d_model),
-                )
-                for _ in range(experts)
-            ]
-        )
-        self.gate = nn.Linear(d_model, experts)
-        self.top_k = top_k
-
-    def forward(self, x):
-        # x: [B, D]
-        logits = self.gate(x)
-        topk = torch.topk(logits, k=self.top_k, dim=-1)
-        weights = F.softmax(topk.values, dim=-1)
-        out = torch.zeros_like(x)
-        for i in range(self.top_k):
-            idx = topk.indices[:, i]
-            w = weights[:, i].unsqueeze(-1)
-            expert_out = torch.stack([self.experts[j](x[b]) for b, j in enumerate(idx)], dim=0)
-            out = out + w * expert_out
-        return out
+    def forward(self, images, prompts):
+        device = next(self.model.parameters()).device
+        dtype = next(self.model.parameters()).dtype
+        features = []
+        for start in range(0, len(images), self.cfg.vl_batch_size):
+            stop = start + self.cfg.vl_batch_size
+            texts = [self.processor.apply_chat_template([
+                {"role": "user", "content": [
+                    {"type": "image"}, {"type": "text", "text": prompt}
+                ]}
+            ], add_generation_prompt=True) for prompt in prompts[start:stop]]
+            # A nested image list denotes one image per example, rather than a multi-image example.
+            inputs = self.processor(
+                text=texts, images=[[image] for image in images[start:stop]],
+                padding=True, return_tensors="pt",
+            )
+            inputs = {
+                key: value.to(device=device, dtype=dtype if value.is_floating_point() else value.dtype)
+                for key, value in inputs.items()
+            }
+            with torch.no_grad() if self.frozen else nullcontext():
+                output = self.model(**inputs, use_cache=False, return_dict=True)
+                # The final non-padding token attends to the image and all instruction tokens.
+                positions = torch.arange(inputs["input_ids"].shape[1], device=device)
+                last = (inputs["attention_mask"] * positions).amax(-1)
+                pooled = output.last_hidden_state[torch.arange(len(last), device=device), last]
+            features.append(pooled.float())
+        return torch.cat(features)
 
 
 class MultimodalValueModel(nn.Module):
-    def __init__(self, cfg: ModelConfig, device: torch.device):
+    def __init__(self, cfg, device=torch.device("cpu"), load_backbone=True):
         super().__init__()
         self.cfg = cfg
-        self.debug_save_video = cfg.debug_save_video
-        self.backbone = LLaVAVideoBackbone(cfg, device=device)
-        lm_hidden = self.backbone.get_input_embeddings().embedding_dim
-        self.obs_to_lm = nn.Linear(cfg.d_model, lm_hidden)
-
-        try:
-            from gat import GNN_Model
-        except Exception as e:
-            raise ImportError(
-                "Failed to import GNN_Model from aero_gnn.py. "
-                "Make sure torch-geometric and torch-scatter are installed."
-            ) from e
-
-        # Keep the same node feature slice used before flattening (first 8 dims per robot).
-        self.robot_node_dim = min(8, cfg.robot_obs_dim)
-        gnn_heads = max(1, cfg.temporal_heads)
-        gnn_hidden = max(1, math.ceil(cfg.d_model / gnn_heads))
-        gnn_args = SimpleNamespace(
-            num_heads=gnn_heads,
-            iterations=max(1, cfg.gnn_layers),
-            dropout=cfg.temporal_dropout,
-            num_layers=3,
-            add_dropout=False,
-            algorithm_name="mappo_dgnn",
-            lambd_gnn=1.0,
+        self.backbone = SmolVLMBackbone(cfg, device) if load_backbone else None
+        self.register_buffer("obs_mean", torch.zeros(cfg.robot_obs_dim))
+        self.register_buffer("obs_std", torch.ones(cfg.robot_obs_dim))
+        self.register_buffer("target_mean", torch.tensor(0.0))
+        self.register_buffer("target_std", torch.tensor(1.0))
+        self.visual = nn.Sequential(nn.LayerNorm(cfg.vl_hidden_dim), nn.Linear(cfg.vl_hidden_dim, cfg.d_model))
+        self.graph = GraphAttentionEncoder(
+            cfg.robot_obs_dim, cfg.d_model, cfg.gnn_layers, cfg.attention_heads, cfg.dropout
         )
-        self.robot_gnn = GNN_Model(
-            args=gnn_args,
-            in_channels=self.robot_node_dim,
-            hid_channels=gnn_hidden,
-            out_channels=cfg.d_model,
-            num_agents=cfg.num_robots,
+        self.fuse = nn.Sequential(nn.Linear(2 * cfg.d_model, cfg.d_model), nn.GELU())
+        self.time_embedding = nn.Sequential(nn.Linear(1, cfg.d_model), nn.Tanh())
+        layer = nn.TransformerEncoderLayer(
+            cfg.d_model, cfg.attention_heads, dim_feedforward=4 * cfg.d_model,
+            dropout=cfg.dropout, batch_first=True, norm_first=True,
+        )
+        self.temporal = nn.TransformerEncoder(layer, cfg.temporal_layers, enable_nested_tensor=False)
+        self.value_head = nn.Sequential(
+            nn.LayerNorm(cfg.d_model), nn.Linear(cfg.d_model, cfg.d_model),
+            nn.GELU(), nn.Linear(cfg.d_model, 1),
         )
 
-        # self.robot_enc = RobotEncoder(cfg.robot_obs_dim, cfg.d_model)
-        self.value_head = nn.Linear(lm_hidden+cfg.d_model, 1)
+    def forward(self, batch):
+        features = batch.get("vl_features")
+        if features is None:
+            b, t = batch["frame_mask"].shape
+            images = [image for clip in batch["images"] for image in clip]
+            prompts = [prompt for prompt in batch["prompt"] for _ in range(t)]
+            features = self.backbone(images, prompts).reshape(b, t, -1)
+        observations = (batch["robot_obs"] - self.obs_mean) / self.obs_std
+        graph = self.graph(observations, batch["adj"], batch["robot_mask"])
+        visual = self.visual(features.float())
+        fused = self.fuse(torch.cat((visual, graph), dim=-1))
+        fused = fused + self.time_embedding(batch["times"].unsqueeze(-1))
+        temporal = self.temporal(fused, src_key_padding_mask=~batch["frame_mask"])
+        # Every clip contains only observations up to its anchor, which is always the last slot.
+        normalized = self.value_head(temporal[:, -1]).squeeze(-1)
+        return normalized * self.target_std + self.target_mean
 
-    def _adj_to_batched_edge_index(self, adj: torch.Tensor) -> torch.Tensor:
-        # adj: [B, N, N] -> edge_index over flattened batch nodes [2, E]
-        bsz, num_nodes, _ = adj.shape
-        nz = (adj > 0).nonzero(as_tuple=False)
-        if nz.numel() == 0:
-            # Fallback to self-loops when there are no edges.
-            base = torch.arange(bsz * num_nodes, device=adj.device, dtype=torch.long)
-            return torch.stack([base, base], dim=0)
-
-        batch_idx = nz[:, 0]
-        src = nz[:, 1]
-        dst = nz[:, 2]
-        flat_src = batch_idx * num_nodes + src
-        flat_dst = batch_idx * num_nodes + dst
-        return torch.stack([flat_src.long(), flat_dst.long()], dim=0)
-
-    def forward(
-        self,
-        video,
-        robot_obs,
-        adj,
-        text_emb=None,
-        text_raw=None,
-        text_ids=None,
-        text_mask=None,
-        image_sizes=None,
-    ):
-        # video: torch.Tensor [B, T, C, H, W], list of list of PIL images, or preprocessed inputs dict
-        # robot_obs: [B, T, N, obs_dim]
-        # adj: [B, T, N, N]
-        # text_emb: [B, text_dim] or text_raw: list[str]
-
-        inputs = None
-        video_list = None
-        if isinstance(video, dict):
-            inputs = video
-        
-        bsz = robot_obs.shape[0]
-        # # print('robot_obs shape = ', robot_obs.shape)
-        # robot_obs = robot_obs[:, -1, :, :8].reshape(-1, 40)
-        # # print('robot_obs shape after = ', robot_obs.shape)
-        # robot_feats = self.robot_enc(robot_obs)
-
-        num_nodes = robot_obs.shape[2]
-        if num_nodes != self.cfg.num_robots:
-            raise RuntimeError(
-                f"robot_obs has {num_nodes} nodes, but config expects {self.cfg.num_robots}. "
-                "Set --num_robots to match your dataset."
-            )
-
-        # Use only the last-step robot obs and encode team structure with GNN.
-        robot_last = robot_obs[:, -1, :, : self.robot_node_dim].contiguous()  # [B, N, robot_node_dim]
-        adj_last = adj[:, -1, :, :].contiguous()  # [B, N, N]
-        edge_index = self._adj_to_batched_edge_index(adj_last)
-        robot_node_feats = self.robot_gnn(robot_last, edge_index)  # [B, N, d_model]
-        robot_team_feat = robot_node_feats.mean(dim=1)  # [B, d_model]
-
-        # Manual forward: build inputs_embeds and inject robot embeddings at <obs> token positions.
-        inputs = self.backbone._move_inputs_to_device(inputs)
-        input_ids = inputs["input_ids"].clone()
-        attn_mask = inputs.get("attention_mask")
-        if attn_mask is not None:
-            inputs["attention_mask"] = attn_mask.clone()
-        inputs_embeds = self.backbone.get_input_embeddings()(input_ids)
-
-        # Pool team graph features to one token and inject at <obs>.
-        obs_token = self.obs_to_lm(robot_team_feat.unsqueeze(1))
-        obs_token = obs_token.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
-
-        obs_token_id = self.backbone.tokenizer.convert_tokens_to_ids("<obs>")
-        if obs_token_id is not None and obs_token_id >= 0:
-            obs_mask = input_ids.eq(obs_token_id)
-
-            if obs_mask.any():
-                # Avoid in-place updates that can break autograd version tracking.
-                obs_mask = obs_mask.unsqueeze(-1)
-                if input_ids.shape[0] == bsz:
-                    # input_ids: [B, S]
-                    obs_token_exp = obs_token.expand(-1, inputs_embeds.size(1), -1)
-                elif input_ids.shape[1] == bsz:
-                    # input_ids: [S, B]
-                    obs_token_exp = obs_token.transpose(0, 1).expand(inputs_embeds.size(0), -1, -1)
-                else:
-                    raise RuntimeError(
-                        f"Unexpected input_ids shape {tuple(input_ids.shape)} for batch size {bsz}."
-                    )
-                inputs_embeds = torch.where(obs_mask, obs_token_exp, inputs_embeds)
-
-        inputs.pop("input_ids", None)
-        inputs["inputs_embeds"] = inputs_embeds
-        output = self.backbone.model(**inputs, output_hidden_states=True, return_dict=True)
-
-        final_hidden = output.hidden_states[-1]
-        attn = inputs.get("attention_mask")
-        if attn is not None:
-            mask = attn.unsqueeze(-1)
-            pooled = (final_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-        else:
-            pooled = final_hidden[:, -1, :]
-
-        pooled = pooled.to(dtype=self.value_head.weight.dtype, device=self.value_head.weight.device)
-
-        value_head_input = torch.cat((pooled, robot_team_feat), dim=-1)
-        value = self.value_head(value_head_input).squeeze(-1)
-        # print('value shape = ', value.shape)
-        return value
+    def checkpoint_state(self):
+        if self.cfg.backbone_mode == "full":
+            return {name: value.detach().cpu() for name, value in self.state_dict().items()}
+        trainable = {name for name, p in self.named_parameters() if p.requires_grad}
+        buffers = {name for name, _ in self.named_buffers() if not name.startswith("backbone.")}
+        return {
+            name: value.detach().cpu() for name, value in self.state_dict().items()
+            if name in trainable or name in buffers
+        }

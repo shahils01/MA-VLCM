@@ -90,7 +90,7 @@ def make_feature_rows(adapter, model, references, config, cache_dir):
         })
         clips = [clip for clip in clips if clip["target_valid_mask"]]
         if not clips:
-            print("Skipping episode without complete 20 Hz reward targets", episode["episode_id"])
+            print("Skipping episode without complete return targets", episode["episode_id"])
             continue
         features = _features_for_episode(model, episode, reference, config, cache_dir)
         for clip in clips:
@@ -144,12 +144,6 @@ def train_stage1(config=None):
     splits = split_episodes(episodes, config)
     if not splits["train"]:
         raise ValueError("The dataset has no training episodes")
-    first_episode = adapter.load_episode(splits["train"][0])
-    if not first_episode["control_rewards_available"]:
-        raise ValueError(
-            "This dataset has only sampled 5 Hz rewards. Expected-return training needs "
-            "the 20 Hz control_rewards.json stream, which is absent from the selected episode."
-        )
     model = ImageLanguageValueModel(config.to_dict(), device).to(device)
 
     datasets = {
@@ -170,8 +164,7 @@ def train_stage1(config=None):
 
     if "train" not in loaders:
         raise ValueError(
-            "No training clips have per-control-step rewards. Existing 5 Hz archives "
-            "cannot reconstruct the missing 20 Hz rewards; collect control_rewards.json first."
+            "No complete-episode return targets were found in the selected dataset."
         )
 
     run_info = {
@@ -180,9 +173,25 @@ def train_stage1(config=None):
             name: [str(ref["tar_path"]) for ref in refs]
             for name, refs in splits.items()
         },
-        "target": "discounted 20 Hz control-step return from each 5 Hz image through true termination",
+        "target": (
+            "discounted return from each image through episode termination; uses raw "
+            "control-step rewards when present, otherwise sampled frame rewards. "
+            "Sampled-only targets are proxies and do not reconstruct the full 20 Hz return."
+        ),
     }
     (output_dir / "run.json").write_text(json.dumps(run_info, indent=2))
+
+    wandb_run = None
+    if config.wandb_project:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=config.wandb_project,
+            entity=config.wandb_entity or None,
+            name=config.wandb_run_name or None,
+            mode=config.wandb_mode,
+            config=run_info["config"],
+        )
 
     optimizer = torch.optim.AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
@@ -190,36 +199,66 @@ def train_stage1(config=None):
     )
     best_validation = float("inf")
     history = []
-    for epoch in range(config.epochs):
-        train_loss = run_epoch(model, loaders["train"], optimizer, device)
-        validation_loss = (
-            run_epoch(model, loaders["validation"], None, device)
-            if "validation" in loaders else train_loss
-        )
-        history.append({
-            "epoch": epoch + 1,
-            "train_mse": train_loss,
-            "validation_mse": validation_loss,
-        })
-        print(f"epoch={epoch + 1} train_mse={train_loss:.5f} validation_mse={validation_loss:.5f}")
+    try:
+        for epoch in range(config.epochs):
+            train_loss = run_epoch(model, loaders["train"], optimizer, device)
+            validation_loss = (
+                run_epoch(model, loaders["validation"], None, device)
+                if "validation" in loaders else train_loss
+            )
+            history.append({
+                "epoch": epoch + 1,
+                "train_mse": train_loss,
+                "validation_mse": validation_loss,
+            })
+            print(f"epoch={epoch + 1} train_mse={train_loss:.5f} validation_mse={validation_loss:.5f}")
+            if wandb_run:
+                wandb_run.log({
+                    "epoch": epoch + 1,
+                    "train/mse": train_loss,
+                    "validation/mse": validation_loss,
+                    "validation/best_mse": min(best_validation, validation_loss),
+                })
 
-        if validation_loss < best_validation:
-            best_validation = validation_loss
-            head = {
-                key: value.detach().cpu()
-                for key, value in model.state_dict().items()
-                if not key.startswith("backbone.")
-            }
-            torch.save({"head": head, "run": run_info}, output_dir / "best.pt")
+            if validation_loss < best_validation:
+                best_validation = validation_loss
+                head = {
+                    key: value.detach().cpu()
+                    for key, value in model.state_dict().items()
+                    if not key.startswith("backbone.")
+                }
+                torch.save({
+                    "head": head,
+                    "epoch": epoch + 1,
+                    "validation_mse": validation_loss,
+                    "run": run_info,
+                }, output_dir / "best.pt")
 
-    (output_dir / "metrics.json").write_text(json.dumps(history, indent=2))
-    if "test" in loaders:
-        checkpoint = torch.load(output_dir / "best.pt", map_location=device)
-        model.load_state_dict(checkpoint["head"], strict=False)
-        test_metrics = evaluate(
-            model, datasets["test"].rows, device, output_dir / "test_predictions.csv"
-        )
-        (output_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2))
+            if (epoch + 1) % 10 == 0 or epoch + 1 == config.epochs:
+                torch.save({
+                    "head": {
+                        key: value.detach().cpu()
+                        for key, value in model.state_dict().items()
+                        if not key.startswith("backbone.")
+                    },
+                    "epoch": epoch + 1,
+                    "validation_mse": validation_loss,
+                    "run": run_info,
+                }, output_dir / f"epoch_{epoch + 1:03d}.pt")
+
+        (output_dir / "metrics.json").write_text(json.dumps(history, indent=2))
+        if "test" in loaders:
+            checkpoint = torch.load(output_dir / "best.pt", map_location=device)
+            model.load_state_dict(checkpoint["head"], strict=False)
+            test_metrics = evaluate(
+                model, datasets["test"].rows, device, output_dir / "test_predictions.csv"
+            )
+            (output_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2))
+            if wandb_run:
+                wandb_run.log({f"test/{key}": value for key, value in test_metrics.items()})
+    finally:
+        if wandb_run:
+            wandb_run.finish()
     return output_dir / "best.pt"
 
 
@@ -231,6 +270,10 @@ if __name__ == "__main__":
     parser.add_argument("--model-revision", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--wandb-project", default="")
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default=None)
     args = parser.parse_args()
     config = PilotConfig()
     for argument, field in (
@@ -240,6 +283,10 @@ if __name__ == "__main__":
         (args.model_revision, "model_revision"),
         (args.output_dir, "output_dir"),
         (args.epochs, "epochs"),
+        (args.wandb_project, "wandb_project"),
+        (args.wandb_entity, "wandb_entity"),
+        (args.wandb_run_name, "wandb_run_name"),
+        (args.wandb_mode, "wandb_mode"),
     ):
         if argument is not None:
             setattr(config, field, argument)
