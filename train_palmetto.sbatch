@@ -14,10 +14,10 @@
 set -euo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-$SLURM_SUBMIT_DIR}"
 cd "$PROJECT_ROOT"
-# Make conda available first (e.g. your cluster's module setup), or export CONDA_BASE.
-CONDA_BASE="${CONDA_BASE:-$(conda info --base)}"
-source "$CONDA_BASE/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV:-vlcm-smol}"
+module load anaconda3
+set +u
+source activate "${CONDA_ENV:-MARL}"
+set -u
 export NUM_GPUS="${NUM_GPUS:-2}"
 export DATASET="${DATASET:-$HOME/Dataset/formation_vlcm_polygon_3to6}"
 export RUN_DIR="${RUN_DIR:-$PROJECT_ROOT/outputs/smolvlm-${SLURM_JOB_ID}}"
