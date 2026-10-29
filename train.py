@@ -66,6 +66,8 @@ def parse_args():
     p.add_argument("--cache-dir", default="outputs/cache")
     p.add_argument("--output-dir", default="outputs/smolvlm-value")
     p.add_argument("--checkpoint-every", type=int, default=10)
+    p.add_argument("--checkpoint-every-steps", type=int, default=0, help="Save rolling latest.pt every N optimizer steps; 0 disables")
+    p.add_argument("--log-every-steps", type=int, default=0, help="Log training loss every N optimizer steps; 0 disables")
     p.add_argument("--patience", type=int, default=6, help="Stop after this many epochs without validation improvement; 0 disables")
     p.add_argument("--skip-test", action="store_true", help="Keep the test split untouched during experiments")
     p.add_argument("--resume", default="")
@@ -78,14 +80,17 @@ def parse_args():
         p.error("gamma must be in (0, 1]; clip-stride/checkpoint-every must be positive and patience nonnegative")
     if min(args.validation_fraction, args.test_fraction) < 0 or args.validation_fraction + args.test_fraction >= 1:
         p.error("Split fractions must be nonnegative and leave a training partition")
+    if args.checkpoint_every_steps < 0 or args.log_every_steps < 0:
+        p.error("step intervals must be nonnegative")
     return args
 
 
-def run_epoch(model, loader, optimizer, accelerator):
+def run_epoch(model, loader, optimizer, accelerator, start_batch=0, totals=None, on_step=None):
     training = optimizer is not None
     model.train(training)
-    total_squared = total_absolute = total_baseline_squared = total_target = total_target_squared = total_count = 0
-    for batch in loader:
+    totals = dict(totals or {"squared": 0, "absolute": 0, "baseline_squared": 0, "target": 0, "target_squared": 0, "count": 0})
+    remaining = accelerator.skip_first_batches(loader, start_batch) if start_batch else loader
+    for batch_index, batch in enumerate(remaining, start=start_batch):
         with accelerator.accumulate(model) if training else nullcontext(), torch.set_grad_enabled(training):
             predictions = model(batch)
             scale = accelerator.unwrap_model(model).target_std
@@ -98,19 +103,21 @@ def run_epoch(model, loader, optimizer, accelerator):
                 optimizer.zero_grad(set_to_none=True)
         pred, target = accelerator.gather_for_metrics((predictions.detach().float(), batch["target"].float()))
         error = pred - target
-        total_squared += error.square().sum().item()
-        total_absolute += error.abs().sum().item()
+        totals["squared"] += error.square().sum().item()
+        totals["absolute"] += error.abs().sum().item()
         baseline = accelerator.unwrap_model(model).target_mean
-        total_baseline_squared += (target - baseline).square().sum().item()
-        total_target += target.sum().item()
-        total_target_squared += target.square().sum().item()
-        total_count += len(error)
-    variance = total_target_squared - total_target ** 2 / total_count
+        totals["baseline_squared"] += (target - baseline).square().sum().item()
+        totals["target"] += target.sum().item()
+        totals["target_squared"] += target.square().sum().item()
+        totals["count"] += len(error)
+        if training and accelerator.sync_gradients and on_step:
+            on_step(batch_index + 1, totals, error.square().mean().item())
+    variance = totals["target_squared"] - totals["target"] ** 2 / totals["count"]
     return {
-        "mse": total_squared / total_count, "mae": total_absolute / total_count,
-        "constant_baseline_mse": total_baseline_squared / total_count,
-        "r2": 1 - total_squared / variance if variance > 1e-8 else 0.0,
-        "count": total_count,
+        "mse": totals["squared"] / totals["count"], "mae": totals["absolute"] / totals["count"],
+        "constant_baseline_mse": totals["baseline_squared"] / totals["count"],
+        "r2": 1 - totals["squared"] / variance if variance > 1e-8 else 0.0,
+        "count": totals["count"],
     }
 
 
@@ -223,8 +230,10 @@ def main():
                     torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
     datasets = {name: FormationClipDataset(refs, args.clip_len, args.clip_stride, feature_dir, cfg, include_terminal=False) for name, refs in used_splits.items()}
+    shuffle_generator = torch.Generator()
     loaders = {name: DataLoader(
         dataset, batch_size=args.batch_size, shuffle=name == "train", collate_fn=collate_clips,
+        generator=shuffle_generator if name == "train" else None,
         num_workers=args.num_workers, pin_memory=accelerator.device.type == "cuda",
     ) for name, dataset in datasets.items() if len(dataset)}
     model = MultimodalValueModel(cfg, accelerator.device, load_backbone=feature_dir is None)
@@ -233,6 +242,7 @@ def main():
         getattr(model, name).copy_(value)
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=args.weight_decay)
     start_epoch, best_validation, epochs_without_improvement = 0, float("inf"), 0
+    start_batch, saved_totals, global_step = 0, None, 0
     checkpoint = None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=True)
@@ -241,6 +251,13 @@ def main():
         model.load_state_dict(checkpoint["model_state"], strict=feature_dir is not None)
         optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch, best_validation = checkpoint["epoch"], checkpoint["best_validation"]
+        start_batch = checkpoint.get("next_batch", 0)
+        saved_totals = checkpoint.get("train_totals")
+        global_step = checkpoint.get("global_step", 0)
+        if start_batch and (checkpoint.get("world_size") != accelerator.num_processes or any(
+                checkpoint["run"]["args"][name] != getattr(args, name)
+                for name in ("seed", "batch_size", "grad_accum_steps"))):
+            raise ValueError("Mid-epoch resume requires the same GPU count, seed, batch size and gradient accumulation")
         epochs_without_improvement = checkpoint.get("epochs_without_improvement", 0)
         if args.epochs <= start_epoch:
             raise ValueError("--epochs must exceed the resumed checkpoint's epoch")
@@ -269,7 +286,24 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         started = time.monotonic()
         epoch_lr = optimizer.param_groups[0]["lr"]
-        train_metrics = run_epoch(model, train_loader, optimizer, accelerator)
+        shuffle_generator.manual_seed(args.seed + epoch)
+        def on_step(next_batch, totals, batch_mse):
+            nonlocal global_step
+            global_step += 1
+            if args.log_every_steps and global_step % args.log_every_steps == 0:
+                accelerator.print(f"epoch={epoch + 1} batch={next_batch}/{len(train_loader)} step={global_step} train_mse={batch_mse:.5f}")
+                if args.wandb:
+                    accelerator.log({"train/step_mse": batch_mse, "train/epoch": epoch + 1,
+                                     "train/batch": next_batch}, step=global_step)
+            if args.checkpoint_every_steps and global_step % args.checkpoint_every_steps == 0 and accelerator.is_main_process:
+                save_tensor_file({"epoch": epoch, "next_batch": next_batch, "train_totals": totals,
+                                  "global_step": global_step, "world_size": accelerator.num_processes, "best_validation": best_validation,
+                                  "epochs_without_improvement": epochs_without_improvement,
+                                  "model_config": asdict(cfg), "model_state": accelerator.unwrap_model(model).checkpoint_state(),
+                                  "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "run": run},
+                                 output_dir / "latest.pt")
+        train_metrics = run_epoch(model, train_loader, optimizer, accelerator, start_batch, saved_totals, on_step)
+        start_batch, saved_totals = 0, None
         validation = run_epoch(model, val_loader, None, accelerator) if val_loader is not None else train_metrics
         improved = validation["mse"] < best_validation
         best_validation = min(best_validation, validation["mse"])
@@ -281,12 +315,12 @@ def main():
         history.append(metrics)
         accelerator.print(f"epoch={epoch + 1} train_mse={train_metrics['mse']:.5f} validation_mse={validation['mse']:.5f}")
         if args.wandb:
-            accelerator.log(metrics, step=epoch + 1)
+            accelerator.log(metrics, step=global_step)
         if accelerator.is_main_process:
             (output_dir / "metrics.json").write_text(json.dumps(history, indent=2))
             if improved or (epoch + 1) % args.checkpoint_every == 0 or epoch + 1 == args.epochs or stop_early:
                 checkpoint = {
-                    "epoch": epoch + 1, "best_validation": best_validation,
+                    "epoch": epoch + 1, "global_step": global_step, "best_validation": best_validation,
                     "epochs_without_improvement": epochs_without_improvement,
                     "model_config": asdict(cfg), "model_state": accelerator.unwrap_model(model).checkpoint_state(),
                     "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "run": run,
@@ -310,7 +344,7 @@ def main():
                 (output_dir / f"{split_name}_metrics.json").write_text(json.dumps(metrics, indent=2))
                 accelerator.print(f"Best-checkpoint {split_name} MSE: {metrics['mse']:.5f}; baseline MSE: {metrics['constant_baseline_mse']:.5f}")
                 if args.wandb:
-                    accelerator.log({f"best_{split_name}/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))}, step=epoch + 2)
+                    accelerator.log({f"best_{split_name}/{k}": v for k, v in metrics.items() if isinstance(v, (int, float))}, step=global_step + 1)
     accelerator.wait_for_everyone()
     accelerator.end_training()
 
