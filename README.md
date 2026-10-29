@@ -143,6 +143,12 @@ through huggingface_hub and uses the same archive reader as local training.
 
 ## Palmetto
 
+For the completed full-reward **2,000-episode frozen critic** run with automatic
+evaluation on the separate 60 archives, use
+[`train_frozen_2000_palmetto.sbatch`](train_frozen_2000_palmetto.sbatch) and the
+[submission/data/comparison instructions](README_FROZEN_2000.md). This dedicated
+template requests one GPU/process and leaves the LoRA launch path unchanged.
+
 Set up the same environment on Palmetto and copy the dataset to shared storage,
 for example `/home/anshuln/Dataset/formation_vlcm_polygon_3to6`. The batch template
 requests the resources selected in this project: one node/task, 4 CPUs, 12 GB
@@ -219,6 +225,139 @@ The anchor is the selected-image index. The terminal image's future-return targe
 is zero. New input observations must use the same physical feature definitions
 and task semantics as training.
 
+## Animate checkpoint predictions
+
+To prepare and collect a separate 60-episode validation set with new seeds
+(15 episodes per formation), use the existing full-reward collection as the
+source of frozen actor and environment settings:
+
+```bash
+python3 collect_fresh_validation.py --collect
+```
+
+The default output is the sibling
+`Ground_Robot_MARL/datasets/formation_validation_seed7300001` directory. The
+default uses the intermediate actor with formation seeds 7300001, 7400001,
+7500001, and 7600001. It preserves the source scene, 10 Hz images and all
+20 Hz rewards, and retains every outcome without success/failure quotas. Run
+without `--collect` to prepare only. Existing completed episodes are retained
+when resuming the same request. The request is checked against the saved plan,
+and seeds are checked against the source collection. New episode IDs avoid
+collisions with the saved train/validation/test path keys. Keep this dataset
+outside training when using it for model selection.
+
+Evaluate genuinely new archives with the training Python environment:
+
+```bash
+python evaluate.py --checkpoint outputs/zero_margin_900/best.pt \
+  --dataset ../Ground_Robot_MARL/datasets/formation_validation_seed7300001 \
+  --split external --output-dir outputs/validation_seed7300001_evaluation
+```
+
+External evaluation caches frozen VLM features once, rejects archives with saved
+split path keys, and excludes timeout/unfinished episodes whose full future
+return is unknown. MSE is reported on nonterminal anchors by default. New-seed
+collection alone does not establish generalization to new tasks or appearances.
+
+`animate_checkpoint.py` displays an episode's overhead images beside causal
+predicted value, recorded discounted future return, recorded frame reward, and
+recorded team progress. The model predicts future return; it has no separate
+immediate-reward or progress output. Curves reveal observations only as playback
+advances. Output includes an animation, per-frame CSV, and `manifest.json` with
+split membership, prediction source, and nonterminal MSE.
+
+Activate the training environment and install `requirements.txt`. MP4 export
+requires the system `ffmpeg` executable; `--format gif` uses Pillow instead.
+From this directory, run fresh inference on two saved validation episodes
+(one per outcome when available):
+
+```bash
+python animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
+  --samples 2 --output-dir outputs/checkpoint_animations/fresh
+```
+
+To evaluate your own archive, supply its path. Repeat `--episode` for more
+archives. CPU inference works with `--device cpu`, but uncached SmolVLM inference
+can be slow. Existing frozen feature caches are reused automatically.
+
+```bash
+python animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
+  --episode /path/to/episode_000001.tar \
+  --output-dir outputs/checkpoint_animations/custom
+```
+
+New archives must use the formation collector's schema: frame `overhead.png`,
+`state.json`, `adj.npy`, and `reward.json` fields, plus an adjacent
+`episode_000001.summary.json` (or `.json`) sidecar. Include `progress.json` to
+display progress. For this full-control-reward checkpoint, completed episodes
+also need aligned `control_rewards.json` for every frame. Preserve the training
+task, robot-state definitions, physical units, image view, and control/image
+timestamps. The script reads the checkpoint's clip length, image sampling,
+normalization, and return definition. It labels supplied training episodes as
+`train`; newly collected episodes appear as external rather than claiming saved
+validation membership. Use `--dataset /relocated/dataset` to resolve saved
+validation paths after moving the dataset.
+
+Timeout/unfinished episodes show predictions with unavailable future-return
+labels and no MSE. For fresh inference the terminal image shows the raw network
+output against the known zero return; it is never replaced by a forced zero.
+Terminal frames are excluded from reported MSE, matching validation evaluation.
+
+The existing held-out previews are in
+`outputs/checkpoint_animations/validation_preview`. They replay saved CSV
+predictions, explicitly labeled in the video, rather than performing new
+inference. This mode also works without PyTorch:
+
+```bash
+python3 animate_checkpoint.py \
+  --predictions outputs/zero_margin_900/validation_predictions.csv \
+  --samples 2 --output-dir outputs/checkpoint_animations/validation_preview
+```
+
+Saved replay uses `run.json` beside the CSV (override with `--run-dir`) and checks
+targets against the selected archive. The existing validation CSV excludes
+terminal anchors, so replay adds the recorded terminal frame, reward, progress
+and known zero future return without inventing a prediction. The animation holds
+the terminal frame for one second to make the outcome visible. Playback otherwise
+defaults to real time; use `--speed 0.5` for half speed or `--format gif` for a GIF.
+
+To create named success/failure examples for every formation in the saved
+validation split, use `--by-formation`:
+
+```bash
+python animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
+  --by-formation --output-dir outputs/checkpoint_animations/by_formation_fresh
+
+# Replay existing best-checkpoint predictions without PyTorch:
+python3 animate_checkpoint.py \
+  --predictions outputs/zero_margin_900/validation_predictions.csv \
+  --by-formation --output-dir outputs/checkpoint_animations/by_formation
+```
+
+Files are named `triangle_success.mp4`, `triangle_failure.mp4`,
+`square_success.mp4`, and so on, with matching CSVs. Formation names come from
+the archive summary. `README.md` indexes the videos and errors; `coverage.json`
+records the available validation counts for every formation/outcome. Selection
+uses the first sorted archive in each category, without ranking by model error.
+Use `--per-case 3` for up to three episodes per category, with numbered filenames.
+The current split has no successful hexagon episode; that case is marked
+unavailable, and no training/test episode is substituted.
+
+For the separately collected new-seed episodes and their existing best-checkpoint
+predictions, select one success and failure from every formation with:
+
+```bash
+python3 animate_checkpoint.py --predictions outputs/validation_seed7300001_evaluation/external_predictions.csv \
+  --run-dir outputs/zero_margin_900 \
+  --external-dataset ../Ground_Robot_MARL/datasets/formation_validation_seed7300001 \
+  --by-formation --exclude-terminal \
+  --output-dir outputs/checkpoint_animations/fresh_validation_formations
+```
+
+This replays stored predictions from a previous fresh checkpoint evaluation;
+it does not train the actor or critic. Omit `--exclude-terminal` to see the
+recorded terminal reward.
+
 ## Data diversity and rewards
 
 Run the audit without downloading a model:
@@ -248,6 +387,11 @@ curve may be useful for plots, but it is not used as supervision. See the
 [standard return/value definitions](https://spinningup.openai.com/en/latest/spinningup/rl_intro.html).
 
 ## Verification
+
+Python actor training with a VLCM critic is available through
+[`train_mappo.py`](train_mappo.py) and [`train_mappo.sh`](train_mappo.sh), including
+W&B, MLP/state baselines, 20 Hz states with 5 Hz images, and actor-only exports.
+See [Python MAPPO setup and verified limits](README_PYTHON_MAPPO.md).
 
 ```bash
 python -m unittest discover -s tests -v

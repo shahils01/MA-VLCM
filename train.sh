@@ -33,7 +33,7 @@ fi
   --batch-size "${BATCH_SIZE:-$default_batch}" --vl-batch-size "${VL_BATCH_SIZE:-$default_vl_batch}" \
   --grad-accum-steps "${GRAD_ACCUM_STEPS:-1}" \
   --mixed-precision "${MIXED_PRECISION:-bf16}" \
-  --epochs "${EPOCHS:-30}" --checkpoint-every 10 \
+  --epochs "${EPOCHS:-30}" --checkpoint-every "${CHECKPOINT_EVERY:-2}" \
   --patience "${PATIENCE:-6}" \
   --num-workers "${NUM_WORKERS:-0}" \
   --cache-dir "${CACHE_DIR:-$PROJECT_ROOT/outputs/cache}" \

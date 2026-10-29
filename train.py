@@ -65,7 +65,7 @@ def parse_args():
     p.add_argument("--max-episodes", type=int, default=0, help="Random episode subset for a smoke run; 0 uses all")
     p.add_argument("--cache-dir", default="outputs/cache")
     p.add_argument("--output-dir", default="outputs/smolvlm-value")
-    p.add_argument("--checkpoint-every", type=int, default=10)
+    p.add_argument("--checkpoint-every", type=int, default=2)
     p.add_argument("--checkpoint-every-steps", type=int, default=0, help="Save rolling latest.pt every N optimizer steps; 0 disables")
     p.add_argument("--log-every-steps", type=int, default=0, help="Log training loss every N optimizer steps; 0 disables")
     p.add_argument("--patience", type=int, default=6, help="Stop after this many epochs without validation improvement; 0 disables")
@@ -166,6 +166,18 @@ def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="te
             metrics[f"by_{key}"][str(value)] = regression_metrics(
                 [r["predicted_value"] for r in selected], [r["target_return"] for r in selected], baseline
             )
+    # A pooled team-size score can conceal large errors on successful episodes.
+    metrics["by_formation_outcome"] = {}
+    names = {3: "triangle", 4: "square", 5: "pentagon", 6: "hexagon"}
+    for n, success in sorted({(r["num_agents"], r["success"]) for r in rows}):
+        selected = [r for r in rows if r["num_agents"] == n and r["success"] == success]
+        result = regression_metrics([r["predicted_value"] for r in selected],
+                                    [r["target_return"] for r in selected], baseline)
+        errors = {}
+        for row in selected:
+            errors.setdefault(row["episode"], []).append((row["predicted_value"] - row["target_return"]) ** 2)
+        result.update(episodes=len(errors), episode_mean_mse=float(np.mean([np.mean(v) for v in errors.values()])))
+        metrics["by_formation_outcome"][f"{names.get(n, str(n))}_{'success' if success else 'failure'}"] = result
     return metrics
 
 

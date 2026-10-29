@@ -6,4 +6,5 @@ peft>=0.14,<1
 wandb>=0.18,<1
 numpy>=1.24,<3
 Pillow>=10
+matplotlib>=3.6,<4
 tqdm>=4.66
