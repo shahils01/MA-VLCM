@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
 import time
@@ -163,6 +164,8 @@ def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="te
 
 def main():
     args = parse_args()
+    if "LOCAL_RANK" in os.environ and torch.cuda.is_available():
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision, gradient_accumulation_steps=args.grad_accum_steps,
         log_with="wandb" if args.wandb else None,
