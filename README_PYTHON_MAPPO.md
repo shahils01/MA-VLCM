@@ -1,5 +1,36 @@
 # Python MAPPO with the MA-VLCM critic
 
+## Critic training modes
+
+Use the same `--critic-checkpoint` pointing to a trained Python VLCM `critic.pt`
+to compare these modes from the same starting weights; use `--actor-from-scratch`
+to start each actor from random initialization:
+
+| Mode | CLI option | Trainable critic parameters |
+| --- | --- | --- |
+| Downstream fine-tuning | Neither freeze flag | Visual projection, GAT, fusion, time/context embeddings, transformer and value head |
+| Head-only | `--freeze-critic-representation` | Entire value head only |
+| Fully frozen | `--freeze-critic` | None |
+
+The SmolVLM image/text backbone is frozen in all three modes. The fully frozen
+mode requires a trained Python VLCM checkpoint: a supervised Isaac checkpoint
+would otherwise reset the final scalar to random Python reward units. The saved
+Python critic's head, normalization and value scale are loaded intact. Fully
+frozen mode does not construct a critic optimizer, take critic gradients or
+perform critic updates; actor learning starts at the first rollout because there
+is no critic warmup to perform. `run.json`, checkpoint metadata and
+`train/critic_updated` record the mode; critic loss is omitted when no critic
+update occurs.
+
+The critic's output varies with each new image and robot-state history, but its
+mapping is fixed and cannot adapt to the changing policy or a new reward
+function. The saved Python critic already predicts raw Python reward units; the
+existing PPO code normalizes advantages across active samples, not rewards or
+critic outputs. Advantage normalization does not fix calibration errors or
+remove bias from bootstrapping GAE with a stale critic. Trainable value-head
+adaptation is the more suitable option when the task or policy distribution
+changes; compare fixed-critic experiments on matched rollout and seed budgets.
+
 ## Optional frozen representation experiment
 
 `--freeze-critic-representation` freezes the visual projection, GAT, fusion,

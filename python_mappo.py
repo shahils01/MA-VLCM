@@ -164,7 +164,9 @@ class PythonValueCritic(nn.Module):
                 # Preserve the learned Python head, context and normalization.
                 # This is critic warm-starting, independent of actor initialization.
                 self.load_state_dict(pretrained["model_state"], strict=True)
-        if getattr(args, "freeze_critic_representation", False):
+        if getattr(args, "freeze_critic", False):
+            self.requires_grad_(False)
+        elif getattr(args, "freeze_critic_representation", False):
             if self.kind == "mlp":
                 raise ValueError("Representation freezing requires a graph/temporal critic")
             self.requires_grad_(False)
@@ -320,7 +322,7 @@ def ppo_update(actor, critic, actor_optimizer, critic_optimizer, rollout, args, 
     adv = np.repeat(advantages[:, :, None], 6, axis=2).reshape(-1)[mask]
     adv = (adv - adv.mean()) / max(float(adv.std()), 1e-5)
     actor_logs, critic_logs = [], []
-    if update > args.critic_warmup_updates:
+    if critic_optimizer is None or update > args.critic_warmup_updates:
         for _ in range(args.ppo_epochs):
             for ids in np.array_split(np.random.permutation(len(obs)), min(args.num_minibatches, len(obs))):
                 new_logp, entropy = actor.evaluate_actions(
@@ -339,7 +341,7 @@ def ppo_update(actor, critic, actor_optimizer, critic_optimizer, rollout, args, 
                 actor_logs.append([loss.item(), entropy.item(), kl.item(),
                                    (torch.abs(ratio - 1) > args.clip).float().mean().item(), float(grad)])
     flat_targets, old_values = targets.reshape(-1), values.reshape(-1)
-    for _ in range(args.critic_epochs):
+    for _ in range(args.critic_epochs if critic_optimizer is not None else 0):
         permutation = np.random.permutation(len(flat_targets))
         for start in range(0, len(permutation), args.critic_batch_size):
             ids = permutation[start:start + args.critic_batch_size]
@@ -368,8 +370,10 @@ def ppo_update(actor, critic, actor_optimizer, critic_optimizer, rollout, args, 
                "vision/image_age_mean_seconds": float(np.mean([r["image_age"][-1] for r in rollout["contexts"]])),
                "vision/image_age_max_seconds": float(max(r["image_age"][-1] for r in rollout["contexts"])),
                "train/actor_updated": int(bool(actor_logs)),
-               "critic/loss": float(np.mean(critic_logs, axis=0)[0]),
-               "critic/grad_norm": float(np.mean(critic_logs, axis=0)[1])}
+               "train/critic_updated": int(bool(critic_logs))}
+    if critic_logs:
+        metrics.update({"critic/loss": float(np.mean(critic_logs, axis=0)[0]),
+                        "critic/grad_norm": float(np.mean(critic_logs, axis=0)[1])})
     if actor_logs:
         metrics.update(dict(zip(["actor/loss", "actor/base_gaussian_entropy", "actor/approx_kl",
                                  "actor/clip_fraction", "actor/grad_norm"], np.mean(actor_logs, axis=0).tolist())))

@@ -25,8 +25,11 @@ def parser():
     p.add_argument("--critic", choices=("vlcm", "state-temporal", "mlp"), default="vlcm")
     p.add_argument("--critic-checkpoint", type=Path,
                    help="Supervised best.pt (resets scalar) or Python critic.pt/directory (preserves full critic)")
-    p.add_argument("--freeze-critic-representation", action="store_true",
+    freeze = p.add_mutually_exclusive_group()
+    freeze.add_argument("--freeze-critic-representation", action="store_true",
                    help="Freeze visual/GAT/fusion/time/temporal/context layers; train only the entire value_head")
+    freeze.add_argument("--freeze-critic", action="store_true",
+                   help="Freeze the complete pretrained Python VLCM critic; train the actor only")
     actor_init = p.add_mutually_exclusive_group()
     actor_init.add_argument("--actor-checkpoint", type=Path, help="Native actor.pt or checkpoint directory; omit to train from scratch")
     actor_init.add_argument("--actor-from-scratch", action="store_true",
@@ -110,6 +113,8 @@ def validate(p, a):
         p.error("The native MLP baseline cannot load a VLCM checkpoint")
     if a.freeze_critic_representation and (a.critic == "mlp" or not a.critic_checkpoint):
         p.error("--freeze-critic-representation requires a pretrained graph/temporal critic checkpoint")
+    if a.freeze_critic and (a.critic != "vlcm" or not a.critic_checkpoint):
+        p.error("--freeze-critic requires a pretrained Python VLCM critic checkpoint")
     if a.critic_checkpoint:
         if a.critic_checkpoint.is_dir():
             a.critic_checkpoint = a.critic_checkpoint / "critic.pt"
@@ -139,7 +144,7 @@ def save_checkpoint(path, actor, critic, actor_optimizer, critic_optimizer, args
     atomic_save(dict(format="python_mappo_vlcm_v1", critic_kind=args.critic,
                      model_config=asdict(critic.cfg), model_state={k: v.detach().cpu() for k, v in critic.state_dict().items()},
                      args=jsonable(args), steps=steps), path / "critic.pt")
-    atomic_save(dict(actor_optimizer=actor_optimizer.state_dict(), critic_optimizer=critic_optimizer.state_dict(),
+    atomic_save(dict(actor_optimizer=actor_optimizer.state_dict(), critic_optimizer=critic_optimizer.state_dict() if critic_optimizer is not None else None,
                      torch_rng=torch.get_rng_state(), steps=steps, update=update), path / "optimizers.pt")
     metadata = dict(algorithm="mappo", pattern="polygon", agent_counts=args.agent_counts,
                     max_num_agents=6, observation_dim=25, state_dim=52,
@@ -148,6 +153,7 @@ def save_checkpoint(path, actor, critic, actor_optimizer, critic_optimizer, args
                     observation_scale=args.observation_scale, total_environment_steps=steps, update=update,
                     critic_kind=args.critic, hidden_size=args.hidden_size, layer_N=args.layer_n,
                     freeze_critic_representation=args.freeze_critic_representation,
+                    freeze_critic=args.freeze_critic,
                     deployment="Use actor.pt with native local observations; critic/images are training only",
                     checkpoint_semantics="Warm-start artifacts; environment/NumPy/CUDA RNG are not restored for exact resume")
     (path / "training_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -182,6 +188,8 @@ def main(argv=None):
     cfg = ModelConfig(image_size=a.image_size, clip_len=a.clip_len, vl_batch_size=a.vl_batch_size, dropout=0.)
     if a.critic_checkpoint:
         source = torch.load(a.critic_checkpoint, map_location="cpu", weights_only=True)
+        if a.freeze_critic and source.get("format") != "python_mappo_vlcm_v1":
+            raise ValueError("--freeze-critic requires a trained Python critic.pt, not an Isaac supervised checkpoint")
         cfg = ModelConfig(**source["model_config"])
         if cfg.backbone_mode != "frozen":
             raise ValueError("Cached PPO features require a frozen backbone checkpoint; LoRA/full are not supported here")
@@ -203,7 +211,8 @@ def main(argv=None):
     if backbone is not None:
         backbone.eval()
     ao = torch.optim.Adam(actor.parameters(), lr=a.actor_lr, eps=1e-5)
-    co = torch.optim.Adam([v for v in critic.parameters() if v.requires_grad], lr=a.critic_lr, eps=1e-5)
+    critic_parameters = [v for v in critic.parameters() if v.requires_grad]
+    co = torch.optim.Adam(critic_parameters, lr=a.critic_lr, eps=1e-5) if critic_parameters else None
     critic_trainable = [name for name, parameter in critic.named_parameters() if parameter.requires_grad]
     python_source = source is not None and source.get("format") == "python_mappo_vlcm_v1"
     print(f"Critic checkpoint: {a.critic_checkpoint}; actor: {'scratch' if a.actor_checkpoint is None else a.actor_checkpoint}", flush=True)
@@ -270,7 +279,7 @@ def main(argv=None):
                 "timing/ppo_seconds": time.monotonic() - train_start,
                 "timing/environment_steps_per_second": steps / (time.monotonic()-start),
                 "vision/encoded_images": images, "train/actor_lr": ao.param_groups[0]["lr"],
-                "train/critic_lr": co.param_groups[0]["lr"]})
+                "train/critic_lr": co.param_groups[0]["lr"] if co is not None else 0.0})
             if a.eval_interval and (update % a.eval_interval == 0 or steps == a.num_env_steps):
                 evaluation = evaluate_actor(actor, a, device)
                 metrics.update(evaluation)

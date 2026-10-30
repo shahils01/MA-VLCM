@@ -14,6 +14,37 @@ from train_mappo import parser, save_checkpoint, prune_checkpoints
 
 
 class PythonMAPPOTests(unittest.TestCase):
+    def test_fully_frozen_critic_still_updates_actor_and_saves_without_optimizer(self):
+        self.args.critic = "vlcm"
+        self.args.image_size = 32
+        self.args.freeze_critic = True
+        self.args.critic_warmup_updates = 5
+        collector = RolloutCollector(self.args)
+        env = collector.envs[0]
+        critic = PythonValueCritic(self.cfg, self.args, env, torch.device("cpu")).eval()
+        self.assertTrue(all(not p.requires_grad for p in critic.parameters()))
+        before = {name: value.clone() for name, value in critic.state_dict().items()}
+        actor = R_Actor(actor_config(), env.observation_spaces[0], env.action_spaces[0])
+        actor_before = {name: value.clone() for name, value in actor.state_dict().items()}
+        rollout = collector.collect(actor, torch.device("cpu"), 5)
+        for frame in collector.camera_queue:
+            frame.features, frame.image = torch.ones(16), None
+        ao = torch.optim.Adam(actor.parameters(), lr=.0005)
+        metrics = ppo_update(actor, critic, ao, None, rollout, self.args, torch.device("cpu"), 1)
+        self.assertEqual(metrics["train/actor_updated"], 1)
+        self.assertEqual(metrics["train/critic_updated"], 0)
+        self.assertNotIn("critic/loss", metrics)
+        self.assertTrue(any(not torch.equal(value, actor_before[name]) for name, value in actor.state_dict().items()))
+        self.assertTrue(all(torch.equal(value, before[name]) for name, value in critic.state_dict().items()))
+        self.assertTrue(all(p.grad is None for p in critic.parameters()))
+        with tempfile.TemporaryDirectory() as root:
+            save_checkpoint(Path(root), actor, critic, ao, None, self.args, 10, 1)
+            saved = torch.load(Path(root) / "optimizers.pt", weights_only=True)
+            self.assertIsNone(saved["critic_optimizer"])
+            restored, _ = load_python_critic(Path(root) / "critic.pt")
+            self.assertTrue(all(not p.requires_grad for p in restored.parameters()))
+            self.assertTrue(all(torch.equal(value, restored.state_dict()[name]) for name, value in before.items()))
+
     def test_python_warm_start_freezes_representation_but_updates_head_and_actor(self):
         self.args.critic = "vlcm"
         self.args.image_size = 32
