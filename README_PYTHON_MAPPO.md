@@ -70,6 +70,44 @@ The real SmolVLM image/language encoder is **frozen**; each camera frame is
 encoded once. The visual projection, GAT, fusion, temporal transformer and
 value head train on current Python rollouts. This cached-feature path rejects
 LoRA/full-backbone checkpoints. Freezing SmolVLM does not freeze the critic head.
+These are the default fine-tuning settings; the following mode freezes all
+critic layers before the value head.
+
+### Frozen representation, adaptive value head
+
+Run a separate actor-from-scratch experiment from this repository directory:
+
+```bash
+bash train_mappo.sh --actor-from-scratch --freeze-critic-representation \
+  --run-name vlcm-frozen-representation-seed1
+```
+
+This requires `--critic-checkpoint` (supplied by the shell launcher). SmolVLM,
+visual projection, GAT, fusion, time embedding and temporal transformer remain
+frozen. Only `core.value_head` (LayerNorm, linear, GELU, scalar linear) and the
+actor learn. The intermediate value-head weights transfer from pretraining;
+the last scalar layer is reset as in the default run. The existing critic
+warmup, raw reward targets and fixed physical-unit observation scales remain.
+This freezes the transferred weights, not the original supervised input/output
+normalization contract.
+
+The Python-only age/hold/settled context embedding is also frozen at its zero
+initialization, so these extra inputs have no effect in this strict mode.
+The default fine-tuning mode learns that embedding; account for this difference
+when interpreting the comparison. `run.json` records the adaptation mode and
+the exact trainable parameter names/count, and saved critics restore the mode.
+
+The scalar output is **unbounded**, not restricted to `[-1, 1]`: neither the
+supervised nor Python value head ends in tanh. The existing `--value-scale 50`
+multiplies the scalar prediction and divides predictions/targets in the loss;
+it does not clip rewards or restrict return estimates to `[-50, 50]`. The head
+learns discounted returns, whose range differs from immediate rewards.
+
+Use matched seeds, actor initialization and training budgets when comparing
+with the default fine-tuned representation. This experiment tests representation
+reuse; evidence for a vision benefit additionally requires a matched state-only
+baseline. Successful training with a frozen representation alone does not prove
+that images improve learning.
 
 The Isaac checkpoint initializes the visual/GAT/fusion/temporal/time layers and
 intermediate value head. The last scalar layer is reset, Isaac target statistics

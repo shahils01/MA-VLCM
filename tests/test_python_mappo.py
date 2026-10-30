@@ -6,10 +6,10 @@ import unittest
 import numpy as np
 import torch
 
-from model import ModelConfig
+from model import ModelConfig, MultimodalValueModel
 from python_mappo import (R_Actor, PythonValueCritic, RolloutCollector, actor_config,
                           compute_gae, context_batch, ppo_update, load_python_critic)
-from train_mappo import parser, save_checkpoint, prune_checkpoints
+from train_mappo import parser, save_checkpoint, prune_checkpoints, validate
 
 
 class PythonMAPPOTests(unittest.TestCase):
@@ -106,6 +106,108 @@ class PythonMAPPOTests(unittest.TestCase):
         first = critic(batch)
         batch["robot_obs"][~batch["robot_mask"]] = 100000.
         self.assertTrue(torch.allclose(first, critic(batch), atol=1e-5))
+
+    def test_frozen_representation_updates_only_value_head_and_round_trips(self):
+        device = torch.device("cpu")
+        for kind in ("vlcm", "state-temporal"):
+            with self.subTest(critic=kind):
+                self.args.critic = kind
+                self.args.image_size = 32
+                self.args.freeze_critic_representation = True
+                collector = RolloutCollector(self.args)
+                env = collector.envs[0]
+                source = MultimodalValueModel(self.cfg, device, load_backbone=False)
+                critic = PythonValueCritic(self.cfg, self.args, env, device,
+                                          {"model_state": source.state_dict()}).eval()
+                for name, param in critic.named_parameters():
+                    self.assertEqual(param.requires_grad, name.startswith("core.value_head."), name)
+                    if name.startswith("core.") and not name.startswith("core.value_head."):
+                        self.assertTrue(torch.equal(param, source.state_dict()[name[5:]]), name)
+                actor = R_Actor(actor_config(), env.observation_spaces[0], env.action_spaces[0])
+                actor_before = {k: v.clone() for k, v in actor.state_dict().items()}
+                before = {k: v.clone() for k, v in critic.state_dict().items()}
+                rollout = collector.collect(actor, device, 5)
+                if kind == "vlcm":
+                    class TestEncoder:
+                        cfg = ModelConfig(vl_batch_size=2)
+                        def __call__(self, images, prompts):
+                            return torch.ones(len(images), 16)
+                    collector.encode_cameras(TestEncoder())
+                ao = torch.optim.Adam(actor.parameters(), lr=.0005)
+                co = torch.optim.Adam([p for p in critic.parameters() if p.requires_grad], lr=.0005)
+                metrics = ppo_update(actor, critic, ao, co, rollout, self.args, device, 1)
+                self.assertTrue(all(np.isfinite(v) for v in metrics.values()))
+                changed = {k for k, v in critic.state_dict().items() if not torch.equal(v, before[k])}
+                self.assertTrue(changed)
+                self.assertTrue(all(k.startswith("core.value_head.") for k in changed), changed)
+                self.assertTrue(any(not torch.equal(v, actor_before[k]) for k, v in actor.state_dict().items()))
+                self.assertTrue(all(p.grad is None for p in critic.parameters() if not p.requires_grad))
+                with tempfile.TemporaryDirectory() as root:
+                    save_checkpoint(Path(root), actor, critic, ao, co, self.args, 10, 1)
+                    restored, _ = load_python_critic(Path(root) / "critic.pt")
+                    batch = context_batch(rollout["contexts"][:2], device, 16, 1.)
+                    self.assertTrue(torch.equal(critic(batch), restored(batch)))
+                    self.assertEqual([k for k, p in critic.named_parameters() if p.requires_grad],
+                                     [k for k, p in restored.named_parameters() if p.requires_grad])
+                # The scalar regressor is linear, not tanh-bounded.
+                with torch.no_grad():
+                    critic.core.value_head[-1].weight.zero_()
+                    critic.core.value_head[-1].bias.fill_(2.)
+                self.assertTrue(torch.allclose(critic(batch), torch.full((2,), 100.)))
+
+    def test_freezing_requires_pretrained_graph_critic(self):
+        import contextlib
+        import io
+        for extra in ([], ["--critic", "mlp"]):
+            p = parser()
+            args = p.parse_args(["--freeze-critic-representation", *extra])
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                validate(p, args)
+
+    def test_frozen_head_optimization_without_environment(self):
+        from unittest.mock import patch
+        self.args.freeze_critic_representation = True
+        device = torch.device("cpu")
+        batch = dict(robot_obs=torch.randn(2, 3, 6, 10),
+                     adj=torch.ones(2, 3, 6, 6, dtype=torch.bool),
+                     robot_mask=torch.ones(2, 3, 6, dtype=torch.bool),
+                     frame_mask=torch.ones(2, 3, dtype=torch.bool),
+                     vl_features=torch.randn(2, 3, 16), times=torch.zeros(2, 3),
+                     extras=torch.randn(2, 3, 3))
+        for kind in ("vlcm", "state-temporal"):
+            with self.subTest(critic=kind):
+                self.args.critic = kind
+                source = MultimodalValueModel(self.cfg, device, load_backbone=False)
+                critic = PythonValueCritic(self.cfg, self.args, None, device,
+                                          {"model_state": source.state_dict()}).eval()
+                before = {k: v.clone() for k, v in critic.state_dict().items()}
+                for name, param in critic.named_parameters():
+                    self.assertEqual(param.requires_grad, name.startswith("core.value_head."))
+                optimizer = torch.optim.Adam([p for p in critic.parameters() if p.requires_grad], lr=.001)
+                for _ in range(3):
+                    optimizer.zero_grad(set_to_none=True)
+                    loss = (critic(batch) / self.args.value_scale - torch.tensor([2., -2.])).square().mean()
+                    loss.backward()
+                    optimizer.step()
+                changed = {k for k, v in critic.state_dict().items() if not torch.equal(v, before[k])}
+                self.assertTrue(changed)
+                self.assertTrue(all(k.startswith("core.value_head.") for k in changed), changed)
+                self.assertTrue(all(p.grad is None for p in critic.parameters() if not p.requires_grad))
+                with tempfile.TemporaryDirectory() as root:
+                    actor = torch.nn.Linear(1, 1)
+                    ao = torch.optim.Adam(actor.parameters())
+                    save_checkpoint(Path(root), actor, critic, ao, optimizer, self.args, 0, 0)
+                    # Graph critics do not use env at construction; isolate this
+                    # checkpoint contract test from the external environment.
+                    with patch("python_mappo.make_env", return_value=None):
+                        restored, _ = load_python_critic(Path(root) / "critic.pt")
+                    self.assertTrue(torch.equal(critic(batch), restored(batch)))
+                    self.assertEqual([k for k, p in critic.named_parameters() if p.requires_grad],
+                                     [k for k, p in restored.named_parameters() if p.requires_grad])
+                with torch.no_grad():
+                    critic.core.value_head[-1].weight.zero_()
+                    critic.core.value_head[-1].bias.fill_(2.)
+                self.assertTrue(torch.allclose(critic(batch), torch.full((2,), 100.)))
 
     def test_camera_cache_encodes_once_across_rollouts(self):
         self.args.critic = "vlcm"

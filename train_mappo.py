@@ -24,6 +24,8 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--critic", choices=("vlcm", "state-temporal", "mlp"), default="vlcm")
     p.add_argument("--critic-checkpoint", type=Path, help="Frozen MA-VLCM supervised checkpoint; transfers representations, resets scalar output")
+    p.add_argument("--freeze-critic-representation", action="store_true",
+                   help="Freeze all critic parameters before value_head; adapt only the value MLP (requires a supervised checkpoint)")
     actor_init = p.add_mutually_exclusive_group()
     actor_init.add_argument("--actor-checkpoint", type=Path, help="Native actor.pt or checkpoint directory; omit to train from scratch")
     actor_init.add_argument("--actor-from-scratch", action="store_true",
@@ -105,6 +107,10 @@ def validate(p, a):
         p.error("Intervals, warmup, entropy coefficient and minimum separation cannot be negative")
     if a.critic == "mlp" and a.critic_checkpoint:
         p.error("The native MLP baseline cannot load a VLCM checkpoint")
+    if a.freeze_critic_representation and (a.critic == "mlp" or not a.critic_checkpoint):
+        p.error("--freeze-critic-representation requires vlcm/state-temporal and --critic-checkpoint")
+    if a.critic_checkpoint and not a.critic_checkpoint.is_file():
+        p.error(f"Critic checkpoint not found: {a.critic_checkpoint}")
     if a.output_dir.exists() and any(a.output_dir.iterdir()):
         p.error("Output directory is nonempty; choose a new run directory (warm-start is not an exact resume)")
 
@@ -137,6 +143,7 @@ def save_checkpoint(path, actor, critic, actor_optimizer, critic_optimizer, args
                     formation_spacing=args.formation_spacing, formation_tolerance=args.formation_tolerance,
                     observation_scale=args.observation_scale, total_environment_steps=steps, update=update,
                     critic_kind=args.critic, hidden_size=args.hidden_size, layer_N=args.layer_n,
+                    freeze_critic_representation=getattr(args, "freeze_critic_representation", False),
                     deployment="Use actor.pt with native local observations; critic/images are training only",
                     checkpoint_semantics="Warm-start artifacts; environment/NumPy/CUDA RNG are not restored for exact resume")
     (path / "training_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -203,6 +210,9 @@ def main(argv=None):
                     target=f"GAE: dt={a.control_dt}, gamma={a.gamma}, lambda={a.gae_lambda}; true-terminal zero, timeout final-state bootstrap",
                     image_schedule="Latest available causal image every camera_stride controls; image age explicit",
                     vision="Real SmolVLM frozen features" if backbone is not None else "No image encoder in this baseline",
+                    critic_trainable_parameters=[name for name, parameter in critic.named_parameters() if parameter.requires_grad],
+                    critic_trainable_parameter_count=sum(parameter.numel() for parameter in critic.parameters() if parameter.requires_grad),
+                    critic_adaptation="value_head_only" if a.freeze_critic_representation else "representation_and_value_head",
                     transfer="Representation initialization only; Python scalar regressor reset; not zero-shot value inference")
     (a.output_dir / "run.json").write_text(json.dumps(contract, indent=2) + "\n")
     preview = env.render(size=a.image_size, view_size_m=a.view_size_m, tile_floor=a.tile_floor)

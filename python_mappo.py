@@ -1,7 +1,7 @@
 """Causal Python-environment histories and a centralized MA-VLCM PPO critic.
 
 Only the native MAPPO actor is needed at deployment. Images are encoded once
-per 5 Hz camera frame; GAT/transformer/value parameters learn on every PPO run.
+per 5 Hz camera frame; optionally freeze the representation and fit only the value head.
 """
 from dataclasses import dataclass
 from argparse import Namespace
@@ -155,6 +155,13 @@ class PythonValueCritic(nn.Module):
             self.context_embedding = nn.Sequential(nn.Linear(3, cfg.d_model), nn.Tanh())
             nn.init.zeros_(self.context_embedding[0].weight)
             nn.init.zeros_(self.context_embedding[0].bias)
+        if getattr(args, "freeze_critic_representation", False):
+            if self.kind == "mlp":
+                raise ValueError("Frozen representation mode requires vlcm or state-temporal")
+            # Freeze every upstream parameter, including the new zero-initialized
+            # timing/hold context embedding. Only the complete value MLP adapts.
+            self.requires_grad_(False)
+            self.core.value_head.requires_grad_(True)
         self.to(device)
 
     def forward(self, batch):
