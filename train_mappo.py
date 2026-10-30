@@ -23,7 +23,10 @@ ROOT = Path(__file__).resolve().parent
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--critic", choices=("vlcm", "state-temporal", "mlp"), default="vlcm")
-    p.add_argument("--critic-checkpoint", type=Path, help="Frozen MA-VLCM supervised checkpoint; transfers representations, resets scalar output")
+    p.add_argument("--critic-checkpoint", type=Path,
+                   help="Supervised best.pt (resets scalar) or Python critic.pt/directory (preserves full critic)")
+    p.add_argument("--freeze-critic-representation", action="store_true",
+                   help="Freeze visual/GAT/fusion/time/temporal/context layers; train only the entire value_head")
     actor_init = p.add_mutually_exclusive_group()
     actor_init.add_argument("--actor-checkpoint", type=Path, help="Native actor.pt or checkpoint directory; omit to train from scratch")
     actor_init.add_argument("--actor-from-scratch", action="store_true",
@@ -105,6 +108,13 @@ def validate(p, a):
         p.error("Intervals, warmup, entropy coefficient and minimum separation cannot be negative")
     if a.critic == "mlp" and a.critic_checkpoint:
         p.error("The native MLP baseline cannot load a VLCM checkpoint")
+    if a.freeze_critic_representation and (a.critic == "mlp" or not a.critic_checkpoint):
+        p.error("--freeze-critic-representation requires a pretrained graph/temporal critic checkpoint")
+    if a.critic_checkpoint:
+        if a.critic_checkpoint.is_dir():
+            a.critic_checkpoint = a.critic_checkpoint / "critic.pt"
+        if not a.critic_checkpoint.is_file():
+            p.error(f"Critic checkpoint does not exist: {a.critic_checkpoint}")
     if a.output_dir.exists() and any(a.output_dir.iterdir()):
         p.error("Output directory is nonempty; choose a new run directory (warm-start is not an exact resume)")
 
@@ -137,6 +147,7 @@ def save_checkpoint(path, actor, critic, actor_optimizer, critic_optimizer, args
                     formation_spacing=args.formation_spacing, formation_tolerance=args.formation_tolerance,
                     observation_scale=args.observation_scale, total_environment_steps=steps, update=update,
                     critic_kind=args.critic, hidden_size=args.hidden_size, layer_N=args.layer_n,
+                    freeze_critic_representation=args.freeze_critic_representation,
                     deployment="Use actor.pt with native local observations; critic/images are training only",
                     checkpoint_semantics="Warm-start artifacts; environment/NumPy/CUDA RNG are not restored for exact resume")
     (path / "training_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -193,6 +204,10 @@ def main(argv=None):
         backbone.eval()
     ao = torch.optim.Adam(actor.parameters(), lr=a.actor_lr, eps=1e-5)
     co = torch.optim.Adam([v for v in critic.parameters() if v.requires_grad], lr=a.critic_lr, eps=1e-5)
+    critic_trainable = [name for name, parameter in critic.named_parameters() if parameter.requires_grad]
+    python_source = source is not None and source.get("format") == "python_mappo_vlcm_v1"
+    print(f"Critic checkpoint: {a.critic_checkpoint}; actor: {'scratch' if a.actor_checkpoint is None else a.actor_checkpoint}", flush=True)
+    print(f"Trainable critic parameters: {', '.join(critic_trainable)}", flush=True)
     contract = dict(args=jsonable(a), model_config=asdict(cfg), device=str(device),
                     environment_sha256=file_hash(MARL_ROOT / "RL_bound_overwatch/envs/FormationControlEnv.py"),
                     texture_sha256=file_hash(MARL_ROOT / "RL_bound_overwatch/envs/assets/background_image_real.png"),
@@ -203,7 +218,10 @@ def main(argv=None):
                     target=f"GAE: dt={a.control_dt}, gamma={a.gamma}, lambda={a.gae_lambda}; true-terminal zero, timeout final-state bootstrap",
                     image_schedule="Latest available causal image every camera_stride controls; image age explicit",
                     vision="Real SmolVLM frozen features" if backbone is not None else "No image encoder in this baseline",
-                    transfer="Representation initialization only; Python scalar regressor reset; not zero-shot value inference")
+                    critic_trainable_parameters=critic_trainable,
+                    source_critic_steps=source.get("steps") if python_source else None,
+                    transfer=("Full Python critic warm-start; head, context and normalization preserved" if python_source else
+                              "Representation initialization only; Python scalar regressor reset; not zero-shot value inference"))
     (a.output_dir / "run.json").write_text(json.dumps(contract, indent=2) + "\n")
     preview = env.render(size=a.image_size, view_size_m=a.view_size_m, tile_floor=a.tile_floor)
     from PIL import Image

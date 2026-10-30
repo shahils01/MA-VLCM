@@ -1,5 +1,6 @@
 """Behavioral checks for PPO, asynchronous inputs and deployment compatibility."""
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 import unittest
 
@@ -13,6 +14,44 @@ from train_mappo import parser, save_checkpoint, prune_checkpoints
 
 
 class PythonMAPPOTests(unittest.TestCase):
+    def test_python_warm_start_freezes_representation_but_updates_head_and_actor(self):
+        self.args.critic = "vlcm"
+        self.args.image_size = 32
+        collector = RolloutCollector(self.args)
+        env = collector.envs[0]
+        source = PythonValueCritic(self.cfg, self.args, env, torch.device("cpu"))
+        with torch.no_grad():
+            source.context_embedding[0].weight.fill_(0.1)
+        saved = dict(format="python_mappo_vlcm_v1", critic_kind="vlcm",
+                     model_config=asdict(self.cfg), model_state=source.state_dict())
+        self.args.freeze_critic_representation = True
+        critic = PythonValueCritic(self.cfg, self.args, env, torch.device("cpu"), saved).eval()
+        for name, value in source.state_dict().items():
+            self.assertTrue(torch.equal(value, critic.state_dict()[name]), name)
+        self.assertTrue(all(p.requires_grad == name.startswith("core.value_head.")
+                            for name, p in critic.named_parameters()))
+        before = {name: value.clone() for name, value in critic.state_dict().items()}
+        actor = R_Actor(actor_config(), env.observation_spaces[0], env.action_spaces[0])
+        actor_before = {name: value.clone() for name, value in actor.state_dict().items()}
+        rollout = collector.collect(actor, torch.device("cpu"), 5)
+        # Synthetic features are test fixtures; no real VLM or user policy is run.
+        for frame in collector.camera_queue:
+            frame.features, frame.image = torch.ones(16), None
+        ao = torch.optim.Adam(actor.parameters(), lr=.0005)
+        co = torch.optim.Adam([p for p in critic.parameters() if p.requires_grad], lr=.0005)
+        ppo_update(actor, critic, ao, co, rollout, self.args, torch.device("cpu"), 1)
+        changed = {name for name, value in critic.state_dict().items() if not torch.equal(value, before[name])}
+        self.assertTrue(changed)
+        self.assertTrue(all(name.startswith("core.value_head.") for name in changed), changed)
+        self.assertTrue(any(not torch.equal(value, actor_before[name]) for name, value in actor.state_dict().items()))
+        with tempfile.TemporaryDirectory() as root:
+            save_checkpoint(Path(root), actor, critic, ao, co, self.args, 10, 1)
+            restored, _ = load_python_critic(Path(root) / "critic.pt")
+            self.assertTrue(all(p.requires_grad == name.startswith("core.value_head.")
+                                for name, p in restored.named_parameters()))
+            for name, value in critic.state_dict().items():
+                self.assertTrue(torch.equal(value, restored.state_dict()[name]), name)
+
     def test_retention_preserves_best_and_unrelated_entries(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)

@@ -140,7 +140,8 @@ class PythonValueCritic(nn.Module):
                                  env.shared_observation_spaces[0], device)
         else:
             self.core = MultimodalValueModel(cfg, device, load_backbone=False)
-            if pretrained is not None:
+            python_checkpoint = pretrained is not None and pretrained.get("format") == "python_mappo_vlcm_v1"
+            if pretrained is not None and not python_checkpoint:
                 self.core.load_state_dict(pretrained["model_state"], strict=True)
             # Isaac's clipped reward targets have different units/termination.
             # Transfer its graph/fusion/temporal representation, reset regressor.
@@ -155,6 +156,19 @@ class PythonValueCritic(nn.Module):
             self.context_embedding = nn.Sequential(nn.Linear(3, cfg.d_model), nn.Tanh())
             nn.init.zeros_(self.context_embedding[0].weight)
             nn.init.zeros_(self.context_embedding[0].bias)
+            if python_checkpoint:
+                if pretrained["critic_kind"] != self.kind:
+                    raise ValueError("Python critic checkpoint kind must match --critic")
+                if float(pretrained["model_state"]["value_scale"]) != float(args.value_scale):
+                    raise ValueError("--value-scale must match the saved Python critic")
+                # Preserve the learned Python head, context and normalization.
+                # This is critic warm-starting, independent of actor initialization.
+                self.load_state_dict(pretrained["model_state"], strict=True)
+        if getattr(args, "freeze_critic_representation", False):
+            if self.kind == "mlp":
+                raise ValueError("Representation freezing requires a graph/temporal critic")
+            self.requires_grad_(False)
+            self.core.value_head.requires_grad_(True)
         self.to(device)
 
     def forward(self, batch):

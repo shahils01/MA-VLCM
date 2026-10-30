@@ -1,5 +1,25 @@
 # Python MAPPO with the MA-VLCM critic
 
+## Optional frozen representation experiment
+
+`--freeze-critic-representation` freezes the visual projection, GAT, fusion,
+time embedding, temporal transformer and image-age/hold/settled embedding;
+SmolVLM also remains frozen. Only `core.value_head` (LayerNorm, hidden linear,
+GELU and final scalar linear) and the actor train. The downstream-training
+description below documents the original run and the default without this flag.
+
+Set `--critic-checkpoint` explicitly to a Python MAPPO `best/` directory or its
+`critic.pt` to reuse that learned critic, including its head, normalization,
+context embedding and value scale. `--actor-from-scratch` still creates a new
+actor; it does not load the neighboring `actor.pt`. This is a new experiment
+with fresh optimizers, not an exact resume. A pretrained head may need to adapt
+to the fresh actor's behavior even though the Python reward units match.
+
+The shell's default remains `outputs/zero_margin_900/best.pt`, which is the
+supervised Isaac model and resets the final scalar layer on transfer. The
+run name does not select a checkpoint. Startup output and `run.json` record
+the actual checkpoint, source training step, and trainable critic parameters.
+
 ## End-to-end method and mathematics
 
 This section was checked against the local code, collection manifests, saved
