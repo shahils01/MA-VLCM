@@ -228,6 +228,8 @@ def main(argv=None):
                     image_schedule="Latest available causal image every camera_stride controls; image age explicit",
                     vision="Real SmolVLM frozen features" if backbone is not None else "No image encoder in this baseline",
                     critic_trainable_parameters=critic_trainable,
+                    critic_trainable_parameter_count=sum(parameter.numel() for parameter in critic.parameters() if parameter.requires_grad),
+                    critic_adaptation=("fully_frozen" if a.freeze_critic else "value_head_only" if a.freeze_critic_representation else "representation_and_value_head"),
                     source_critic_steps=source.get("steps") if python_source else None,
                     transfer=("Full Python critic warm-start; head, context and normalization preserved" if python_source else
                               "Representation initialization only; Python scalar regressor reset; not zero-shot value inference"))

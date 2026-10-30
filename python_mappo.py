@@ -1,7 +1,7 @@
 """Causal Python-environment histories and a centralized MA-VLCM PPO critic.
 
 Only the native MAPPO actor is needed at deployment. Images are encoded once
-per 5 Hz camera frame; GAT/transformer/value parameters learn on every PPO run.
+per 5 Hz camera frame; optionally freeze the representation and fit only the value head.
 """
 from dataclasses import dataclass
 from argparse import Namespace
