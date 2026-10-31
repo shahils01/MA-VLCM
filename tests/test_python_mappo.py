@@ -10,10 +10,96 @@ import torch
 from model import ModelConfig, MultimodalValueModel
 from python_mappo import (R_Actor, PythonValueCritic, RolloutCollector, actor_config,
                           compute_gae, context_batch, ppo_update, load_python_critic)
-from train_mappo import parser, save_checkpoint, prune_checkpoints, validate
+from train_mappo import parser, save_checkpoint, prune_checkpoints, validate, load_value_calibration
 
 
 class PythonMAPPOTests(unittest.TestCase):
+    def test_calibrated_isaac_values_remain_frozen_and_round_trip(self):
+        self.args.critic = "vlcm"
+        self.args.image_size = 32
+        self.args.freeze_critic = True
+        self.args.frozen_isaac_critic = True
+        self.args.agent_counts = [3, 4]
+        self.args.value_calibration_coefficients = {"3": [2., 3.], "4": [5., -1.]}
+        source = MultimodalValueModel(self.cfg, torch.device("cpu"), load_backbone=False).eval()
+        saved = {"model_state": {k: v.clone() for k, v in source.state_dict().items()}}
+        collector = RolloutCollector(self.args)
+        critic = PythonValueCritic(self.cfg, self.args, collector.envs[0], torch.device("cpu"), saved).eval()
+        actor = R_Actor(actor_config(), collector.envs[0].observation_spaces[0], collector.envs[0].action_spaces[0])
+        rollout = collector.collect(actor, torch.device("cpu"), 5)
+        for frame in collector.camera_queue:
+            frame.features, frame.image = torch.ones(16), None
+        contexts = rollout["contexts"][:2]
+        batch = context_batch(contexts, torch.device("cpu"), 16, 1.)
+        with torch.no_grad():
+            raw = source(batch)
+            expected = raw * torch.tensor([2., 5.]) + torch.tensor([3., -1.])
+            self.assertTrue(torch.allclose(critic(batch), expected, atol=1e-5))
+        before = {k: v.clone() for k, v in critic.state_dict().items()}
+        ao = torch.optim.Adam(actor.parameters(), lr=.0005)
+        metrics = ppo_update(actor, critic, ao, None, rollout, self.args, torch.device("cpu"), 1)
+        self.assertEqual(metrics["train/actor_updated"], 1)
+        self.assertEqual(metrics["train/critic_updated"], 0)
+        self.assertTrue(all(torch.equal(v, before[k]) for k, v in critic.state_dict().items()))
+        self.assertTrue(all(p.grad is None and not p.requires_grad for p in critic.parameters()))
+        with tempfile.TemporaryDirectory() as root:
+            save_checkpoint(Path(root), actor, critic, ao, None, self.args, 10, 1)
+            restored, _ = load_python_critic(Path(root) / "critic.pt")
+            with torch.no_grad():
+                self.assertTrue(torch.equal(critic(batch), restored(batch)))
+
+    def test_calibration_rejects_wrong_source_or_missing_formation(self):
+        import hashlib
+        import json
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = Path(root) / "source.pt"
+            checkpoint.write_bytes(b"source")
+            calibration = Path(root) / "calibration.json"
+            report = {"critic_sha256": hashlib.sha256(b"source").hexdigest(), "gamma": .99,
+                      "formations": {"triangle": {"status": "exploratory_fit", "slope": 2., "intercept": 3.}}}
+            calibration.write_text(json.dumps(report))
+            self.assertEqual(load_value_calibration(calibration, checkpoint, [3], .99), {"3": [2., 3.]})
+            with self.assertRaises(ValueError):
+                load_value_calibration(calibration, checkpoint, [3, 4], .99)
+            with self.assertRaises(ValueError):
+                load_value_calibration(calibration, checkpoint, [3], .9)
+            checkpoint.write_bytes(b"different")
+            with self.assertRaises(ValueError):
+                load_value_calibration(calibration, checkpoint, [3], .99)
+
+    def test_original_isaac_critic_is_unchanged_and_restores_its_output(self):
+        self.args.critic = "vlcm"
+        self.args.image_size = 32
+        self.args.freeze_critic = True
+        self.args.frozen_isaac_critic = True
+        source = MultimodalValueModel(self.cfg, torch.device("cpu"), load_backbone=False).eval()
+        with torch.no_grad():
+            source.target_mean.fill_(-0.4)
+            source.target_std.fill_(0.6)
+            source.obs_mean.fill_(0.1)
+            source.obs_std.fill_(1.3)
+        pretrained = {"model_state": {k: v.clone() for k, v in source.state_dict().items()}}
+        collector = RolloutCollector(self.args)
+        env = collector.envs[0]
+        critic = PythonValueCritic(self.cfg, self.args, env, torch.device("cpu"), pretrained).eval()
+        self.assertTrue(all(not p.requires_grad for p in critic.parameters()))
+        for name, value in source.state_dict().items():
+            self.assertTrue(torch.equal(value, critic.core.state_dict()[name]), name)
+        for frame in collector.camera_queue:
+            frame.features, frame.image = torch.ones(16), None
+        batch = context_batch([collector.histories[0].context()], torch.device("cpu"), 16, 1.)
+        with torch.no_grad():
+            self.assertTrue(torch.allclose(critic(batch), source(batch), atol=1e-6))
+        actor = R_Actor(actor_config(), env.observation_spaces[0], env.action_spaces[0])
+        ao = torch.optim.Adam(actor.parameters())
+        with tempfile.TemporaryDirectory() as root:
+            save_checkpoint(Path(root), actor, critic, ao, None, self.args, 0, 0)
+            restored, restored_args = load_python_critic(Path(root) / "critic.pt")
+            self.assertTrue(restored_args.frozen_isaac_critic)
+            self.assertTrue(all(not p.requires_grad for p in restored.parameters()))
+            with torch.no_grad():
+                self.assertTrue(torch.equal(critic(batch), restored(batch)))
+
     def test_fully_frozen_critic_still_updates_actor_and_saves_without_optimizer(self):
         self.args.critic = "vlcm"
         self.args.image_size = 32

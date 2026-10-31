@@ -132,6 +132,20 @@ class PythonValueCritic(nn.Module):
     def __init__(self, cfg, args, env, device, pretrained=None):
         super().__init__()
         self.kind, self.cfg = args.critic, cfg
+        self.isaac_value_units = getattr(args, "frozen_isaac_critic", False)
+        coefficients = getattr(args, "value_calibration_coefficients", None)
+        if coefficients:
+            if not self.isaac_value_units:
+                raise ValueError("Value calibration requires the frozen Isaac critic")
+            slopes = torch.zeros(7)
+            offsets = torch.zeros(7)
+            valid = torch.zeros(7, dtype=torch.bool)
+            for count, pair in coefficients.items():
+                slopes[int(count)], offsets[int(count)] = float(pair[0]), float(pair[1])
+                valid[int(count)] = True
+            self.register_buffer("calibration_slopes", slopes)
+            self.register_buffer("calibration_offsets", offsets)
+            self.register_buffer("calibration_valid", valid)
         # A fixed invertible scale conditions the loss; rewards/GAE/value
         # predictions remain in original Python reward units.
         self.register_buffer("value_scale", torch.tensor(float(args.value_scale)))
@@ -145,12 +159,13 @@ class PythonValueCritic(nn.Module):
                 self.core.load_state_dict(pretrained["model_state"], strict=True)
             # Isaac's clipped reward targets have different units/termination.
             # Transfer its graph/fusion/temporal representation, reset regressor.
-            self.core.target_mean.zero_()
-            self.core.target_std.fill_(1)
-            self.core.value_head[-1].reset_parameters()
-            # Fixed physical-unit normalizers are shared by both graph variants.
-            self.core.obs_mean.zero_()
-            self.core.obs_std.copy_(torch.tensor([3., 3., 1., 1., .22, .22, 3., 3., 3., 3.]))
+            if not self.isaac_value_units:
+                self.core.target_mean.zero_()
+                self.core.target_std.fill_(1)
+                self.core.value_head[-1].reset_parameters()
+                # Fixed physical-unit normalizers are shared by both graph variants.
+                self.core.obs_mean.zero_()
+                self.core.obs_std.copy_(torch.tensor([3., 3., 1., 1., .22, .22, 3., 3., 3., 3.]))
             if self.kind == "state-temporal":
                 self.core.visual.requires_grad_(False)
             self.context_embedding = nn.Sequential(nn.Linear(3, cfg.d_model), nn.Tanh())
@@ -191,7 +206,19 @@ class PythonValueCritic(nn.Module):
         fused = fused + core.time_embedding(batch["times"].unsqueeze(-1))
         fused = fused + self.context_embedding(batch["extras"])
         temporal = core.temporal(fused, src_key_padding_mask=~batch["frame_mask"])
-        return core.value_head(temporal[:, -1]).squeeze(-1) * self.value_scale
+        value = core.value_head(temporal[:, -1]).squeeze(-1)
+        if self.isaac_value_units:
+            value = value * core.target_std + core.target_mean
+            if hasattr(self, "calibration_slopes"):
+                counts = batch["robot_mask"][:, -1].sum(-1).long()
+                if torch.any(counts >= len(self.calibration_slopes)):
+                    raise ValueError("No value calibration for this team size")
+                slopes, offsets = self.calibration_slopes[counts], self.calibration_offsets[counts]
+                if not self.calibration_valid[counts].all():
+                    raise ValueError("No value calibration for this team size")
+                value = slopes * value + offsets
+            return value
+        return value * self.value_scale
 
 
 def load_python_critic(path, device=torch.device("cpu")):

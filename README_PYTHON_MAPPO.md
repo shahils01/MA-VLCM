@@ -12,10 +12,9 @@ to start each actor from random initialization:
 | Head-only | `--freeze-critic-representation` | Entire value head only |
 | Fully frozen | `--freeze-critic` | None |
 
-The SmolVLM image/text backbone is frozen in all three modes. The fully frozen
-mode requires a trained Python VLCM checkpoint: a supervised Isaac checkpoint
-would otherwise reset the final scalar to random Python reward units. The saved
-Python critic's head, normalization and value scale are loaded intact. Fully
+The SmolVLM image/text backbone is frozen in all three modes. By default the fully
+frozen mode requires a trained Python VLCM checkpoint. The saved Python critic's
+head, normalization and value scale are loaded intact. Fully
 frozen mode does not construct a critic optimizer, take critic gradients or
 perform critic updates; actor learning starts at the first rollout because there
 is no critic warmup to perform. `run.json`, checkpoint metadata and
@@ -30,6 +29,33 @@ critic outputs. Advantage normalization does not fix calibration errors or
 remove bias from bootstrapping GAE with a stale critic. Trainable value-head
 adaptation is the more suitable option when the task or policy distribution
 changes; compare fixed-critic experiments on matched rollout and seed budgets.
+
+For a direct frozen Isaac baseline, `--freeze-critic --frozen-isaac-critic`
+loads the supervised `outputs/zero_margin_900/best.pt` unchanged, including its
+original value head and training-set observation/target normalizers. Its
+image-age/hold/settled embedding is zero and frozen. Its output is an Isaac
+discounted return, not a Python return: the run combines this value with raw
+Python rewards in GAE without calibration, so the mixed-unit TD errors and
+critic MSE are not interpretable as Python value accuracy. This is an explicit
+experimental baseline, not a calibrated critic or proof of value transfer.
+Image domain, prompts and termination rules also differ. The run records this
+unit mismatch in `run.json` and prints it at startup. The original network's
+target mean and standard deviation are applied; the Python `--value-scale 50`
+does not rescale its outputs. No critic parameters or optimizer are trained.
+
+Optionally add `--value-calibration <calibration.json>` to apply each team's
+fixed affine map `V_python_estimate = slope[N] * V_isaac + intercept[N]` before
+GAE, with no gradients to either the critic or the calibration. The loader
+requires a fit for every selected formation, matching discount and the exact
+source checkpoint SHA-256; the coefficients and file hash are saved with the
+new run and the critic checkpoint. Both current and next values use the map,
+while a true terminal still has zero continuation. This changes value units,
+not environment rewards, and the fit may be biased because its completed
+episodes came from a previously trained actor rather than the new scratch actor.
+In the current local calibration, held-out frame MSE improves for each shape,
+but remains approximately 100–214 in squared Python return units; timeouts
+were excluded. Calibration cannot guarantee accurate current-policy values or
+unbiased GAE during subsequent training.
 
 ## Optional frozen representation experiment
 
