@@ -29,7 +29,7 @@ fi
   --model-revision "${MODEL_REVISION:-main}" \
   --backbone-mode "$BACKBONE_MODE" \
   --return-source "${RETURN_SOURCE:-sampled}" \
-  --clip-len "${CLIP_LEN:-8}" --image-hz 5 --gamma "${GAMMA:-0.99}" \
+  --clip-len "${CLIP_LEN:-8}" --image-hz "${IMAGE_HZ:-5}" --gamma "${GAMMA:-0.99}" \
   --batch-size "${BATCH_SIZE:-$default_batch}" --vl-batch-size "${VL_BATCH_SIZE:-$default_vl_batch}" \
   --grad-accum-steps "${GRAD_ACCUM_STEPS:-1}" \
   --mixed-precision "${MIXED_PRECISION:-bf16}" \

@@ -149,25 +149,37 @@ evaluation on the separate 60 archives, use
 [submission/data/comparison instructions](README_FROZEN_2000.md). This dedicated
 template requests one GPU/process and leaves the LoRA launch path unchanged.
 
-Set up the same environment on Palmetto and copy the dataset to shared storage,
-for example `/home/anshuln/Dataset/formation_vlcm_polygon_3to6`. The batch template
-requests the resources selected in this project: one node/task, 4 CPUs, 12 GB
-host RAM, two A100 GPUs and 12 hours. Adjust partition/resources to your allocation.
-Both GPUs participate in training through torchrun/Accelerate DDP. Frozen VLM
-cache creation runs once on rank zero before distributed head training.
+The general template defaults to the 3,000-episode Python dataset at
+`/home/anshuln/Dataset/polygon_formation_python_env`, checks the archive count,
+and uses all checkpoint stages with the full 20 Hz control rewards. It requests
+one node, one task, 4 CPUs, 24 GB host RAM, one A100 and 12 hours. Adjust the
+partition and resources to your allocation. Frozen image/text features are
+cached before downstream training.
 
 ```bash
 cd /path/to/MA-VLCM
 mkdir -p logs
-# Make conda available, or point CONDA_BASE at its installation.
-export CONDA_BASE="$(conda info --base)"
-export CONDA_ENV=vlcm-smol
-export DATASET=/home/anshuln/Dataset/formation_vlcm_polygon_3to6
-sbatch train_palmetto.sbatch
+BACKBONE_MODE=frozen sbatch train_palmetto.sbatch
 ```
 
+This uses the `MARL` conda environment by default (`CONDA_ENV` overrides it).
+Frozen mode freezes the pretrained SmolVLM vision and text backbone and trains
+the visual projection, graph, fusion, time embedding, temporal transformer and
+value head. `BACKBONE_MODE=lora` continues to select LoRA training. The 3,000
+are episodes, not all optimizer inputs: the trainer excludes timeout/unfinished
+episodes and splits the complete episodes by scenario into train, validation
+and test sets (defaults 80/10/10). The recorded collection reported no timeouts.
+The dataset's `splits.json` is not used by this trainer; it creates and saves
+its own split. Targets are discounted Python-environment rewards, distinct from
+the older Isaac reward scale. By default it samples the 10 Hz recordings at
+5 Hz; set `IMAGE_HZ=10` at submission to train from every captured frame.
+
 `PROJECT_ROOT`, `CACHE_DIR`, `RUN_DIR`, `HF_HOME`, `EPOCHS`, `CLIP_LEN`,
-`BACKBONE_MODE`, and batch settings can be overridden in the submission environment.
+`BACKBONE_MODE`, `IMAGE_HZ`, and batch settings can be overridden in the submission environment.
+For another dataset, set `DATASET` and its expected archive count with
+`EXPECTED_EPISODES`. Set `RETURN_SOURCE=sampled` only for a dataset without
+full control-step rewards. The template requests one GPU; if requesting more
+using Slurm options, set `NUM_GPUS` to match the requested count.
 Choose storage with space for the dataset and feature cache. Create `logs` before
 submission because Slurm opens log files before running the script.
 `train_ddp.sh` launches the same trainer on two local GPUs. Legacy
