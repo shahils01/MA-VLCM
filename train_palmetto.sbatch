@@ -16,7 +16,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$SLURM_SUBMIT_DIR}"
 cd "$PROJECT_ROOT"
 module load anaconda3
 set +u
-source activate "${CONDA_ENV:-MARL}"
+source activate "${CONDA_ENV:-internvl}"
 set -u
 export NUM_GPUS="${NUM_GPUS:-1}"
 export DATASET="${DATASET:-/home/anshuln/Dataset/polygon_formation_python_env}"
@@ -29,7 +29,14 @@ if [[ ! -d "$DATASET/formation_control" ]]; then
     echo "Dataset not found: $DATASET/formation_control" >&2
     exit 1
 fi
-episode_count=$(find "$DATASET/formation_control" -type f -name 'episode_*.tar' | wc -l)
+episode_count=$("${PYTHON_BIN:-python}" - "$DATASET" <<'PY'
+from pathlib import Path
+import sys
+
+# Match the trainer's recursive discovery, including symlinks to episode files.
+print(sum(path.is_file() for path in Path(sys.argv[1]).rglob("episode_*.tar")))
+PY
+)
 if [[ "$episode_count" -ne "$expected_episodes" ]]; then
     echo "Expected $expected_episodes episode archives in $DATASET; found $episode_count" >&2
     exit 1
