@@ -152,7 +152,8 @@ template requests one GPU/process and leaves the LoRA launch path unchanged.
 The general template defaults to the 3,000-episode Python dataset at
 `/home/anshuln/Dataset/polygon_formation_python_env`, checks the archive count,
 and uses all checkpoint stages with the full 20 Hz control rewards. It requests
-one node, one task, 4 CPUs, 24 GB host RAM, one A100 and 12 hours. Adjust the
+one node, one task, 4 CPUs, 24 GB host RAM, two A100s and 16 hours. It defaults
+to one training process; set `NUM_GPUS=2` to use both GPUs. Adjust the
 partition and resources to your allocation. Frozen image/text features are
 cached before downstream training.
 
@@ -174,12 +175,36 @@ its own split. Targets are discounted Python-environment rewards, distinct from
 the older Isaac reward scale. By default it samples the 10 Hz recordings at
 5 Hz; set `IMAGE_HZ=10` at submission to train from every captured frame.
 
+For a separate LoRA run on the two GPUs requested by the current template:
+
+```bash
+CONDA_ENV=internvl BACKBONE_MODE=lora NUM_GPUS=2 IMAGE_HZ=5 IMAGE_SIZE=256 CLIP_LEN=6 \
+  sbatch train_palmetto.sbatch
+```
+
+Each job writes to `outputs/smolvlm-<mode>-<jobid>/` by default. For LoRA,
+`latest.pt` is saved every 500 optimizer steps by default; `best.pt` is saved
+after validation improves and `epoch_NNN.pt` every two epochs. Set
+`CHECKPOINT_EVERY_STEPS` to change the step interval, or zero to disable it.
+Checkpoints contain the LoRA parameters, all trainable downstream weights,
+optimizer/scheduler state and configuration; pretrained backbone weights are
+loaded separately from Hugging Face. They are trainer checkpoints, not a
+standalone PEFT `save_pretrained` adapter directory. They are first written
+after training starts, not while the dataset is being indexed.
+
+The LoRA command uses 5 Hz rather than 10 Hz and six rather than eight frames
+per clip to reduce work; 256-pixel inputs match the saved image size. These
+settings alter the input and temporal context, so compare validation metrics
+before treating them as equivalent to a higher-resolution, longer-history run.
+LoRA recomputes backbone features for each clip and is usually slower than
+the frozen mode's cached-feature training. Two GPUs can improve throughput but
+do not guarantee a twofold speedup.
+
 `PROJECT_ROOT`, `CACHE_DIR`, `RUN_DIR`, `HF_HOME`, `EPOCHS`, `CLIP_LEN`,
-`BACKBONE_MODE`, `IMAGE_HZ`, and batch settings can be overridden in the submission environment.
+`BACKBONE_MODE`, `IMAGE_HZ`, `IMAGE_SIZE`, and batch settings can be overridden in the submission environment.
 For another dataset, set `DATASET` and its expected archive count with
 `EXPECTED_EPISODES`. Set `RETURN_SOURCE=sampled` only for a dataset without
-full control-step rewards. The template requests one GPU; if requesting more
-using Slurm options, set `NUM_GPUS` to match the requested count.
+full control-step rewards. Set `NUM_GPUS` to match the GPUs you intend to use.
 Choose storage with space for the dataset and feature cache. Create `logs` before
 submission because Slurm opens log files before running the script.
 `train_ddp.sh` launches the same trainer on two local GPUs. Legacy

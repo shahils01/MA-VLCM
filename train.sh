@@ -10,9 +10,11 @@ BACKBONE_MODE="${BACKBONE_MODE:-frozen}"
 if [[ "$BACKBONE_MODE" == frozen ]]; then
   default_batch=64
   default_vl_batch=4
+  default_checkpoint_steps=0
 else
   default_batch=1
   default_vl_batch=1
+  default_checkpoint_steps=500
 fi
 launcher=("$PYTHON_BIN")
 if (( ${NUM_GPUS:-1} > 1 )); then
@@ -29,11 +31,12 @@ fi
   --model-revision "${MODEL_REVISION:-main}" \
   --backbone-mode "$BACKBONE_MODE" \
   --return-source "${RETURN_SOURCE:-sampled}" \
-  --clip-len "${CLIP_LEN:-8}" --image-hz "${IMAGE_HZ:-5}" --gamma "${GAMMA:-0.99}" \
+  --clip-len "${CLIP_LEN:-8}" --image-hz "${IMAGE_HZ:-5}" --image-size "${IMAGE_SIZE:-512}" --gamma "${GAMMA:-0.99}" \
   --batch-size "${BATCH_SIZE:-$default_batch}" --vl-batch-size "${VL_BATCH_SIZE:-$default_vl_batch}" \
   --grad-accum-steps "${GRAD_ACCUM_STEPS:-1}" \
   --mixed-precision "${MIXED_PRECISION:-bf16}" \
   --epochs "${EPOCHS:-30}" --checkpoint-every "${CHECKPOINT_EVERY:-2}" \
+  --checkpoint-every-steps "${CHECKPOINT_EVERY_STEPS:-$default_checkpoint_steps}" \
   --patience "${PATIENCE:-6}" \
   --num-workers "${NUM_WORKERS:-0}" \
   --cache-dir "${CACHE_DIR:-$PROJECT_ROOT/outputs/cache}" \

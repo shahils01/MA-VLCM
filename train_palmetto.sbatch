@@ -6,8 +6,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24gb
-#SBATCH --gpus-per-node=a100:1
-#SBATCH --time=12:00:00
+#SBATCH --gpus-per-node=a100:2
+#SBATCH --time=16:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -22,7 +22,7 @@ export NUM_GPUS="${NUM_GPUS:-1}"
 export DATASET="${DATASET:-/home/anshuln/Dataset/polygon_formation_python_env}"
 export BACKBONE_MODE="${BACKBONE_MODE:-frozen}"
 export RETURN_SOURCE="${RETURN_SOURCE:-control}"
-export RUN_DIR="${RUN_DIR:-$PROJECT_ROOT/outputs/smolvlm-${SLURM_JOB_ID}}"
+export RUN_DIR="${RUN_DIR:-$PROJECT_ROOT/outputs/smolvlm-${BACKBONE_MODE}-${SLURM_JOB_ID}}"
 export HF_HOME="${HF_HOME:-$PROJECT_ROOT/.hf_cache}"
 expected_episodes="${EXPECTED_EPISODES:-3000}"
 if [[ ! -d "$DATASET/formation_control" ]]; then
@@ -43,6 +43,7 @@ if [[ "$episode_count" -ne "$expected_episodes" ]]; then
 fi
 echo "Dataset: $DATASET ($episode_count episodes)"
 echo "Backbone: $BACKBONE_MODE; return source: $RETURN_SOURCE; GPU processes: $NUM_GPUS"
+echo "Checkpoints and metrics: $RUN_DIR"
 # WANDB_API_KEY/HF_TOKEN belong in the environment or login state, never here.
 nvidia-smi
 exec bash "$PROJECT_ROOT/train.sh" "$@"
