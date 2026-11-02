@@ -1,5 +1,70 @@
 # Python MAPPO with the MA-VLCM critic
 
+## Frozen supervised Python VLCM as the only critic
+
+`train_frozen_python_value.sh` starts a new actor from random initialization and
+uses `outputs/smolvlm-18918211/best.pt` as its only centralized critic. The
+supervised Python checkpoint's full graph/fusion/temporal/value weights and
+observation/target normalizers are preserved. SmolVLM and every critic layer
+are in evaluation mode and frozen. There is no critic optimizer, gradient,
+loss, warmup, scalar reset or reward/value rescaling. W&B metrics named
+`critic/mse_raw_before_update` and explained variance are diagnostics against
+GAE targets; they do not update the critic and are not ground-truth current
+policy value errors.
+
+From this repository, with PyTorch, transformers, accelerate and the sibling
+`MARL_data_collection` Python environment installed:
+
+```bash
+VLCM_CHECKPOINT="$PWD/outputs/smolvlm-18918211/best.pt" \
+  NUM_ENVS=4 NUM_ENV_STEPS=200000 ROLLOUT_STEPS=100 \
+  bash train_frozen_python_value.sh
+```
+
+On Palmetto, after copying these changes and the matching sibling
+`MARL_data_collection` environment to the cluster, submit with:
+
+```bash
+mkdir -p logs
+CONDA_ENV=internvl sbatch train_frozen_python_value_palmetto.sbatch
+```
+
+The Slurm launcher requests one A100 and defaults to the same checkpoint and
+training settings as the shell launcher. Environment variables in the shell
+example can also be set before `sbatch`.
+
+Set `PYTHON_BIN` to the desired environment's Python and `WANDB_MODE=disabled`
+to run without W&B. The default output is a new
+`outputs/mappo_frozen_python_seed<seed>_<jobid-or-time>/` directory, containing
+`run.json`, metrics, and native actor/critic checkpoints. You may use
+`VLCM_CHECKPOINT`, `RUN_DIR`, `NUM_ENVS`, `NUM_ENV_STEPS`, `ROLLOUT_STEPS`,
+`SEED`, `ACTOR_LR`, `SAVE_INTERVAL`, `KEEP_CHECKPOINTS` and `WANDB_MODE` to
+select the run. Optional trainer flags follow the script name. Every run is a
+fresh actor experiment, not an exact optimizer/environment-state resume.
+
+The mode enforces the supervised collection settings: polygon edge 0.5 m,
+0.075 m tolerance held 20 steps, 1.25 m reset range, 0.4 m separation, 20 Hz
+control, 400-step limit, 10 Hz camera, 8-frame history, 256-pixel renderer,
+3.048 m single checkerboard floor, original instruction, strict 1 m adjacency,
+gamma 0.99, and boundary termination when a robot center exceeds ±1.4215 m.
+It checks that the native environment, renderer and floor texture match the
+hashes recorded in the collected Python source. The model's image processor
+still uses the checkpoint's original 512-pixel limit; this is distinct from the
+256-pixel source renderer. At the intervening 20 Hz control steps, it holds the
+last synchronized camera/state value rather than presenting the model with a
+state from a later time than its image. Boundary and success are true terminal
+events; timeouts bootstrap their final state. Rewards are exactly those returned
+by the native Python environment, with no added boundary penalty.
+
+This zero-order hold is an approximation at the intermediate control steps.
+The frozen value model was trained on a mixture of earlier behavior policies,
+not the evolving scratch actor. Its values and bootstrapped GAE advantages can
+therefore be biased as the actor's distribution changes. Track held-out actor
+success/return and compare a matched trainable-critic baseline; the small
+external value validation is not a guarantee of policy-training convergence.
+Do not use `--frozen-isaac-critic` or the Isaac affine calibration with this
+Python-trained model.
+
 ## Critic training modes
 
 Use the same `--critic-checkpoint` pointing to a trained Python VLCM `critic.pt`

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from data_utils import FormationClipDataset, cache_features, discover_episodes, feature_cache_path, prepare_episode, read_episode
+from data_utils import FormationClipDataset, cache_features, discover_episodes, feature_cache_path, prepare_episode, read_episode, episode_path_key
 from model import ModelConfig, MultimodalValueModel, SmolVLMBackbone
 from train import evaluate_test
 
@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--dataset", default="", help="Optional relocated dataset root")
+    parser.add_argument("--additional-dataset", action="append", default=[], help="Additional relocated task dataset root; repeat as needed")
     parser.add_argument("--split", choices=("train", "validation", "test", "external"), default="validation")
     parser.add_argument("--cache-dir", default="outputs/cache")
     parser.add_argument("--output-dir", default="outputs/evaluation")
@@ -31,16 +32,20 @@ def main():
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     cfg = ModelConfig(**checkpoint["model_config"])
     run_args = checkpoint["run"]["args"]
-    # The last three path components identify a formation episode across machines.
-    references = discover_episodes(args.dataset or run_args["dataset"], run_args["dataset_revision"])
+    sources = [args.dataset or run_args["dataset"]]
+    sources += args.additional_dataset or ([] if args.dataset else run_args.get("additional_datasets", []))
+    references = [ref for source in sources for ref in discover_episodes(source, run_args["dataset_revision"])]
+    if len({episode_path_key(path) for path,_ in references}) != len(references):
+        raise ValueError("Dataset roots contain duplicate or ambiguous episode path keys")
     if args.split != "external":
-        saved = {tuple(Path(path).parts[-3:]) for path in checkpoint["run"]["splits"][args.split]}
-        references = [(path, summary) for path, summary in references if tuple(path.parts[-3:]) in saved]
+        saved = {episode_path_key(path) for path in checkpoint["run"]["splits"][args.split]}
+        references = [(path, summary) for path, summary in references if episode_path_key(path) in saved]
         if len(references) != len(saved):
             raise ValueError("Could not locate all episodes in the checkpoint's saved split")
     else:
-        saved = {tuple(Path(path).parts[-3:]) for paths in checkpoint["run"]["splits"].values() for path in paths}
-        if any(tuple(path.parts[-3:]) in saved for path, _ in references):
+        saved = {episode_path_key(path) for paths in checkpoint["run"]["splits"].values() for path in paths}
+        saved.update(episode_path_key(path) for paths in checkpoint["run"].get("pretrained_splits",{}).values() for path in paths)
+        if any(episode_path_key(path) in saved for path, _ in references):
             raise ValueError("External archives overlap saved split path keys; use saved-split evaluation or uniquely named new episodes")
     episodes = [prepare_episode(read_episode(path, summary, Path(args.cache_dir) / "index"),
                                 run_args["gamma"], run_args["return_source"], run_args["image_hz"])
@@ -70,7 +75,8 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     autocast = torch.autocast("cuda", dtype=getattr(torch, cfg.vl_dtype)) if device.type == "cuda" and cfg.vl_dtype != "float32" else nullcontext()
     with autocast:
-        metrics = evaluate_test(model, dataset, args.batch_size, device, output, args.split)
+        baselines = {task: stats["target_mean"] for task,stats in checkpoint["run"].get("task_statistics", {}).items()}
+        metrics = evaluate_test(model, dataset, args.batch_size, device, output, args.split, task_baselines=baselines)
     metrics.update(checkpoint=str(args.checkpoint), epoch=checkpoint["epoch"], include_terminal=args.include_terminal,
                    return_definition=checkpoint["run"]["return_definition"],
                    excluded_timeout_or_unfinished_episodes=excluded,

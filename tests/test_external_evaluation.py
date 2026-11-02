@@ -57,6 +57,11 @@ class ExternalEvaluationTests(unittest.TestCase):
             torch.save(checkpoint,path)
             with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError,'overlap'):
                 evaluate.main()
+            checkpoint['run']['splits']['train'] = []
+            checkpoint['run']['pretrained_splits'] = {'train':[str(first)]}
+            torch.save(checkpoint,path)
+            with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError,'overlap'):
+                evaluate.main()
 
 
 if __name__ == '__main__':

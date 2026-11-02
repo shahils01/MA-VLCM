@@ -32,6 +32,8 @@ def parser():
                    help="Freeze the complete pretrained VLCM critic; train the actor only")
     p.add_argument("--frozen-isaac-critic", action="store_true",
                    help="Preserve the original supervised Isaac critic and its return units; requires --freeze-critic")
+    p.add_argument("--frozen-python-supervised", action="store_true",
+                   help="Use the full supervised Python VLCM unchanged as the only frozen critic")
     p.add_argument("--value-calibration", type=Path,
                    help="Fixed per-formation calibration JSON for the frozen supervised Isaac critic")
     actor_init = p.add_mutually_exclusive_group()
@@ -121,6 +123,16 @@ def validate(p, a):
         p.error("--freeze-critic requires a pretrained VLCM critic checkpoint")
     if a.frozen_isaac_critic and not a.freeze_critic:
         p.error("--frozen-isaac-critic requires --freeze-critic")
+    if a.frozen_python_supervised:
+        if not a.freeze_critic or a.critic != "vlcm" or a.frozen_isaac_critic or a.value_calibration:
+            p.error("--frozen-python-supervised requires --critic vlcm --freeze-critic and no Isaac calibration")
+        expected = dict(formation_spacing=.5, formation_tolerance=.075, initial_position_range=1.25,
+                        min_start_separation=.4, observation_scale=3., formation_hold_steps=20,
+                        env_max_steps=400, control_dt=.05, camera_stride=2, view_size_m=3.048,
+                        tile_floor=False, image_size=256, clip_len=8, graph_radius=1., gamma=.99)
+        for name, value in expected.items():
+            if getattr(a, name) != value:
+                p.error(f"--frozen-python-supervised requires {name.replace('_', '-')}={value}")
     if a.value_calibration and not a.frozen_isaac_critic:
         p.error("--value-calibration requires --frozen-isaac-critic and --freeze-critic")
     if a.value_calibration and not a.value_calibration.is_file():
@@ -212,15 +224,31 @@ def main(argv=None):
                           "cpu" if a.device == "auto" else a.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
+    if a.frozen_python_supervised:
+        # These are the Python environment, renderer and texture frozen with
+        # the collected Python data. A different source can change reward,
+        # dynamics or visual inputs while appearing to use the same arguments.
+        expected_sources = {
+            "FormationControlEnv.py": "d5b0d5c8bdc9493468659c24b7a67e700f4993e73998a3f25352a342f341c671",
+            "formation_renderer.py": "fc43ab815f482e519145f9d3ea1d5b3c2cace9a87262151ea295d4b5c54011a6",
+            "assets/background_image_real.png": "3715093b4544e36bc6b9f76b6716a24201071f223dca75a1bae979c0b2076347",
+        }
+        source_dir = MARL_ROOT / "RL_bound_overwatch/envs"
+        for name, expected_hash in expected_sources.items():
+            path = source_dir / name
+            if not path.is_file() or file_hash(path) != expected_hash:
+                raise ValueError(f"Python collection source mismatch: {path}; use the source saved with the dataset")
     a.output_dir.mkdir(parents=True, exist_ok=True)
     source = None
     cfg = ModelConfig(image_size=a.image_size, clip_len=a.clip_len, vl_batch_size=a.vl_batch_size, dropout=0.)
     if a.critic_checkpoint:
         source = torch.load(a.critic_checkpoint, map_location="cpu", weights_only=True)
         python_source = source.get("format") == "python_mappo_vlcm_v1"
+        if python_source and bool(source.get("args", {}).get("frozen_python_supervised", False)) != a.frozen_python_supervised:
+            raise ValueError("Python MAPPO critic checkpoint must retain its original supervised-Python mode")
         if a.value_calibration and python_source:
             raise ValueError("Calibrated Isaac mode requires the original supervised checkpoint")
-        if a.freeze_critic and not python_source and not a.frozen_isaac_critic:
+        if a.freeze_critic and not python_source and not (a.frozen_isaac_critic or a.frozen_python_supervised):
             raise ValueError("--freeze-critic requires a trained Python critic.pt, not an Isaac supervised checkpoint")
         if a.frozen_isaac_critic and python_source and not source.get("args", {}).get("frozen_isaac_critic", False):
             raise ValueError("The supplied Python critic has Python value units, not original Isaac value units")
@@ -231,7 +259,21 @@ def main(argv=None):
             raise ValueError("Cached PPO features require a frozen backbone checkpoint; LoRA/full are not supported here")
         if cfg.robot_obs_dim != 10:
             raise ValueError("Expected the MA-VLCM ten-feature robot schema")
-        cfg.image_size, cfg.clip_len, cfg.vl_batch_size, cfg.dropout = a.image_size, a.clip_len, a.vl_batch_size, 0.
+        if a.frozen_python_supervised:
+            if python_source:
+                if not source.get("args", {}).get("frozen_python_supervised", False):
+                    raise ValueError("Python MAPPO checkpoint was not created in frozen Python supervised mode")
+            else:
+                trained = source.get("run", {}).get("args", {})
+                if (Path(trained.get("dataset", "")).name != "polygon_formation_python_env"
+                        or trained.get("return_source") != "control"
+                        or trained.get("image_hz") != 10. or trained.get("gamma") != a.gamma
+                        or cfg.clip_len != a.clip_len):
+                    raise ValueError("Checkpoint must be the matching Python collection, control returns, 10 Hz, gamma and clip length")
+            # Renderer resolution (256) differs from checkpoint processor limit (512).
+            cfg.vl_batch_size = a.vl_batch_size
+        else:
+            cfg.image_size, cfg.clip_len, cfg.vl_batch_size, cfg.dropout = a.image_size, a.clip_len, a.vl_batch_size, 0.
     if a.value_calibration:
         a.value_calibration_coefficients = load_value_calibration(a.value_calibration, a.critic_checkpoint,
                                                                    a.agent_counts, a.gamma)
@@ -256,6 +298,9 @@ def main(argv=None):
     python_source = source is not None and source.get("format") == "python_mappo_vlcm_v1"
     print(f"Critic checkpoint: {a.critic_checkpoint}; actor: {'scratch' if a.actor_checkpoint is None else a.actor_checkpoint}", flush=True)
     print(f"Trainable critic parameters: {', '.join(critic_trainable)}", flush=True)
+    if a.frozen_python_supervised:
+        print("Frozen supervised Python value model: all layers and normalizers unchanged; "
+              "synchronized 10 Hz estimates held over intervening 20 Hz steps.", flush=True)
     if a.frozen_isaac_critic:
         if a.value_calibration:
             print("Frozen Isaac values use fixed per-formation calibration fitted on earlier Python rollouts; "
@@ -275,13 +320,16 @@ def main(argv=None):
                     critic_reward_units_mismatch=bool(a.frozen_isaac_critic and not a.value_calibration),
                     value_calibration_sha256=file_hash(a.value_calibration) if a.value_calibration else None,
                     target=f"GAE: dt={a.control_dt}, gamma={a.gamma}, lambda={a.gae_lambda}; true-terminal zero, timeout final-state bootstrap",
-                    image_schedule="Latest available causal image every camera_stride controls; image age explicit",
+                    image_schedule=("Synchronized camera/state history at 10 Hz; last value held over intermediate control step"
+                                    if a.frozen_python_supervised else
+                                    "Latest available causal image every camera_stride controls; image age explicit"),
                     vision="Real SmolVLM frozen features" if backbone is not None else "No image encoder in this baseline",
                     critic_trainable_parameters=critic_trainable,
                     critic_trainable_parameter_count=sum(parameter.numel() for parameter in critic.parameters() if parameter.requires_grad),
                     critic_adaptation=("fully_frozen" if a.freeze_critic else "value_head_only" if a.freeze_critic_representation else "representation_and_value_head"),
                     source_critic_steps=source.get("steps") if python_source else None,
-                    transfer=("Original supervised Isaac critic frozen without Python adaptation" if a.frozen_isaac_critic else
+                    transfer=("Full supervised Python value model frozen without adaptation" if a.frozen_python_supervised else
+                              "Original supervised Isaac critic frozen without Python adaptation" if a.frozen_isaac_critic else
                               "Full Python critic warm-start; head, context and normalization preserved" if python_source else
                               "Representation initialization only; Python scalar regressor reset; not zero-shot value inference"))
     (a.output_dir / "run.json").write_text(json.dumps(contract, indent=2) + "\n")

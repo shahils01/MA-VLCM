@@ -330,6 +330,7 @@ def main():
         values = saved_values(args.predictions, path, frames) if args.predictions else infer(checkpoint, path, args.cache_dir, args.device, args.batch_size)
         formation = formation_name(summary)
         outcome = 'success' if summary['success'] else 'failure'
+        noise = summary.get('noise', summary.get('noise_profile'))
         stem = f'{index:02d}_{path.parent.parent.name}_{path.parent.name}_{path.stem}'
         if args.by_formation:
             case_counts[(formation, outcome)] += 1
@@ -337,13 +338,15 @@ def main():
             if args.per_case > 1:
                 stem += f'_{case_counts[(formation, outcome)]:02d}'
         output = args.output_dir / f'{stem}.{args.format}'
-        title = f'{formation.title()} | {outcome} ({summary["termination_reason"]}) | {path.stem} | {membership}\n{source}\nValue estimates discounted future reward; reward/progress panels are recorded labels'
+        noise_label = f' | noise: {noise}' if noise else ''
+        title = f'{formation.title()} | {outcome} ({summary["termination_reason"]}){noise_label} | {path.stem} | {membership}\n{source}\nValue estimates discounted future reward; reward/progress panels are recorded labels'
         selected = render(frames, values, output, title, args.fps, args.speed, args.format,
                           include_terminal=not args.exclude_terminal)
         scored = [r for r in selected if r['target_return'] is not None and not r['terminal']]
         mse = float(np.mean([(r['predicted_value'] - r['target_return']) ** 2 for r in scored])) if scored else None
         record = dict(episode=str(path.resolve()), membership=membership, source=source,
                       formation=formation, outcome=outcome, termination_reason=summary['termination_reason'],
+                      noise_profile=noise,
                       checkpoint=str(args.checkpoint) if checkpoint else None,
                       return_source=run['args']['return_source'], gamma=run['args']['gamma'],
                       animation=str(output), nonterminal_mse=mse, scored_frames=len(scored),

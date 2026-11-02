@@ -135,7 +135,7 @@ def regression_metrics(predictions, targets, baseline):
 
 
 @torch.no_grad()
-def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="test"):
+def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="test", task_baselines=None):
     import csv
     from accelerate.utils import send_to_device
 
@@ -159,6 +159,21 @@ def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="te
         episode_errors.setdefault(row["episode"], []).append((row["predicted_value"] - row["target_return"]) ** 2)
     metrics["episode_mean_mse"] = float(np.mean([np.mean(errors) for errors in episode_errors.values()]))
     metrics["episodes"] = len(episode_errors)
+    metrics["by_task"] = {}
+    for task in sorted({r.get("task_domain", "formation_control") for r in rows}):
+        selected = [r for r in rows if r.get("task_domain", "formation_control") == task]
+        task_baseline = (task_baselines or {}).get(task, baseline)
+        result = regression_metrics([r["predicted_value"] for r in selected],
+                                    [r["target_return"] for r in selected], task_baseline)
+        result["episodes"] = len({r["episode"] for r in selected})
+        result["by_num_agents"] = {}
+        result["by_outcome"] = {}
+        for name, key in (("by_num_agents", "num_agents"), ("by_outcome", "success")):
+            for value in sorted({r[key] for r in selected}):
+                subset = [r for r in selected if r[key] == value]
+                result[name][str(value)] = regression_metrics(
+                    [r["predicted_value"] for r in subset], [r["target_return"] for r in subset], task_baseline)
+        metrics["by_task"][task] = result
     for key in ("num_agents", "stage", "success"):
         metrics[f"by_{key}"] = {}
         for value in sorted({r[key] for r in rows}):
@@ -169,8 +184,9 @@ def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="te
     # A pooled team-size score can conceal large errors on successful episodes.
     metrics["by_formation_outcome"] = {}
     names = {3: "triangle", 4: "square", 5: "pentagon", 6: "hexagon"}
-    for n, success in sorted({(r["num_agents"], r["success"]) for r in rows}):
-        selected = [r for r in rows if r["num_agents"] == n and r["success"] == success]
+    formation_rows = [r for r in rows if r.get("task_domain", "formation_control") == "formation_control"]
+    for n, success in sorted({(r["num_agents"], r["success"]) for r in formation_rows}):
+        selected = [r for r in formation_rows if r["num_agents"] == n and r["success"] == success]
         result = regression_metrics([r["predicted_value"] for r in selected],
                                     [r["target_return"] for r in selected], baseline)
         errors = {}

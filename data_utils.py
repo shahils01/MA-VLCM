@@ -19,7 +19,16 @@ OBSERVATION_NAMES = (
     "position_x", "position_y", "sin_yaw", "cos_yaw", "velocity_0", "velocity_1",
     "relative_goal_x", "relative_goal_y", "distance_to_goal", "nearest_robot_distance",
 )
-INDEX_VERSION = 4
+INDEX_VERSION = 5
+
+
+def episode_path_key(path):
+    """Identify a relocated archive without confusing equal IDs across tasks."""
+    parts = Path(path).parts
+    for task in ("formation_control", "goal_to_goal"):
+        if task in parts:
+            return tuple(parts[parts.index(task):])
+    return tuple(parts[-3:])
 
 
 def save_tensor_file(value, path):
@@ -53,16 +62,18 @@ def discover_episodes(source, revision="main", policy_stage="all"):
     return references
 
 
-def _fingerprint(path, summary_path):
+def _fingerprint(path, summary_path, version=INDEX_VERSION):
     stats = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in (path, summary_path)]
-    return hashlib.sha256(json.dumps([INDEX_VERSION, stats]).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([version, stats]).encode()).hexdigest()
 
 
 def read_episode(path, summary_path, cache_dir=None):
     """Index metadata and image byte offsets without loading or decoding PNGs."""
     path, summary_path = Path(path), Path(summary_path)
-    identity = _fingerprint(path, summary_path)
-    cache = Path(cache_dir) / f"{identity}.pt" if cache_dir is not None else None
+    # Keep unchanged image-feature identities reusable while refreshing the
+    # metadata index to include task domain and correct timeout handling.
+    identity = _fingerprint(path, summary_path, version=4)
+    cache = Path(cache_dir) / f"{_fingerprint(path, summary_path)}.pt" if cache_dir is not None else None
     if cache is not None and cache.exists():
         return torch.load(cache, map_location="cpu", weights_only=True)
     summary = json.loads(summary_path.read_text())
@@ -94,6 +105,17 @@ def read_episode(path, summary_path, cache_dir=None):
             ])
         observations.append(rows)
     first, last = states[0], states[-1]
+    task_domain = first.get("task_domain", "formation_control")
+    if task_domain in {"go_to_goal", "gtg"}:
+        task_domain = "goal_to_goal"
+    formation = first.get("formation", {})
+    if task_domain == "formation_control":
+        bounds = formation["robot_center_bounds_m"]
+    elif task_domain == "goal_to_goal":
+        grid = first["navigation"]["grid"]
+        bounds = [*grid[0], *grid[1]]
+    else:
+        raise ValueError(f"Unsupported task domain {task_domain!r} in {path}")
     times = torch.tensor([state["episode_meta"]["sim_time_s"] for state in states], dtype=torch.float64)
     obs = torch.tensor(np.asarray(observations), dtype=torch.float32)
     if not torch.isfinite(obs).all() or not torch.isfinite(torch.tensor(rewards)).all() or not (times[1:] > times[:-1]).all():
@@ -101,8 +123,10 @@ def read_episode(path, summary_path, cache_dir=None):
     # Group identical initial scenarios across behavior checkpoints before splitting.
     scenario = {
         "robots": [[round(x, 6) for x in [*a["pos"], a["yaw"], *a["goal_pos"]]] for a in first["agents"]],
-        "bounds": first["formation"]["robot_center_bounds_m"],
+        "bounds": bounds,
     }
+    if task_domain != "formation_control":
+        scenario["task_domain"] = task_domain
     scenario_id = hashlib.sha256(json.dumps(scenario, sort_keys=True).encode()).hexdigest()
     reason = summary["termination_reason"]
     episode = {
@@ -116,11 +140,12 @@ def read_episode(path, summary_path, cache_dir=None):
         "control_hz": float(first["control_hz"]), "num_agents": len(first["agents"]),
         "stage": summary["checkpoint"]["stage"], "policy_id": summary["checkpoint"]["sha256"],
         "success": bool(summary["success"]), "termination_reason": reason,
-        "complete": bool(last["episode_meta"]["done"]) and reason != "timeout",
+        "complete": bool(last["episode_meta"]["done"]) and reason not in {"timeout", "max_steps"},
         "seed": summary["seed"], "scenario_id": scenario_id,
-        "formation_pattern": first["formation"]["pattern"],
-        "formation_spacing": first["formation"]["formation_spacing_m"],
-        "bounds": first["formation"]["robot_center_bounds_m"],
+        "task_domain": task_domain,
+        "formation_pattern": formation.get("pattern"),
+        "formation_spacing": formation.get("formation_spacing_m"),
+        "bounds": bounds,
         "collision_frames": int(summary.get("collision_frames", 0)), "image_size": image_size,
     }
     if cache is not None:
@@ -182,7 +207,7 @@ def split_episodes(episodes, seed=42, validation_fraction=0.1, test_fraction=0.1
     strata = defaultdict(list)
     for group in grouped.values():
         first = group[0]
-        strata[(first["stage"], first["num_agents"], first["termination_reason"])].append(group)
+        strata[(first.get("task_domain", "formation_control"), first["stage"], first["num_agents"], first["termination_reason"])].append(group)
     splits = {"train": [], "validation": [], "test": []}
     rng = random.Random(seed)
     for groups in strata.values():
@@ -261,7 +286,8 @@ class FormationClipDataset(Dataset):
             "times": (ep["timestamps"][frame_indices] - ep["timestamps"][frame_indices[-1]]).float(),
             "target": ep["returns"][anchor],
             "metadata": {"episode": ep["path"], "anchor": anchor, "stage": ep["stage"],
-                         "num_agents": ep["num_agents"], "success": ep["success"]},
+                         "num_agents": ep["num_agents"], "success": ep["success"],
+                         "task_domain": ep.get("task_domain", "formation_control")},
         }
         if self.features is None:
             row.update(images=read_images(ep, frame_indices.tolist()), prompt=ep["prompt"])

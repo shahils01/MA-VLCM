@@ -14,6 +14,99 @@ from train_mappo import parser, save_checkpoint, prune_checkpoints, validate, lo
 
 
 class PythonMAPPOTests(unittest.TestCase):
+    def test_frozen_python_supervised_preserves_model_and_only_updates_actor(self):
+        self.args.critic = "vlcm"
+        self.args.freeze_critic = True
+        self.args.frozen_python_supervised = True
+        self.args.camera_stride = 2
+        self.args.image_size = 32
+        source = MultimodalValueModel(self.cfg, torch.device("cpu"), load_backbone=False).eval()
+        with torch.no_grad():
+            source.target_mean.fill_(7.)
+            source.target_std.fill_(2.)
+            source.obs_mean.fill_(.1)
+            source.obs_std.fill_(1.3)
+        saved = {"model_state": {k: v.clone() for k, v in source.state_dict().items()}}
+        collector = RolloutCollector(self.args)
+        env = collector.envs[0]
+        critic = PythonValueCritic(self.cfg, self.args, env, torch.device("cpu"), saved).eval()
+        for name, value in source.state_dict().items():
+            self.assertTrue(torch.equal(value, critic.core.state_dict()[name]), name)
+        actor = R_Actor(actor_config(), env.observation_spaces[0], env.action_spaces[0])
+        actor_before = {name: value.clone() for name, value in actor.state_dict().items()}
+        critic_before = {name: value.clone() for name, value in critic.state_dict().items()}
+        rollout = collector.collect(actor, torch.device("cpu"), 5)
+        for frame in collector.camera_queue:
+            frame.features, frame.image = torch.ones(16), None
+        batch = context_batch(rollout["contexts"][:2], torch.device("cpu"), 16, 1., strict_adjacency=True)
+        with torch.no_grad():
+            self.assertTrue(torch.allclose(critic(batch), source(batch), atol=1e-6))
+        self.assertEqual(rollout["contexts"][0]["times"][-1], 0.)
+        ao = torch.optim.Adam(actor.parameters(), lr=.0005)
+        metrics = ppo_update(actor, critic, ao, None, rollout, self.args, torch.device("cpu"), 1)
+        self.assertEqual(metrics["train/actor_updated"], 1)
+        self.assertEqual(metrics["train/critic_updated"], 0)
+        self.assertNotIn("critic/loss", metrics)
+        self.assertTrue(any(not torch.equal(v, actor_before[k]) for k, v in actor.state_dict().items()))
+        self.assertTrue(all(torch.equal(v, critic_before[k]) for k, v in critic.state_dict().items()))
+        self.assertTrue(all(not p.requires_grad and p.grad is None for p in critic.parameters()))
+        with tempfile.TemporaryDirectory() as root:
+            save_checkpoint(Path(root), actor, critic, ao, None, self.args, 10, 1)
+            restored, _ = load_python_critic(Path(root) / "critic.pt")
+            self.assertTrue(restored.supervised_python)
+            with torch.no_grad():
+                self.assertTrue(torch.equal(critic(batch), restored(batch)))
+
+    def test_frozen_python_history_holds_synchronized_camera_state(self):
+        self.args.critic = "vlcm"
+        self.args.frozen_python_supervised = True
+        self.args.camera_stride = 2
+        self.args.env_max_steps = 100
+        collector = RolloutCollector(self.args)
+        env, history = collector.envs[0], collector.histories[0]
+        initial = history.context()
+        previous = env.pos.copy()
+        env.step(np.ones((6, 2)) * .2)
+        history.append(collector.camera_queue, previous)
+        odd = history.context()
+        np.testing.assert_array_equal(odd['robot_obs'], initial['robot_obs'])
+        np.testing.assert_array_equal(odd['times'], initial['times'])
+        import importlib.util
+        source_path = Path(__file__).resolve().parents[2] / 'Ground_Robot_MARL/scripts/vlcm/formation_instructions.py'
+        spec = importlib.util.spec_from_file_location('source_formation_instructions', source_path)
+        source = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(source)
+        self.assertEqual(odd['cameras'][-1].prompt, source.formation_task_instruction('polygon', spacing_m=env.d))
+        previous = env.pos.copy()
+        env.step(np.ones((6, 2)) * .2)
+        history.append(collector.camera_queue, previous)
+        even = history.context()
+        np.testing.assert_allclose(even['robot_obs'][-1, :, :2], env.pos, atol=1e-6)
+
+    def test_frozen_python_boundary_terminates_without_changing_reward(self):
+        self.args.critic = "vlcm"
+        self.args.frozen_python_supervised = True
+        self.args.camera_stride = 2
+        collector = RolloutCollector(self.args)
+        env = collector.envs[0]
+        env.pos[0, 0] = 1.43
+        native_step = env.step
+        rewards = []
+        def recording_step(action):
+            result = native_step(action)
+            rewards.append(float(result[2][:env.active_num_agents].mean()))
+            return result
+        env.step = recording_step
+        class ZeroActor:
+            def __call__(self, obs, states, masks):
+                count = len(obs)
+                return torch.zeros(count, 2), torch.zeros(count, 1), None
+        rollout = collector.collect(ZeroActor(), torch.device('cpu'), 1)
+        self.assertTrue(rollout['done'][0, 0])
+        self.assertTrue(rollout['terminated'][0, 0])
+        self.assertAlmostEqual(float(rollout['rewards'][0, 0]), rewards[0])
+        self.assertEqual(rollout['completed'][0]['success'], 0.)
+
     def test_calibrated_isaac_values_remain_frozen_and_round_trip(self):
         self.args.critic = "vlcm"
         self.args.image_size = 32

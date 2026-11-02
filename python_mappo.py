@@ -24,6 +24,18 @@ from onpolicy.config import get_config
 from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor, R_Critic
 
 
+def python_collection_instruction(spacing):
+    """Exact visual instruction saved in the Python supervised collection."""
+    return (
+        "The image shows black ground robots on a 10-by-10 checkerboard grid. "
+        "Count the robots visible in the image. Three robots must form an equilateral triangle, "
+        "four a square, five a regular pentagon, and six a regular hexagon, "
+        "with one robot at each vertex. "
+        f"Reach the assigned centroid-relative target positions with {spacing:g} m formation spacing, "
+        "while keeping every robot inside the allowed inner workspace."
+    )
+
+
 def actor_config(hidden_size=64, layer_n=1):
     args = get_config().parse_args([])
     args.algorithm_name = "mappo"
@@ -77,7 +89,9 @@ class EpisodeHistory:
         self.extras.append(np.array([env.stable_team_steps / env.formation_hold_steps,
                                      env.last_settled_fraction], dtype=np.float32))
         if env.steps % a.camera_stride == 0:
-            prompt = (f"Overhead view of {env.active_num_agents} black ground robots on a tiled floor. "
+            prompt = (python_collection_instruction(env.d)
+                      if getattr(a, "frozen_python_supervised", False) else
+                      f"Overhead view of {env.active_num_agents} black ground robots on a tiled floor. "
                       f"Form a regular {env.active_num_agents}-vertex polygon with neighbor spacing "
                       f"{env.d:g} metres. The camera covers {a.view_size_m:g} by {a.view_size_m:g} metres.")
             image = None
@@ -92,18 +106,22 @@ class EpisodeHistory:
 
     def context(self):
         a = self.args
-        index = context_indices(self.env.steps, 0, np.asarray(self.camera_steps),
+        # The supervised model was trained on synchronized 10 Hz image/state
+        # frames. Hold its last complete value at intervening 20 Hz steps.
+        anchor = self.camera_steps[-1] if getattr(a, "frozen_python_supervised", False) else self.env.steps
+        index = context_indices(anchor, 0, np.asarray(self.camera_steps),
                                 clip_len=a.clip_len, state_stride=a.camera_stride,
                                 control_dt=a.control_dt, max_image_age_steps=a.camera_stride - 1)
         return dict(robot_obs=np.stack([self.states[i] for i in index["state_indices"]]),
                     cameras=[self.cameras[i] for i in index["camera_indices"]],
                     frame_mask=index["frame_mask"], times=index["times"].astype(np.float32),
                     image_age=index["image_age"].astype(np.float32),
+                    current_image_age=(self.env.steps - self.camera_steps[-1]) * a.control_dt,
                     extras=np.stack([self.extras[i] for i in index["state_indices"]]),
                     shared_state=self.env.get_state()[0].copy())
 
 
-def context_batch(contexts, device, feature_dim, graph_radius):
+def context_batch(contexts, device, feature_dim, graph_radius, strict_adjacency=False):
     """Pad active robot sets without allowing them to influence graph pooling."""
     b, t = len(contexts), len(contexts[0]["frame_mask"])
     obs = np.zeros((b, t, 6, 10), np.float32)
@@ -119,7 +137,7 @@ def context_batch(contexts, device, feature_dim, graph_radius):
             elif frame.image is not None:
                 raise RuntimeError("Camera features must be encoded before PPO")
     distance = np.linalg.norm(obs[:, :, :, None, :2] - obs[:, :, None, :, :2], axis=-1)
-    adj = (distance <= graph_radius) & mask[:, :, :, None] & mask[:, :, None, :]
+    adj = ((distance < graph_radius) if strict_adjacency else (distance <= graph_radius)) & mask[:, :, :, None] & mask[:, :, None, :]
     batch = dict(robot_obs=obs, robot_mask=mask, adj=adj, vl_features=features,
                  frame_mask=np.stack([r["frame_mask"] for r in contexts]),
                  times=np.stack([r["times"] for r in contexts]),
@@ -133,6 +151,7 @@ class PythonValueCritic(nn.Module):
         super().__init__()
         self.kind, self.cfg = args.critic, cfg
         self.isaac_value_units = getattr(args, "frozen_isaac_critic", False)
+        self.supervised_python = getattr(args, "frozen_python_supervised", False)
         coefficients = getattr(args, "value_calibration_coefficients", None)
         if coefficients:
             if not self.isaac_value_units:
@@ -159,7 +178,7 @@ class PythonValueCritic(nn.Module):
                 self.core.load_state_dict(pretrained["model_state"], strict=True)
             # Isaac's clipped reward targets have different units/termination.
             # Transfer its graph/fusion/temporal representation, reset regressor.
-            if not self.isaac_value_units:
+            if not self.isaac_value_units and not self.supervised_python:
                 self.core.target_mean.zero_()
                 self.core.target_std.fill_(1)
                 self.core.value_head[-1].reset_parameters()
@@ -207,7 +226,7 @@ class PythonValueCritic(nn.Module):
         fused = fused + self.context_embedding(batch["extras"])
         temporal = core.temporal(fused, src_key_padding_mask=~batch["frame_mask"])
         value = core.value_head(temporal[:, -1]).squeeze(-1)
-        if self.isaac_value_units:
+        if self.isaac_value_units or self.supervised_python:
             value = value * core.target_std + core.target_mean
             if hasattr(self, "calibration_slopes"):
                 counts = batch["robot_mask"][:, -1].sum(-1).long()
@@ -242,6 +261,12 @@ def compute_gae(rewards, values, next_values, terminated, done, gamma=.99, gae_l
         carry = delta + gamma * gae_lambda * (~done[t]) * carry
         advantage[t] = carry
     return advantage, advantage + values
+
+
+def python_collection_boundary(env, args):
+    """Collector ended an episode after a native step outside these bounds."""
+    return (getattr(args, "frozen_python_supervised", False)
+            and bool(np.any(np.abs(env.pos) > 1.4215)))
 
 
 class RolloutCollector:
@@ -281,20 +306,21 @@ class RolloutCollector:
                 row_context.append(self.histories[i].context())
                 old_pos = env.pos.copy()
                 next_obs, _, reward, dones, infos, _ = env.step(action[i])
+                boundary = python_collection_boundary(env, a)
                 self.histories[i].append(self.camera_queue, old_pos)
                 row_next.append(self.histories[i].context())
                 # The team reward is repeated across ACTIVE agents only.
                 team_reward = float(reward[:env.active_num_agents].mean())
                 info = infos[0]
                 row_reward.append(team_reward)
-                row_done.append(bool(dones[0]))
-                row_terminal.append(info["terminated"])
+                row_done.append(bool(dones[0] or boundary))
+                row_terminal.append(bool(info["terminated"] or boundary))
                 outside += int(np.any(np.abs(env.pos) + env.rob_diam / 2 > a.view_size_m / 2, axis=-1).sum())
                 self.episode_returns[i] += team_reward
                 self.episode_collisions[i] += bool(info["collision_detected"])
-                if dones[0]:
+                if dones[0] or boundary:
                     completed.append(dict(agents=env.active_num_agents, reward=float(self.episode_returns[i]),
-                                          success=float(info["stable_formation_achieved"]),
+                                          success=float(info["stable_formation_achieved"] and not boundary),
                                           length=env.steps, collisions=float(self.episode_collisions[i]),
                                           formation_error=float(info["formation_error"])))
                     self.episode_returns[i] = self.episode_collisions[i] = 0
@@ -331,7 +357,8 @@ def critic_values(critic, contexts, args, device):
     with torch.no_grad():
         for start in range(0, len(contexts), args.critic_batch_size):
             batch = context_batch(contexts[start:start + args.critic_batch_size], device,
-                                  critic.cfg.vl_hidden_dim, args.graph_radius)
+                                  critic.cfg.vl_hidden_dim, args.graph_radius,
+                                  strict_adjacency=getattr(args, "frozen_python_supervised", False))
             output.append(critic(batch).cpu().numpy())
     return np.concatenate(output)
 
@@ -394,8 +421,8 @@ def ppo_update(actor, critic, actor_optimizer, critic_optimizer, rollout, args, 
                "rollout/truncated": int((rollout["done"] & ~rollout["terminated"]).sum()),
                "rollout/outside_robot_frames": rollout["outside_robot_frames"],
                "rollout/outside_robot_frame_fraction": rollout["outside_robot_frames"] / int(rollout["active"].sum()),
-               "vision/image_age_mean_seconds": float(np.mean([r["image_age"][-1] for r in rollout["contexts"]])),
-               "vision/image_age_max_seconds": float(max(r["image_age"][-1] for r in rollout["contexts"])),
+               "vision/image_age_mean_seconds": float(np.mean([r.get("current_image_age", r["image_age"][-1]) for r in rollout["contexts"]])),
+               "vision/image_age_max_seconds": float(max(r.get("current_image_age", r["image_age"][-1]) for r in rollout["contexts"])),
                "train/actor_updated": int(bool(actor_logs)),
                "train/critic_updated": int(bool(critic_logs))}
     if critic_logs:
@@ -427,11 +454,12 @@ def evaluate_actor(actor, args, device):
                     action, _, _ = actor(obs, np.zeros((6, 1, args.hidden_size), np.float32),
                                          np.ones((6, 1), np.float32), deterministic=True)
                 obs, _, reward, done, infos, _ = env.step(action.cpu().numpy())
+                boundary = python_collection_boundary(env, args)
                 total += float(reward[:count].mean())
                 collisions += bool(infos[0]["collision_detected"])
-                if done[0]:
+                if done[0] or boundary:
                     break
-            scores.append([float(infos[0]["stable_formation_achieved"]), total,
+            scores.append([float(infos[0]["stable_formation_achieved"] and not boundary), total,
                            env.steps, collisions, float(infos[0]["formation_error"])])
         for key, value in zip(("success", "reward", "length", "collision_steps", "formation_error"),
                               np.mean(scores, axis=0)):
