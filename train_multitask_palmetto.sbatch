@@ -11,7 +11,7 @@
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
-PROJECT_ROOT="${PROJECT_ROOT:-$SLURM_SUBMIT_DIR}"
+PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
 cd "$PROJECT_ROOT"
 export FORMATION_DATASET="${FORMATION_DATASET:-/home/anshuln/Dataset/polygon_formation_python_env}"
 export GOTOGOAL_DATASET="${GOTOGOAL_DATASET:-/home/anshuln/Dataset/manyagent_gotogoal_python_2000}"
