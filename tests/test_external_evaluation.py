@@ -15,6 +15,36 @@ import evaluate
 
 
 class ExternalEvaluationTests(unittest.TestCase):
+    def test_filter_allows_even_agents_from_a_dataset_with_saved_odd_episodes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data, cache, output = root / 'data', root / 'cache', root / 'evaluation'
+            data.mkdir()
+            odd, _ = write_episode(data, 1, robots=3, control=True)
+            write_episode(data, 2, robots=4, control=True)
+            cfg = ModelConfig(model_revision='unit-test', vl_dtype='float32', vl_hidden_dim=8,
+                              d_model=16, clip_len=6, dropout=0)
+            for path, sidecar in discover_episodes(data, num_agents=[4]):
+                ep = prepare_episode(read_episode(path, sidecar, cache / 'index'), source='control')
+                feature_path = feature_cache_path(ep, cfg, cache / 'features')
+                feature_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(torch.randn(4, 8).half(), feature_path)
+            model = MultimodalValueModel(cfg, load_backbone=False)
+            checkpoint = dict(epoch=1, model_config=asdict(cfg), model_state=model.checkpoint_state(),
+                              run=dict(args=dict(dataset=str(data), dataset_revision='main', gamma=.99,
+                                                 return_source='control', image_hz=5, clip_stride=1),
+                                       splits=dict(train=[str(odd)], validation=[], test=[]),
+                                       return_definition='Synthetic'))
+            path = root / 'best.pt'
+            torch.save(checkpoint, path)
+            argv = ['evaluate.py', '--checkpoint', str(path), '--dataset', str(data), '--split', 'external',
+                    '--num-agents', '4', '6', '--cache-dir', str(cache), '--output-dir', str(output)]
+            with patch.object(sys, 'argv', argv):
+                evaluate.main()
+            metrics = json.loads((output / 'external_metrics.json').read_text())
+            self.assertEqual(list(metrics['by_num_agents']), ['4'])
+            self.assertEqual(metrics['episodes'], 1)
+
     def test_external_metrics_exclude_timeouts_and_reject_saved_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

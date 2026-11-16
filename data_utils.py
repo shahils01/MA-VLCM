@@ -39,7 +39,7 @@ def save_tensor_file(value, path):
     temporary.replace(path)
 
 
-def discover_episodes(source, revision="main", policy_stage="all"):
+def discover_episodes(source, revision="main", policy_stage="all", num_agents=None):
     root = Path(source).expanduser()
     if not root.exists() and not root.is_absolute() and len(str(source).split("/")) == 2 and not str(source).startswith("."):
         from huggingface_hub import snapshot_download
@@ -55,10 +55,15 @@ def discover_episodes(source, revision="main", policy_stage="all"):
         if not summary_path.exists():
             summary_path = path.with_suffix(".json")
         summary = json.loads(summary_path.read_text())
+        if num_agents is not None:
+            if "num_agents" not in summary:
+                raise ValueError(f"Missing num_agents in {summary_path}")
+            if int(summary["num_agents"]) not in num_agents:
+                continue
         if policy_stage == "all" or summary["checkpoint"]["stage"] == policy_stage:
             references.append((path.resolve(), summary_path.resolve()))
     if not references:
-        raise ValueError(f"No formation episode archives found at {source}")
+        raise ValueError(f"No matching formation episode archives found at {source} for agent counts {num_agents}")
     return references
 
 

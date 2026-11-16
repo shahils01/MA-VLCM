@@ -36,6 +36,7 @@ def parse_args():
     p.add_argument("--dataset", default="../Ground_Robot_MARL/datasets/formation_vlcm_polygon_3to6")
     p.add_argument("--dataset-revision", default="main")
     p.add_argument("--policy-stage", default="all", choices=("all", "initial", "intermediate", "trained", "finetuned"))
+    p.add_argument("--num-agents", type=int, nargs="+", help="Only use episodes with these agent counts")
     p.add_argument("--return-source", choices=("sampled", "control"), default="sampled")
     p.add_argument("--gamma", type=float, default=0.99, help="Discount per 20 Hz control step, not per image")
     p.add_argument("--image-hz", type=float, default=5.0)
@@ -76,6 +77,8 @@ def parse_args():
     p.add_argument("--wandb-entity", default="")
     p.add_argument("--wandb-run-name", default="")
     args = p.parse_args()
+    if args.num_agents and any(n < 1 for n in args.num_agents):
+        p.error("agent counts must be positive")
     if not 0 < args.gamma <= 1 or args.clip_stride < 1 or args.checkpoint_every < 1 or args.patience < 0:
         p.error("gamma must be in (0, 1]; clip-stride/checkpoint-every must be positive and patience nonnegative")
     if min(args.validation_fraction, args.test_fraction) < 0 or args.validation_fraction + args.test_fraction >= 1:
@@ -210,18 +213,25 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     if (output_dir / "run.json").exists() and not args.resume:
         raise FileExistsError(f"{output_dir} already contains a run; choose a new --output-dir or resume its checkpoint")
-    references = discover_episodes(args.dataset, args.dataset_revision, args.policy_stage)
+    references = discover_episodes(args.dataset, args.dataset_revision, args.policy_stage, args.num_agents)
     if args.max_episodes:
         references = random.Random(args.seed).sample(references, min(len(references), args.max_episodes))
     with accelerator.main_process_first():
         episodes = [read_episode(path, summary, cache_dir / "index") for path, summary in references]
+    if args.num_agents and any(ep["num_agents"] not in args.num_agents for ep in episodes):
+        raise ValueError("An episode's actual agent count disagrees with its summary")
     excluded = sum(not ep["complete"] for ep in episodes)
     episodes = [prepare_episode(ep, args.gamma, args.return_source, args.image_hz) for ep in episodes if ep["complete"]]
+    if args.num_agents and set(args.num_agents) - {ep["num_agents"] for ep in episodes}:
+        raise ValueError("At least one requested agent count has no complete episodes")
     splits = split_episodes(episodes, args.seed, args.validation_fraction, args.test_fraction)
     if not splits["train"]:
         raise ValueError("No complete training episodes remain")
+    if args.validation_fraction and not splits["validation"]:
+        raise ValueError("No validation episodes remain; best.pt requires a held-out validation split")
     accelerator.print(f"Return source: {args.return_source}. {RETURN_DEFINITIONS[args.return_source]}")
     accelerator.print(f"Complete episodes: {len(episodes)}; excluded timeout/unfinished: {excluded}")
+    accelerator.print(f"Agent counts by split: " + str({name: {n: sum(ep['num_agents'] == n for ep in refs) for n in sorted({ep['num_agents'] for ep in refs})} for name, refs in splits.items()}))
     signature = hashlib.sha256(json.dumps({
         "source": args.return_source, "gamma": args.gamma, "image_hz": args.image_hz,
         "clip_stride": args.clip_stride, "include_terminal": False,
@@ -355,6 +365,14 @@ def main():
                 }
                 if improved:
                     save_tensor_file(checkpoint, output_dir / "best.pt")
+                    if args.wandb:
+                        import wandb
+
+                        tracker = accelerator.get_tracker("wandb", unwrap=True)
+                        artifact = wandb.Artifact(f"critic-best-{tracker.id}", type="model",
+                                                  metadata={"epoch": epoch + 1, "validation_mse": best_validation})
+                        artifact.add_file(str(output_dir / "best.pt"), name="best.pt")
+                        tracker.log_artifact(artifact, aliases=["best", "latest"])
                 if (epoch + 1) % args.checkpoint_every == 0 or epoch + 1 == args.epochs or stop_early:
                     save_tensor_file(checkpoint, output_dir / f"epoch_{epoch + 1:03d}.pt")
         if stop_early:

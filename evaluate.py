@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--dataset", default="", help="Optional relocated dataset root")
     parser.add_argument("--additional-dataset", action="append", default=[], help="Additional relocated task dataset root; repeat as needed")
     parser.add_argument("--split", choices=("train", "validation", "test", "external"), default="validation")
+    parser.add_argument("--num-agents", type=int, nargs="+", help="Filter external episodes by agent count")
     parser.add_argument("--cache-dir", default="outputs/cache")
     parser.add_argument("--output-dir", default="outputs/evaluation")
     parser.add_argument("--batch-size", type=int, default=64)
@@ -27,6 +28,8 @@ def main():
     args = parser.parse_args()
     if args.expected_episodes < 0:
         parser.error("--expected-episodes must be nonnegative")
+    if args.num_agents and (args.split != "external" or any(n < 1 for n in args.num_agents)):
+        parser.error("--num-agents requires external evaluation and positive counts")
     if args.split == "external" and not args.dataset:
         parser.error("--split external requires --dataset pointing to the new episode archives")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
@@ -34,7 +37,7 @@ def main():
     run_args = checkpoint["run"]["args"]
     sources = [args.dataset or run_args["dataset"]]
     sources += args.additional_dataset or ([] if args.dataset else run_args.get("additional_datasets", []))
-    references = [ref for source in sources for ref in discover_episodes(source, run_args["dataset_revision"])]
+    references = [ref for source in sources for ref in discover_episodes(source, run_args["dataset_revision"], num_agents=args.num_agents)]
     if len({episode_path_key(path) for path,_ in references}) != len(references):
         raise ValueError("Dataset roots contain duplicate or ambiguous episode path keys")
     if args.split != "external":
@@ -50,6 +53,8 @@ def main():
     episodes = [prepare_episode(read_episode(path, summary, Path(args.cache_dir) / "index"),
                                 run_args["gamma"], run_args["return_source"], run_args["image_hz"])
                 for path, summary in references]
+    if args.num_agents and any(ep["num_agents"] not in args.num_agents for ep in episodes):
+        raise ValueError("An episode's actual agent count disagrees with its summary")
     excluded = sum(not ep["complete"] for ep in episodes)
     episodes = [ep for ep in episodes if ep["complete"]]
     if not episodes:

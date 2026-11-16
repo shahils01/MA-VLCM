@@ -107,6 +107,15 @@ class ArchiveAndModelTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
+    def test_agent_count_filter_is_applied_before_split(self):
+        selected = discover_episodes(self.root, num_agents=[3, 5])
+        episodes = [read_episode(*ref) for ref in selected]
+        self.assertEqual({ep['num_agents'] for ep in episodes}, {3, 5})
+        self.assertTrue(all(ep['num_agents'] in (3, 5) for refs in split_episodes(episodes).values() for ep in refs))
+        self.assertEqual({read_episode(*ref)['num_agents'] for ref in discover_episodes(self.root, num_agents=[4, 6])}, {4, 6})
+        with self.assertRaisesRegex(ValueError, 'No matching'):
+            discover_episodes(self.root, num_agents=[9])
+
     def test_archive_index_and_causal_padding(self):
         dataset = FormationClipDataset(self.episodes[:1], clip_len=6)
         row = dataset[1]

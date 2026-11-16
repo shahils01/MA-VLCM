@@ -213,6 +213,50 @@ FSDP is not enabled by these wrappers.
 
 ## W&B, checkpoints and evaluation
 
+### Nautilus: train on 3 and 5 agents, evaluate on 4 and 6
+
+The `train_formation_odd_frozen.yaml` and `train_formation_odd_lora.yaml`
+manifests in the sibling Nautilus repository train on the Python formation
+dataset with `--num-agents 3 5`. Filtering happens before the scenario splits
+and normalization. Both runs use the same seed, full control-step rewards,
+5 Hz images, six frames and 256-pixel inputs. They select `best.pt` using
+held-out odd-agent validation MSE. The even-agent episodes are not included in
+training or model selection.
+
+The frozen Job requests one A100 and has a six-hour deadline; the LoRA Job
+requests two A100s and has a 24-hour deadline. Deadlines are maximums, not
+guaranteed run times. Frozen feature caching runs on one GPU, so allocating
+more GPUs to that Job does not accelerate caching. Measure LoRA throughput and
+utilization before requesting more GPUs. Both Jobs use W&B online and the
+`wandb-secret` Kubernetes Secret, save checkpoints in
+`/workspace/checkpoints/<pod-name>/`, and upload each improved `best.pt` as a
+versioned W&B model artifact. Base-model weights must still be available for
+inference. A checkpoint exists only after the first validation completes.
+
+After updating the checkout on the PVC, submit from the Nautilus directory:
+
+```bash
+kubectl create -f train_formation_odd_frozen.yaml -n anayak
+kubectl create -f train_formation_odd_lora.yaml -n anayak
+kubectl get jobs,pods -n anayak
+kubectl logs -n anayak -f job/JOB_NAME
+```
+
+For a later GPU evaluation, activate `/workspace/envs/vlcm` in an appropriate
+GPU environment and replace `CHECKPOINT` and `OUTPUT`:
+
+```bash
+cd /workspace/code/MA-VLCM
+python evaluate.py --checkpoint CHECKPOINT --split external \
+  --dataset /workspace/datasets/polygon_formation_python_env --num-agents 4 6 \
+  --cache-dir /workspace/vlcm-cache --output-dir OUTPUT --batch-size 1
+```
+
+The external evaluation rejects archives whose paths overlap the saved training
+splits and reports metrics by agent count. Similar scenarios across different
+team sizes could still make this a weaker generalization test; audit the
+collection before treating the even-agent results as wholly independent.
+
 `train.sh` enables W&B by default. Authenticate with `wandb login` or supply the
 key through the job environment. Override `WANDB_PROJECT`, `WANDB_ENTITY` and
 `WANDB_RUN_NAME`; use `WANDB_MODE=offline` without network, or `WANDB_ENABLED=0`
