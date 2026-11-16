@@ -248,7 +248,7 @@ GPU environment and replace `CHECKPOINT` and `OUTPUT`:
 ```bash
 cd /workspace/code/MA-VLCM
 python evaluate.py --checkpoint CHECKPOINT --split external \
-  --dataset /workspace/datasets/polygon_formation_python_env --num-agents 4 6 \
+  --dataset /workspace/datasets/polygon_formation_python_env/formation_control --num-agents 4 6 \
   --cache-dir /workspace/vlcm-cache --output-dir OUTPUT --batch-size 1
 ```
 
