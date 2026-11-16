@@ -1,5 +1,40 @@
 # Python MAPPO with the MA-VLCM critic
 
+## Nautilus prerequisites and GPU limits
+
+The commands below assume that `MA-VLCM` and `MARL_data_collection` are sibling
+directories on the mounted persistent volume, and that the Python supervised
+checkpoint has been copied to `MA-VLCM/outputs/smolvlm-18918211/best.pt` (or
+selected with `VLCM_CHECKPOINT`). Git clones do not necessarily include output
+checkpoints. The frozen Python mode verifies the environment and renderer source
+hashes against the checkpoint; use the matching versions.
+
+Use a GPU job rather than the CPU-only `vlm-workspace` pod. The Nautilus
+`train_gpu.yaml` mounts the same PVC and passes the `wandb-secret` Kubernetes
+secret, but currently only runs `nvidia-smi` and sleeps. A Conda environment
+installed on a workstation is not automatically available inside the container:
+install or copy a compatible environment onto the PVC, or use a container with
+Conda installed. Install `requirements-mappo.txt` and the matching native Python
+environment dependencies there. Verify CUDA with that environment's Python.
+
+`train_mappo.py` uses one CUDA device per process; it is not distributed MAPPO.
+Requesting two GPUs does not accelerate a single run. Two independent runs can
+use the GPUs concurrently by setting `CUDA_VISIBLE_DEVICES=0` and `1`, different
+`SEED` values and distinct `RUN_DIR` values. They are separate experiments, not
+one synchronized model. First validate a short single-GPU run; tune
+`--vl-batch-size` and `NUM_ENVS` while watching GPU utilization, memory, and
+the logged timing metrics. CPU rendering and rollout collection may limit GPU
+utilization. There is no guarantee either GPU remains fully utilized.
+
+W&B logs PPO training metrics and held-out actor evaluation (`eval/success` and
+per-formation rewards). This RL workflow does not compute a supervised
+validation loss. In fully frozen mode it does not train the critic or report a
+critic training loss; `critic/mse_raw_before_update` is a GAE-target diagnostic.
+For supervised train/validation loss curves use the supervised training workflow
+in `README.md`. Check `metrics.jsonl`, `wandb_run.json`, job logs and
+`nvidia-smi` to verify progress; a W&B run starting alone does not prove updates
+are occurring. Runs are warm starts, not exact resumptions after pod termination.
+
 ## Frozen supervised Python VLCM as the only critic
 
 `train_frozen_python_value.sh` starts a new actor from random initialization and
