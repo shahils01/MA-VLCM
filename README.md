@@ -10,6 +10,14 @@ without obstacles, and joint navigation with obstacles), see
 [README_EXPERIMENTS_35.md](README_EXPERIMENTS_35.md). Those configurations use
 10 Hz images and the new combined 3,000-episode navigation dataset.
 
+Use the [episode comparison inspector](README_DATASET_INSPECTOR.md) to view
+up to four formation/navigation archives together, including reward, native
+discounted return, progress, actions, safety diagnostics and training-data checks.
+
+For matched joint-critic ID/OOD rollout videos, agent-count checks, obstacle
+transfer and paired noise-recovery comparisons, see
+[README_ROLLOUT_EVALUATION.md](README_ROLLOUT_EVALUATION.md).
+
 For each of 6 or 8 **frames**, SmolVLM jointly encodes the image and instruction,
 and a masked GAT encodes the robot graph. A fusion layer combines these features
 at each time, then a temporal Transformer uses the observation history to predict

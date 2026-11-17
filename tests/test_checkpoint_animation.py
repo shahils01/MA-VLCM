@@ -44,10 +44,11 @@ class AnimationTests(unittest.TestCase):
 
     def test_timeout_has_no_ground_truth_return(self):
         with tempfile.TemporaryDirectory() as root:
-            path = self.write_archive(root, reason='timeout', controls=False)
-            frames, _ = load_frames(path, dict(image_hz=5, gamma=.5, return_source='control'))
-            self.assertTrue(all(f['target_return'] is None for f in frames))
-            self.assertFalse(frames[-1]['terminal'])
+            for reason in ('timeout', 'max_steps'):
+                path = self.write_archive(Path(root) / reason, reason=reason, controls=False)
+                frames, _ = load_frames(path, dict(image_hz=5, gamma=.5, return_source='control'))
+                self.assertTrue(all(f['target_return'] is None for f in frames))
+                self.assertFalse(frames[-1]['terminal'])
 
     def test_terminal_reward_is_shown_without_inventing_a_prediction(self):
         with tempfile.TemporaryDirectory() as root:

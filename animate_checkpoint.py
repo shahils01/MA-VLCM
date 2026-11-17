@@ -15,10 +15,6 @@ import tarfile
 
 import numpy as np
 from PIL import Image
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 
 
 def episode_key(path):
@@ -85,7 +81,7 @@ def load_frames(path, run_args):
         if not summary_path.exists():
             summary_path = Path(path).with_suffix('.json')
         summary = json.loads(summary_path.read_text())
-        complete = bool(states[-1]['episode_meta']['done']) and summary['termination_reason'] != 'timeout'
+        complete = bool(states[-1]['episode_meta']['done']) and summary['termination_reason'] not in {'timeout', 'max_steps'}
         controls = None
         if complete and run_args['return_source'] == 'control':
             try:
@@ -185,6 +181,12 @@ def animation_frames(frames, values, include_terminal=True):
 
 
 def render(frames, values, path, title, fps, speed, fmt, include_terminal=True):
+    # Archive loading is also used by the Pillow-only rollout comparison tool.
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
+
     selected = animation_frames(frames, values, include_terminal=include_terminal)
     times = np.array([f['time_s'] for f in selected])
     fig = plt.figure(figsize=(12, 7), constrained_layout=True)
