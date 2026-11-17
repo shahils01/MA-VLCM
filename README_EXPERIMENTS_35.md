@@ -132,6 +132,45 @@ Each output directory contains `run.json`, `selection_report.json`,
 prediction CSVs, and an initial-versus-trained test comparison. Terminal
 anchors are excluded from value regression. Use `--skip-test` during tuning.
 
+## DeltaAI: four GPUs and utilization monitoring
+
+DeltaAI uses four H100 GPUs per GH200 node. Use `train_35_deltaai.sbatch`
+instead of the Palmetto/A100 wrapper. From the checkout on DeltaAI:
+
+```bash
+mkdir -p logs
+export FORMATION_DATASET="$HOME/VLCM/datasets/polygon_formation_python_env"
+export GOTOGOAL_DATASET="$HOME/VLCM/datasets/manyagent_gotogoal_10m_3000"
+sbatch --account=YOUR_PROJECT train_35_deltaai.sbatch joint_without_obstacles
+```
+
+This requests four GPUs on one node for up to 24 hours and launches four DDP
+workers. It loads `python/miniforge3_pytorch/2.10.0` and activates `base`, or
+uses `CONDA_ENV`/`PYTHON_BIN` overrides. The chosen environment must also have
+the repository's training dependencies. Dataset path overrides are required
+if your DeltaAI directories differ from the examples.
+
+Utilization and memory samples are written every ten seconds to
+`logs/gpu_utilization_JOBID.csv`. GPU compute utilization differs from memory
+occupancy. A Slurm allocation cannot enforce a 70% compute utilization floor.
+The current frozen-backbone pipeline creates image features on rank zero
+while other ranks wait, then trains small critic layers from cached features.
+Four GPUs may therefore be less efficient than one. No minimum utilization
+is claimed, and increasing batch size needs a measured throughput/validation
+comparison. Do not change the learning objective simply to keep GPUs busy.
+
+For a one-GPU benchmark of the same experiment:
+
+```bash
+NUM_GPUS=1 sbatch --account=YOUR_PROJECT --gpus-per-node=1 \
+  --cpus-per-task=8 --mem=32G train_35_deltaai.sbatch joint_without_obstacles
+```
+
+Compare samples/second, epoch time and validation quality before choosing
+four GPUs for the full run. Parallel feature caching and a profiler-guided
+training pass would be further optimizations; they are not implemented by
+this batch wrapper.
+
 ## Optional sequential transfer and resume
 
 To explicitly initialize a new joint run from the formation-only critic:
