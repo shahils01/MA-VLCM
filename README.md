@@ -5,6 +5,11 @@ instruction, robot states, and dynamic adjacency. The implementation uses
 [SmolVLM-500M-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct),
 which is based on Idefics3. It does not use the `pilot_skeleton` directory.
 
+For the **3- and 5-agent Python experiments** (formation only, joint navigation
+without obstacles, and joint navigation with obstacles), see
+[README_EXPERIMENTS_35.md](README_EXPERIMENTS_35.md). Those configurations use
+10 Hz images and the new combined 3,000-episode navigation dataset.
+
 For each of 6 or 8 **frames**, SmolVLM jointly encodes the image and instruction,
 and a masked GAT encodes the robot graph. A fusion layer combines these features
 at each time, then a temporal Transformer uses the observation history to predict

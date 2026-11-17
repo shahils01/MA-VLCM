@@ -1,5 +1,11 @@
 # One frozen-backbone VLCM critic for both Python tasks
 
+For the new **formation-only / joint without obstacles / joint with obstacles**
+0.5B experiments restricted to **3 and 5 agents**, use
+[README_EXPERIMENTS_35.md](README_EXPERIMENTS_35.md) and
+`train_35_experiments.sh`. The instructions below describe the older warm-start
+experiment using the original 2,000-episode navigation collection.
+
 `train_multitask.py` initializes from the Python formation-trained supervised
 `best.pt` and jointly fits formation and go-to-goal **native return** targets.
 It keeps the SmolVLM vision/text encoders frozen and trains the existing graph,

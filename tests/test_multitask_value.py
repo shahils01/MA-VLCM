@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import asdict
 from io import BytesIO
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -17,20 +18,21 @@ from data_utils import (FormationClipDataset, collate_clips, feature_cache_path,
                         prepare_episode, read_episode, training_statistics)
 from model import ModelConfig, MultimodalValueModel
 from train_multitask import (JointClipDataset, adapt_normalizers, archive_key,
-                             joint_splits, selection_score, training_partitions)
+                             joint_splits, selection_score, training_partitions,
+                             parse_args, select_references)
 
 torch.set_num_threads(1)
 
 
-def fixture_episode(root, index, task, reason=None):
-    directory=Path(root)/task/"agents_03/worker_00"
+def fixture_episode(root, index, task, reason=None, num_agents=3, condition=None):
+    directory=Path(root)/task/f"agents_{num_agents:02d}/worker_00"
     directory.mkdir(parents=True,exist_ok=True)
     path=directory/f"episode_{index:06d}.tar"
     reason=reason or ("success" if index%2 else "out_of_bounds")
     with tarfile.open(path,"w") as archive:
         for step in range(4):
             agents=[]
-            for i in range(3):
+            for i in range(num_agents):
                 pos=[index*.01+step*.02,i*.2]
                 goal=[.7,i*.2+.3]
                 agents.append(dict(pos=pos,yaw=.1*i,vel=[.2,0.],goal_pos=goal,
@@ -42,10 +44,12 @@ def fixture_episode(root, index, task, reason=None):
                 state["formation"]=dict(robot_center_bounds_m=[-1.,1.,-1.,1.],pattern="polygon",formation_spacing_m=.5)
             else:
                 state["navigation"]=dict(grid=[[-2.5,2.5],[-2.5,2.5]])
+                if condition is not None:
+                    state["navigation"]["obstacles"] = [[1.,1.,.3]] if condition=="with_obstacles" else []
             png=BytesIO()
             Image.new("RGB",(32,32),(step*40,index*5,80)).save(png,format="PNG")
             adjacency=BytesIO()
-            np.save(adjacency,np.ones((3,3),np.float32))
+            np.save(adjacency,np.ones((num_agents,num_agents),np.float32))
             reward=0. if step==0 else (1. if reason=="success" else -1.) if step==3 else -.02
             fields={"state.json":json.dumps(state).encode(),"overhead.png":png.getvalue(),
                     "adj.npy":adjacency.getvalue(),"reward.json":json.dumps(reward).encode(),
@@ -55,12 +59,91 @@ def fixture_episode(root, index, task, reason=None):
                 member.size=len(data)
                 archive.addfile(member,BytesIO(data))
     summary=path.with_suffix(".summary.json")
-    summary.write_text(json.dumps(dict(episode_id=index,num_agents=3,success=reason=="success",
-        termination_reason=reason,seed=index,checkpoint=dict(stage="finetuned" if task=="formation_control" else "best",sha256="fixture"))))
+    row=dict(episode_id=index,num_agents=num_agents,success=reason=="success",
+        termination_reason=reason,seed=index,checkpoint=dict(stage="finetuned" if task=="formation_control" else "best",sha256="fixture"))
+    if condition is not None:
+        row.update(condition=condition,noise="wander" if index%2 else "clean")
+    summary.write_text(json.dumps(row))
     return path,summary
 
 
 class JointValueTests(unittest.TestCase):
+    def test_experiment_filters_fail_closed_and_defaults(self):
+        with tempfile.TemporaryDirectory() as root:
+            refs=[]
+            for condition in ("with_obstacles","without_obstacles"):
+                for n in (3,4,5,6):
+                    refs.append(fixture_episode(Path(root)/condition,1,"goal_to_goal",num_agents=n,condition=condition))
+            for condition in ("with_obstacles","without_obstacles"):
+                selected=select_references(refs,"goal_to_goal",[3,5],condition)
+                self.assertEqual(len(selected),2)
+                self.assertTrue(all(condition in path.parts for path,_ in selected))
+            malformed=fixture_episode(root,2,"goal_to_goal")
+            with self.assertRaisesRegex(ValueError,"Cannot determine"):
+                select_references([malformed],"goal_to_goal",[3],"with_obstacles")
+            path,summary=refs[0]
+            row=json.loads(summary.read_text()); row["condition"]="without_obstacles"
+            summary.write_text(json.dumps(row))
+            with self.assertRaisesRegex(ValueError,"disagrees"):
+                select_references([(path,summary)],"goal_to_goal",[3],"with_obstacles")
+        for experiment in ("formation_only","joint_without_obstacles","joint_with_obstacles"):
+            a=parse_args(["--experiment",experiment,"--formation-dataset","formation",
+                          "--gotogoal-dataset","navigation","--output-dir","output"])
+            self.assertEqual(a.num_agents,[3,5])
+            self.assertFalse(a.init_checkpoint)
+        score=selection_score(dict(by_task={"formation_control":dict(mse=4.)}),
+                              {"formation_control":dict(target_std=2.)})
+        self.assertEqual(score,1.)
+
+    def test_three_fresh_experiments_and_resume_with_cached_synthetic_features(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            backbone=root/"backbone"; backbone.mkdir()
+            (backbone/"config.json").write_text(json.dumps(dict(model_type="idefics3",text_config=dict(
+                model_type="llama",hidden_size=8,num_attention_heads=2,num_key_value_heads=2,
+                num_hidden_layers=1,intermediate_size=16,vocab_size=16))))
+            cfg=ModelConfig(model_id=str(backbone),vl_hidden_dim=8,d_model=16,image_size=32,dropout=0,vl_dtype="float32")
+            features=root/"cache/features"; features.mkdir(parents=True)
+            for task,condition in (("formation_control",None),("goal_to_goal","without_obstacles"),("goal_to_goal","with_obstacles")):
+                for n in (3,5):
+                    for i in range(9):
+                        directory=root/("formation" if condition is None else "navigation")
+                        if condition: directory=directory/condition
+                        ref=fixture_episode(directory,i,task,num_agents=n,condition=condition)
+                        ep=prepare_episode(read_episode(*ref),.99,"control",10.)
+                        torch.save(torch.randn(len(ep["selected_indices"]),8),feature_cache_path(ep,cfg,features))
+            commands=[]
+            for experiment in ("formation_only","joint_without_obstacles","joint_with_obstacles"):
+                command=[sys.executable,str(Path(__file__).resolve().parents[1]/"train_multitask.py"),
+                    "--experiment",experiment,"--formation-dataset",str(root/"formation"),
+                    "--gotogoal-dataset",str(root/"navigation"),"--model-id",str(backbone),
+                    "--cache-dir",str(root/"cache"),"--output-dir",str(root/experiment),
+                    "--epochs","1","--batch-size","16","--mixed-precision","no",
+                    "--image-size","32","--d-model","16","--dropout","0"]
+                result=subprocess.run(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=90)
+                self.assertEqual(result.returncode,0,result.stdout)
+                run=json.loads((root/experiment/"run.json").read_text())
+                self.assertIsNone(run["initial_checkpoint"])
+                self.assertEqual(run["args"]["num_agents"],[3,5])
+                expected={"formation_control"} if experiment=="formation_only" else {"formation_control","goal_to_goal"}
+                metrics=json.loads((root/experiment/"after_test_metrics.json").read_text())
+                self.assertEqual(set(metrics["by_task"]),expected)
+                for paths in run["splits"].values():
+                    for path in paths:
+                        if "goal_to_goal" in path:
+                            self.assertIn(experiment.removeprefix("joint_"),Path(path).parts)
+                commands.append(command)
+            runs=[json.loads((root/name/"run.json").read_text()) for name in ("formation_only","joint_without_obstacles","joint_with_obstacles")]
+            for split in ("train","validation","test"):
+                formation=[[path for path in run["splits"][split] if "formation_control" in path] for run in runs]
+                self.assertEqual(formation[0],formation[1]); self.assertEqual(formation[0],formation[2])
+            resume=commands[-1].copy(); resume[resume.index("--epochs")+1]="2"
+            resume += ["--resume",str(root/"joint_with_obstacles/latest.pt")]
+            result=subprocess.run(resume,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=90)
+            self.assertEqual(result.returncode,0,result.stdout)
+            saved=torch.load(root/"joint_with_obstacles/latest.pt",weights_only=True)
+            self.assertEqual(saved["epoch"],2)
+
     def test_both_schemas_and_native_control_rates_and_timeout_exclusion(self):
         with tempfile.TemporaryDirectory() as root:
             formation=read_episode(*fixture_episode(root,1,"formation_control"))
@@ -188,6 +271,13 @@ class JointValueTests(unittest.TestCase):
             resume=command.copy()
             resume[resume.index("--epochs")+1]="3"
             resume += ["--resume",str(root/"output/latest.pt")]
+            # A pre-existing warm-start run used the legacy signature layout.
+            legacy=dict(init_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+                gamma=.99,image_hz=10.,clip_stride=1,seed=42,training_tasks=["formation_control","goal_to_goal"],
+                splits={name:[read_episode(path,Path(path).with_suffix(".summary.json"))["identity"]
+                              for path in paths] for name,paths in latest["run"]["splits"].items()})
+            latest["run"]["signature"]=hashlib.sha256(json.dumps(legacy,sort_keys=True).encode()).hexdigest()
+            torch.save(latest,root/"output/latest.pt")
             continuation=subprocess.run(resume,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
             self.assertEqual(continuation.returncode,0,continuation.stdout)
             self.assertEqual(torch.load(root/"output/latest.pt",map_location="cpu",weights_only=True)["epoch"],3)

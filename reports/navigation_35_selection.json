@@ -1,0 +1,31 @@
+{
+  "raw_navigation_archives": 3000,
+  "conditions": {
+    "without_obstacles": {
+      "episodes": 1500,
+      "agents": {
+        "3": 750,
+        "5": 750
+      },
+      "noise": {
+        "clean": 1000,
+        "wander": 250,
+        "oscillate": 250
+      },
+      "timeouts": 0
+    },
+    "with_obstacles": {
+      "episodes": 1500,
+      "agents": {
+        "3": 750,
+        "5": 750
+      },
+      "noise": {
+        "clean": 1000,
+        "wander": 250,
+        "oscillate": 250
+      },
+      "timeouts": 14
+    }
+  }
+}

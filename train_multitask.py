@@ -1,4 +1,4 @@
-"""Warm-start one frozen-backbone VLCM on formation and go-to-goal returns."""
+"""Train one frozen-backbone VLCM on selected formation/navigation returns."""
 import argparse
 from collections import Counter
 from dataclasses import asdict
@@ -22,6 +22,35 @@ from model import ModelConfig, MultimodalValueModel, SmolVLMBackbone
 from train import evaluate_test
 
 TASKS = ("formation_control", "goal_to_goal")
+EXPERIMENTS = {
+    "formation_only": ("formation_control",),
+    "joint_without_obstacles": TASKS,
+    "joint_with_obstacles": TASKS,
+}
+
+
+def select_references(references, task, num_agents=None, navigation_condition="all"):
+    """Filter summary metadata before opening archives or caching image features."""
+    selected = []
+    for path, summary_path in references:
+        summary = json.loads(Path(summary_path).read_text())
+        if num_agents and int(summary["num_agents"]) not in num_agents:
+            continue
+        if task == "goal_to_goal" and navigation_condition != "all":
+            declared = summary.get("condition")
+            locations = set(Path(path).parts) & {"with_obstacles", "without_obstacles"}
+            if declared is None and len(locations) == 1:
+                declared = next(iter(locations))
+            if declared not in {"with_obstacles", "without_obstacles"}:
+                raise ValueError(f"Cannot determine obstacle condition for {path}; use the combined dataset with condition metadata")
+            if locations and locations != {declared}:
+                raise ValueError(f"Obstacle condition disagrees with directory: {path}")
+            if declared != navigation_condition:
+                continue
+        selected.append((path, summary_path))
+    if not selected:
+        raise ValueError(f"No {task} episodes match agents={num_agents}, navigation_condition={navigation_condition}")
+    return selected
 
 
 def archive_key(path):
@@ -108,9 +137,9 @@ def collate_joint(rows):
 
 
 def selection_score(metrics, task_statistics):
-    if set(metrics["by_task"]) != set(TASKS):
-        raise ValueError("Validation must contain both tasks")
-    return float(np.mean([metrics["by_task"][task]["mse"] / task_statistics[task]["target_std"]**2 for task in TASKS]))
+    if set(metrics["by_task"]) != set(task_statistics):
+        raise ValueError("Validation must contain every evaluated task")
+    return float(np.mean([metrics["by_task"][task]["mse"] / task_statistics[task]["target_std"]**2 for task in task_statistics]))
 
 
 def train_epoch(model, loader, optimizer, accelerator):
@@ -133,16 +162,18 @@ def train_epoch(model, loader, optimizer, accelerator):
     return dict(normalized_mse=squared/count, mse=raw_squared/count, count=count)
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--formation-dataset", required=True)
-    p.add_argument("--gotogoal-dataset", required=True)
-    p.add_argument("--init-checkpoint", required=True, help="Formation-trained frozen-backbone best.pt; initializes weights, not its optimizer")
+    p.add_argument("--gotogoal-dataset")
+    p.add_argument("--experiment", choices=["legacy"] + list(EXPERIMENTS), default="legacy")
+    p.add_argument("--num-agents", nargs="+", type=int)
+    p.add_argument("--init-checkpoint", default="", help="Optional frozen-backbone best.pt; required for legacy mode; starts a new optimizer")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--cache-dir", default="outputs/cache")
-    p.add_argument("--expected-formation-episodes", type=int, default=3000)
-    p.add_argument("--expected-gotogoal-episodes", type=int, default=2000)
-    p.add_argument("--training-tasks", nargs="+", choices=TASKS, default=list(TASKS),
+    p.add_argument("--expected-formation-episodes", type=int, default=None, help="Raw source count before filters; 0 disables")
+    p.add_argument("--expected-gotogoal-episodes", type=int, default=None, help="Raw source count before filters; 0 disables")
+    p.add_argument("--training-tasks", nargs="+", choices=TASKS,
                    help="Tasks supplying gradients; goal_to_goal performs new-task-only fine-tuning while both tasks are evaluated")
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=64)
@@ -165,8 +196,36 @@ def parse_args():
     p.add_argument("--wandb-project", default="ma-vlcm-multitask")
     p.add_argument("--wandb-entity", default="")
     p.add_argument("--wandb-run-name", default="")
-    a = p.parse_args()
-    a.training_tasks = [task for task in TASKS if task in a.training_tasks]
+    p.add_argument("--model-id", default=ModelConfig.model_id)
+    p.add_argument("--model-revision", default="main")
+    p.add_argument("--clip-len", type=int, choices=(6,8), default=6)
+    p.add_argument("--image-size", type=int, default=512)
+    p.add_argument("--vl-batch-size", type=int, default=4)
+    p.add_argument("--d-model", type=int, default=128)
+    p.add_argument("--gnn-layers", type=int, default=1)
+    p.add_argument("--temporal-layers", type=int, default=1)
+    p.add_argument("--attention-heads", type=int, default=4)
+    p.add_argument("--dropout", type=float, default=.2)
+    p.add_argument("--preflight-only", action="store_true", help="Write selection counts/paths without opening tars, downloading the model, or training")
+    a = p.parse_args(argv)
+    a.evaluation_tasks = list(TASKS if a.experiment == "legacy" else EXPERIMENTS[a.experiment])
+    if a.experiment == "legacy" and not a.init_checkpoint:
+        p.error("Legacy mode requires --init-checkpoint; select --experiment for a fresh 0.5B experiment")
+    if "goal_to_goal" in a.evaluation_tasks and not a.gotogoal_dataset:
+        p.error("Joint experiments require --gotogoal-dataset")
+    if a.num_agents is None and a.experiment != "legacy":
+        a.num_agents = [3,5]
+    if a.num_agents and any(n < 1 for n in a.num_agents):
+        p.error("Agent counts must be positive")
+    a.navigation_condition = {"joint_without_obstacles":"without_obstacles", "joint_with_obstacles":"with_obstacles"}.get(a.experiment,"all")
+    if a.training_tasks and not set(a.training_tasks) <= set(a.evaluation_tasks):
+        p.error("Training tasks must belong to the selected experiment")
+    a.training_tasks = [task for task in a.evaluation_tasks if task in (a.training_tasks or a.evaluation_tasks)]
+    for key, legacy in (("expected_formation_episodes",3000),("expected_gotogoal_episodes",2000)):
+        if getattr(a,key) is None:
+            setattr(a,key,legacy if a.experiment == "legacy" else 0)
+        if getattr(a,key)<0:
+            p.error("Expected episode counts must be nonnegative")
     if min(a.epochs, a.batch_size, a.grad_accum_steps, a.clip_stride, a.checkpoint_every) < 1 or a.num_workers < 0 or a.patience < 0:
         p.error("Invalid epoch, batch, worker, patience or checkpoint settings")
     if not 0 < a.gamma <= 1 or min(a.validation_fraction, a.test_fraction) <= 0 or a.validation_fraction+a.test_fraction >= 1:
@@ -185,28 +244,56 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     if (root/"run.json").exists() and not a.resume:
         raise FileExistsError("Choose a new output directory; the initial checkpoint will not be overwritten")
-    initial = torch.load(a.init_checkpoint, map_location="cpu", weights_only=True)
-    cfg = ModelConfig(**initial["model_config"])
-    if cfg.backbone_mode != "frozen":
-        raise ValueError("This experiment requires a frozen-backbone supervised checkpoint")
-    # Keep standard prediction/evaluation entrypoints compatible with the joint
-    # checkpoint while recording both dataset roots explicitly.
+    tasks = a.evaluation_tasks
+    references = []
+    counts = {}
+    for task, source, expected in ((TASKS[0], a.formation_dataset, a.expected_formation_episodes),
+                                  (TASKS[1], a.gotogoal_dataset, a.expected_gotogoal_episodes)):
+        if task not in tasks:
+            continue
+        raw = discover_episodes(source)
+        if expected and len(raw) != expected:
+            raise ValueError(f"Expected {expected} raw {task} episode archives, found {len(raw)}")
+        refs = select_references(raw, task, a.num_agents, a.navigation_condition)
+        summaries = [json.loads(Path(summary).read_text()) for _,summary in refs]
+        counts[task] = dict(raw_episodes=len(raw), selected_episodes=len(refs),
+            by_num_agents=dict(Counter(row["num_agents"] for row in summaries)),
+            by_noise=dict(Counter(row.get("noise","unspecified") for row in summaries)),
+            timeout_or_unfinished=sum(row["termination_reason"] in {"timeout","max_steps"} for row in summaries))
+        references.extend((task,path,summary) for path,summary in refs)
+    selection = dict(experiment=a.experiment, num_agents=a.num_agents,
+        navigation_condition=a.navigation_condition, tasks=counts,
+        selected_archives=[str(path) for _,path,_ in references])
+    if accelerator.is_main_process:
+        (root/"selection_report.json").write_text(json.dumps(selection,indent=2)+"\n")
+    accelerator.print(json.dumps({key:value for key,value in selection.items() if key!="selected_archives"},indent=2))
+    if a.preflight_only:
+        return
+    initial = torch.load(a.init_checkpoint, map_location="cpu", weights_only=True) if a.init_checkpoint else None
+    if initial:
+        cfg = ModelConfig(**initial["model_config"])
+        if cfg.backbone_mode != "frozen":
+            raise ValueError("This experiment requires a frozen-backbone supervised checkpoint")
+        if initial["run"]["args"]["return_source"] != "control" or a.gamma != initial["run"]["args"]["gamma"]:
+            raise ValueError("Keep the original full-control return definition and discount")
+    elif a.resume:
+        cfg = ModelConfig(**torch.load(a.resume,map_location="cpu",weights_only=True)["model_config"])
+    else:
+        from transformers import AutoConfig
+        hf_config = AutoConfig.from_pretrained(a.model_id, revision=a.model_revision)
+        cfg = ModelConfig(model_id=a.model_id, model_revision=hf_config._commit_hash or a.model_revision,
+            vl_hidden_dim=hf_config.text_config.hidden_size, backbone_mode="frozen",
+            vl_dtype={"no":"float32","fp16":"float16","bf16":"bfloat16"}[a.mixed_precision],
+            clip_len=a.clip_len, vl_batch_size=a.vl_batch_size, image_size=a.image_size,
+            d_model=a.d_model, gnn_layers=a.gnn_layers, temporal_layers=a.temporal_layers,
+            attention_heads=a.attention_heads, dropout=a.dropout)
     a.dataset = a.formation_dataset
-    a.additional_datasets = [a.gotogoal_dataset]
+    a.additional_datasets = [a.gotogoal_dataset] if "goal_to_goal" in tasks else []
     a.dataset_revision = "main"
     a.return_source = "control"
     a.clip_len = cfg.clip_len
     a.backbone_mode = "frozen"
     a.policy_stage = "all"
-    if initial["run"]["args"]["return_source"] != "control" or a.gamma != initial["run"]["args"]["gamma"]:
-        raise ValueError("Keep the original full-control return definition and discount")
-    references = []
-    for task, source, expected in ((TASKS[0], a.formation_dataset, a.expected_formation_episodes),
-                                  (TASKS[1], a.gotogoal_dataset, a.expected_gotogoal_episodes)):
-        refs = discover_episodes(source)
-        if expected and len(refs) != expected:
-            raise ValueError(f"Expected {expected} raw {task} episode archives, found {len(refs)}")
-        references.extend((task,path,summary) for path,summary in refs)
     with accelerator.main_process_first():
         episodes = []
         excluded = Counter()
@@ -214,20 +301,40 @@ def main():
             ep = read_episode(path,summary,cache/"index")
             if ep["task_domain"] != task:
                 raise ValueError(f"Wrong task domain in {path}")
+            if a.num_agents and ep["num_agents"] not in a.num_agents:
+                raise ValueError(f"Archive/summary agent count mismatch in {path}")
+            if task == "goal_to_goal" and a.navigation_condition != "all" and ep["navigation_condition"] != a.navigation_condition:
+                raise ValueError(f"Archive/summary obstacle condition mismatch in {path}")
             if ep["complete"]:
                 episodes.append(prepare_episode(ep,a.gamma,"control",a.image_hz))
             else:
                 excluded[task] += 1
-    partitions = joint_splits(episodes,initial["run"],a.seed,a.validation_fraction,a.test_fraction)
+    if initial:
+        partitions = joint_splits(episodes,initial["run"],a.seed,a.validation_fraction,a.test_fraction)
+    else:
+        # Separate task RNGs keep formation holdouts identical in all three experiments.
+        partitions = {name:[] for name in ("train","validation","test")}
+        for task in tasks:
+            task_splits = split_episodes([ep for ep in episodes if ep["task_domain"]==task],
+                                        a.seed,a.validation_fraction,a.test_fraction)
+            for name in partitions:
+                partitions[name].extend(task_splits[name])
     splits = training_partitions(partitions,a.training_tasks)
     for name,refs in splits.items():
-        expected_tasks = set(a.training_tasks) if name=="train" else set(TASKS)
+        expected_tasks = set(a.training_tasks) if name=="train" else set(tasks)
         if {ep["task_domain"] for ep in refs} != expected_tasks:
             raise ValueError(f"{name} must contain complete episodes from {expected_tasks}")
+    if a.num_agents:
+        for task in a.training_tasks:
+            present = {ep["num_agents"] for ep in splits["train"] if ep["task_domain"] == task}
+            if set(a.num_agents) - present:
+                raise ValueError(f"{task} has no complete training episodes for some requested agent counts")
     task_stats = {}
-    for task in TASKS:
+    for task in tasks:
         task_training = [ep for ep in splits["train"] if ep["task_domain"] == task]
         if not task_training:
+            if initial is None:
+                raise ValueError("Evaluation-only tasks require their pretrained training statistics")
             # For formation evaluation in navigation-only mode, reuse the
             # original training baseline; no formation frames affect this fit.
             task_stats[task] = {key:initial["model_state"][key].item() for key in ("target_mean","target_std")}
@@ -235,7 +342,9 @@ def main():
         stats = training_statistics(task_training,a.clip_stride,include_terminal=False)
         task_stats[task] = dict(target_mean=stats["target_mean"].item(),target_std=stats["target_std"].item())
     signature = hashlib.sha256(json.dumps(dict(
-        init_sha256=hashlib.sha256(Path(a.init_checkpoint).read_bytes()).hexdigest(), gamma=a.gamma,
+        init_sha256=hashlib.sha256(Path(a.init_checkpoint).read_bytes()).hexdigest() if initial else None,
+        model_config=asdict(cfg), experiment=a.experiment, num_agents=a.num_agents,
+        navigation_condition=a.navigation_condition, gamma=a.gamma,
         image_hz=a.image_hz,clip_stride=a.clip_stride,seed=a.seed,training_tasks=a.training_tasks,
         splits={name:[ep["identity"] for ep in refs] for name,refs in splits.items()}),sort_keys=True).encode()).hexdigest()
     used = {name:refs for name,refs in splits.items() if name!="test" or not a.skip_test}
@@ -257,16 +366,31 @@ def main():
     train_loader = DataLoader(datasets["train"],batch_size=a.batch_size,sampler=sampler,
                              shuffle=sampler is None,generator=generator,
                              num_workers=a.num_workers,collate_fn=collate_joint)
+    # Cache creation must not change the initial critic weights across experiments.
+    set_seed(a.seed)
     model = MultimodalValueModel(cfg,accelerator.device,load_backbone=False)
-    model.load_state_dict(initial["model_state"],strict=True)
     joint_stats = training_statistics(splits["train"],a.clip_stride,include_terminal=False)
-    adapt_normalizers(model,joint_stats)
+    if initial:
+        model.load_state_dict(initial["model_state"],strict=True)
+        adapt_normalizers(model,joint_stats)
+    else:
+        for key,value in joint_stats.items():
+            getattr(model,key).copy_(value)
+    initial_model_state = {key:value.clone() for key,value in model.checkpoint_state().items()}
     optimizer = torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=a.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode="min",factor=.5,patience=2)
     start, best, stale = 0, float("inf"), 0
     if a.resume:
         checkpoint = torch.load(a.resume,map_location="cpu",weights_only=True)
-        if checkpoint["run"]["signature"] != signature or checkpoint["model_config"] != asdict(cfg):
+        accepted_signatures = {signature}
+        if a.experiment == "legacy" and a.num_agents is None and initial:
+            # Preserve continuation of checkpoints created before experiment filters existed.
+            legacy_payload = dict(init_sha256=hashlib.sha256(Path(a.init_checkpoint).read_bytes()).hexdigest(),
+                gamma=a.gamma, image_hz=a.image_hz, clip_stride=a.clip_stride, seed=a.seed,
+                training_tasks=a.training_tasks,
+                splits={name:[ep["identity"] for ep in refs] for name,refs in splits.items()})
+            accepted_signatures.add(hashlib.sha256(json.dumps(legacy_payload,sort_keys=True).encode()).hexdigest())
+        if checkpoint["run"]["signature"] not in accepted_signatures or checkpoint["model_config"] != asdict(cfg):
             raise ValueError("Resume requires the same joint datasets, splits, initialization and configuration")
         if Path(checkpoint["run"]["args"]["output_dir"]).resolve() != root.resolve():
             raise ValueError("Resume must write to its original output directory")
@@ -277,19 +401,21 @@ def main():
         if a.epochs <= start:
             raise ValueError("epochs must exceed the resumed epoch")
     run = dict(args=vars(a),model_config=asdict(cfg),signature=signature,
-        initial_checkpoint=str(Path(a.init_checkpoint).resolve()), task_statistics=task_stats,
+        initial_checkpoint=str(Path(a.init_checkpoint).resolve()) if initial else None, task_statistics=task_stats,
+        initialization="warm_start" if initial else "pretrained SmolVLM-500M with fresh critic layers",
+        selection=selection,
         return_definition="Full future native control-step rewards, gamma once per control step; incoming/past reward excluded",
-        control_hz_by_task={task:sorted({ep['control_hz'] for ep in episodes if ep['task_domain']==task}) for task in TASKS},
+        control_hz_by_task={task:sorted({ep['control_hz'] for ep in episodes if ep['task_domain']==task}) for task in tasks},
         policy_value="Conditional expected recorded return under each task's dataset behavior-policy mixture",
         splits={name:[ep["path"] for ep in refs] for name,refs in splits.items()},
-        pretrained_splits=initial["run"]["splits"],
+        pretrained_splits=initial["run"]["splits"] if initial else {},
         excluded_timeout_or_unfinished_by_task=dict(excluded),
         training_tasks=a.training_tasks,
         training_episode_counts=dict(Counter(ep["task_domain"] for ep in splits["train"])),
         sampling=("Equal probability per task at clip level" if len(a.training_tasks)>1 else "Only selected task; shuffled without replacement")+"; per-task train-only return standard deviation scales the loss",
-        normalizer_transfer="Selected training tasks' statistics with affine weight conversion preserving initial predictions",
-        formation_split="Original formation holdouts preserved; formation training episodes used only if selected")
-    accelerator.print(f"Training tasks: {a.training_tasks}; gradient-bearing episodes: {run['training_episode_counts']}; both tasks evaluated")
+        normalizer_transfer="Affine conversion preserving warm-start predictions" if initial else "Training-only statistics; fresh critic layers",
+        formation_split="Original checkpoint holdouts preserved" if initial else "Task-local seeded scenario splits; consistent formation holdouts across experiments")
+    accelerator.print(f"Training tasks: {a.training_tasks}; gradient-bearing episodes: {run['training_episode_counts']}; evaluated tasks: {tasks}")
     if accelerator.is_main_process:
         (root/"run.json").write_text(json.dumps(run,indent=2)+"\n")
     if a.wandb:
@@ -334,11 +460,11 @@ def main():
             with (root/"metrics.jsonl").open("a") as f:
                 f.write(json.dumps(record)+"\n")
             accelerator.print(f"Epoch {epoch+1}: validation macro NMSE {score:.5f}; " +
-                "; ".join(f"{task} MAE={validation['by_task'][task]['mae']:.4f}" for task in TASKS))
+                "; ".join(f"{task} MAE={validation['by_task'][task]['mae']:.4f}" for task in tasks))
             if a.wandb:
                 log={"train/normalized_mse":train_metrics["normalized_mse"],"validation/macro_task_normalized_mse":score}
                 log.update({f"validation/{task}/{key}":validation["by_task"][task][key]
-                            for task in TASKS for key in ("mse","mae","r2")})
+                            for task in tasks for key in ("mse","mae","r2")})
                 accelerator.log(log,step=epoch+1)
             checkpoint=dict(epoch=epoch+1,model_config=asdict(cfg),
                 model_state=accelerator.unwrap_model(model).checkpoint_state(),
@@ -358,10 +484,10 @@ def main():
     final_validation=evaluate("validation","best_validation")
     if not a.skip_test:
         after_test=evaluate("test","after_test")
-        unwrapped.load_state_dict(initial["model_state"],strict=True)
+        unwrapped.load_state_dict(initial_model_state,strict=True)
         before_test=evaluate("test","before_test")
         if accelerator.is_main_process:
-            comparison={task:dict(before=before_test["by_task"][task],after=after_test["by_task"][task]) for task in TASKS}
+            comparison={task:dict(before=before_test["by_task"][task],after=after_test["by_task"][task]) for task in tasks}
             (root/"task_comparison.json").write_text(json.dumps(comparison,indent=2)+"\n")
     accelerator.end_training()
 

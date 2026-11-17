@@ -19,7 +19,7 @@ OBSERVATION_NAMES = (
     "position_x", "position_y", "sin_yaw", "cos_yaw", "velocity_0", "velocity_1",
     "relative_goal_x", "relative_goal_y", "distance_to_goal", "nearest_robot_distance",
 )
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 
 
 def episode_path_key(path):
@@ -132,6 +132,8 @@ def read_episode(path, summary_path, cache_dir=None):
     }
     if task_domain != "formation_control":
         scenario["task_domain"] = task_domain
+        # Different obstacle maps are different scenarios, even for equal starts/goals.
+        scenario["obstacles"] = first["navigation"].get("obstacles", [])
     scenario_id = hashlib.sha256(json.dumps(scenario, sort_keys=True).encode()).hexdigest()
     reason = summary["termination_reason"]
     episode = {
@@ -148,6 +150,8 @@ def read_episode(path, summary_path, cache_dir=None):
         "complete": bool(last["episode_meta"]["done"]) and reason not in {"timeout", "max_steps"},
         "seed": summary["seed"], "scenario_id": scenario_id,
         "task_domain": task_domain,
+        "navigation_condition": ("with_obstacles" if len(first.get("navigation",{}).get("obstacles",[])) else "without_obstacles") if task_domain == "goal_to_goal" else None,
+        "noise": summary.get("noise", "unspecified"),
         "formation_pattern": formation.get("pattern"),
         "formation_spacing": formation.get("formation_spacing_m"),
         "bounds": bounds,
