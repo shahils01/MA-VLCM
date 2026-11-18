@@ -57,7 +57,7 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   module load anaconda3
   set +u
-  source activate "${CONDA_ENV:-internvl}"
+  source activate "${CONDA_ENV:-MARL}"
   set -u
   export PYTHON_BIN
   PYTHON_BIN="$(command -v python)"
