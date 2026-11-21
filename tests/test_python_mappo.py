@@ -73,6 +73,8 @@ class PythonMAPPOTests(unittest.TestCase):
         np.testing.assert_array_equal(odd['times'], initial['times'])
         import importlib.util
         source_path = Path(__file__).resolve().parents[2] / 'Ground_Robot_MARL/scripts/vlcm/formation_instructions.py'
+        if not source_path.is_file():
+            source_path = Path(__file__).resolve().parents[1] / 'outputs/eval_rollouts/assets/formation/source/formation_instructions.py'
         spec = importlib.util.spec_from_file_location('source_formation_instructions', source_path)
         source = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(source)

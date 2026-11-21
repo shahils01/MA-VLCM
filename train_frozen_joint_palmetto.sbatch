@@ -57,7 +57,7 @@ if [[ -z "${VLCM_NAVIGATION_ROOT:-}" ]]; then
     fi
   fi
 fi
-export RUN_ROOT="${RUN_ROOT:-$PROJECT_ROOT/outputs/frozen_joint_palmetto_${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-preflight}}}"
+export RUN_ROOT="${RUN_ROOT:-$MARL_ROOT/outputs/frozen_joint_palmetto_${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-preflight}}}"
 export NUM_ENV_STEPS="${NUM_ENV_STEPS:-5000000}"
 export NUM_ENVS="${NUM_ENVS:-16}"
 export ROLLOUT_STEPS="${ROLLOUT_STEPS:-300}"

@@ -13,6 +13,7 @@ import time
 import numpy as np
 import torch
 
+from frozen_critic_audit import FrozenCriticAudit, state_digest
 from model import ModelConfig, SmolVLMBackbone
 from python_mappo import (MARL_ROOT, R_Actor, PythonValueCritic, RolloutCollector,
                           actor_config, evaluate_actor, ppo_update)
@@ -179,6 +180,12 @@ def atomic_save(value, path):
     temporary.replace(path)
 
 
+def write_json(path, value):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+
+
 def save_checkpoint(path, actor, critic, actor_optimizer, critic_optimizer, args, steps, update):
     path.mkdir(parents=True, exist_ok=True)
     atomic_save({k: v.detach().cpu() for k, v in actor.state_dict().items()}, path / "actor.pt")
@@ -294,6 +301,10 @@ def main(argv=None):
     ao = torch.optim.Adam(actor.parameters(), lr=a.actor_lr, eps=1e-5)
     critic_parameters = [v for v in critic.parameters() if v.requires_grad]
     co = torch.optim.Adam(critic_parameters, lr=a.critic_lr, eps=1e-5) if critic_parameters else None
+    initial_actor_digest = state_digest(actor)
+    audit = (FrozenCriticAudit(critic, backbone, co,
+                              source["model_state"] if a.frozen_python_supervised and not python_source else None)
+             if a.freeze_critic else None)
     critic_trainable = [name for name, parameter in critic.named_parameters() if parameter.requires_grad]
     python_source = source is not None and source.get("format") == "python_mappo_vlcm_v1"
     print(f"Critic checkpoint: {a.critic_checkpoint}; actor: {'scratch' if a.actor_checkpoint is None else a.actor_checkpoint}", flush=True)
@@ -309,6 +320,8 @@ def main(argv=None):
             print("WARNING: frozen critic values are in Isaac reward units; PPO uses unmodified Python rewards. "
                   "GAE mixes different units and may be biased; no reward calibration is applied.", flush=True)
     contract = dict(args=jsonable(a), model_config=asdict(cfg), device=str(device),
+                    initial_actor_state_sha256=initial_actor_digest,
+                    frozen_audit=audit.check(co) if audit is not None else None,
                     environment_sha256=file_hash(MARL_ROOT / "RL_bound_overwatch/envs/FormationControlEnv.py"),
                     texture_sha256=file_hash(MARL_ROOT / "RL_bound_overwatch/envs/assets/background_image_real.png"),
                     actor_sha256=file_hash(actor_path) if a.actor_checkpoint else None,
@@ -351,6 +364,8 @@ def main(argv=None):
     steps, update, best_score = 0, 0, (-math.inf, -math.inf)
     metrics_path = a.output_dir / "metrics.jsonl"
     try:
+        save_checkpoint(a.output_dir / "initial", actor, critic, ao, co, a, 0, 0)
+        write_json(a.output_dir / "status.json", dict(state="running", environment_steps=0, update=0))
         if a.eval_interval and a.eval_at_start:
             baseline = evaluate_actor(actor, a, device)
             baseline.update(environment_steps=0, update=0)
@@ -373,6 +388,8 @@ def main(argv=None):
             encode_seconds = time.monotonic() - encode_start
             train_start = time.monotonic()
             metrics = ppo_update(actor, critic, ao, co, rollout, a, device, update)
+            if audit is not None:
+                audit.check(co)
             steps += rollout_steps * a.num_envs
             metrics.update(environment_steps=steps, update=update, **{
                 "timing/collection_seconds": collection_seconds,
@@ -396,11 +413,31 @@ def main(argv=None):
             if run is not None:
                 run.log(metrics)
             if update % a.save_interval == 0 or steps == a.num_env_steps:
-                save_checkpoint(a.output_dir / "checkpoints" / f"step_{steps:09d}", actor, critic, ao, co, a, steps, update)
+                checkpoint = a.output_dir / "checkpoints" / f"step_{steps:09d}"
+                save_checkpoint(checkpoint, actor, critic, ao, co, a, steps, update)
+                latest = a.output_dir / "latest"
+                temporary = a.output_dir / ".latest.tmp"
+                temporary.symlink_to(checkpoint.relative_to(a.output_dir), target_is_directory=True)
+                temporary.replace(latest)
                 prune_checkpoints(a.output_dir / "checkpoints", a.keep_checkpoints)
+            write_json(a.output_dir / "status.json", dict(state="running", environment_steps=steps, update=update))
+        final_actor_digest = state_digest(actor)
+        if audit is not None:
+            report = audit.check(co, full_backbone=True)
+            report.update(initial_actor_state_sha256=initial_actor_digest,
+                          final_actor_state_sha256=final_actor_digest,
+                          actor_changed=final_actor_digest != initial_actor_digest,
+                          environment_steps=steps)
+            write_json(a.output_dir / "frozen_audit.json", report)
+        write_json(a.output_dir / "status.json", dict(state="completed", environment_steps=steps, update=update,
+                                                     actor_changed=final_actor_digest != initial_actor_digest))
         if run is not None:
             run.summary["finished_environment_steps"] = steps
             run.summary["actor_deploys_without_critic"] = True
+    except BaseException as error:
+        write_json(a.output_dir / "status.json", dict(state="failed", environment_steps=steps, update=update,
+                                                     error=f"{type(error).__name__}: {error}"))
+        raise
     finally:
         if run is not None:
             run.finish()
