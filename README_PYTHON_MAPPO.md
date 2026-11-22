@@ -1,5 +1,6 @@
 # Python MAPPO with the MA-VLCM critic
 
+<<<<<<< Updated upstream
 ## Nautilus prerequisites and GPU limits
 
 The commands below assume that `MA-VLCM` and `MARL_data_collection` are sibling
@@ -34,6 +35,12 @@ For supervised train/validation loss curves use the supervised training workflow
 in `README.md`. Check `metrics.jsonl`, `wandb_run.json`, job logs and
 `nvidia-smi` to verify progress; a W&B run starting alone does not prove updates
 are occurring. Runs are warm starts, not exact resumptions after pod termination.
+=======
+The current Python-3,000 fully frozen experiment is documented first. The later
+[historical method section](#historical-isaac-900-method-and-mathematics) describes
+an older Isaac-initialized experiment with a trainable downstream critic.
+Its critic-update equations do not apply to the fully frozen Python run.
+>>>>>>> Stashed changes
 
 ## Frozen supervised Python VLCM as the only critic
 
@@ -99,6 +106,131 @@ success/return and compare a matched trainable-critic baseline; the small
 external value validation is not a guarantee of policy-training convergence.
 Do not use `--frozen-isaac-critic` or the Isaac affine calibration with this
 Python-trained model.
+
+### Two training stages: offline value learning, then actor-only MAPPO
+
+1. **Train the value estimator offline.** The source checkpoint
+   `outputs/smolvlm-18918211/best.pt` records the Python formation dataset
+   `polygon_formation_python_env`: 3,000 complete episodes split into
+   2,400 train / 300 validation / 300 test episodes. Inputs are causal eight-frame
+   clips of BEV images, language, robot states and adjacency at 10 Hz. Targets
+   are full recorded future native-control returns, with gamma 0.99 applied at
+   20 Hz; past/incoming rewards are excluded. Terminal anchors are excluded
+   from fitting. Stored images are 256 × 256 and the image processor limit is
+   512 pixels. SmolVLM's vision and text encoders are frozen, while the visual
+   projection, graph, fusion, time embedding, temporal transformer and value
+   head learn by return regression. This checkpoint's selected epoch is 6.
+   **“Frozen backbone” in this offline stage does not mean the value head was
+   frozen while learning.**
+2. **Load the entire trained value model unchanged for MAPPO.**
+   `--critic vlcm --freeze-critic --frozen-python-supervised` preserves all its
+   downstream weights and observation/target normalizers, including the
+   trained value head. The wrapper's additional context embedding is zero
+   and frozen. No scalar reset, affine calibration, or reward rescaling is
+   applied. Both the backbone and the complete critic run in evaluation mode;
+   all critic parameters have `requires_grad=False`.
+3. **Initialize a new actor and collect on-policy transitions.**
+   `--actor-from-scratch` creates a fresh shared native MAPPO actor. It chooses
+   actions from local robot observations; the centralized VLCM is used to
+   compute values for learning. Native Python rewards are averaged over the
+   physical robots, excluding padded slots. Critic inputs contain only current
+   and earlier observations, never future rewards or outcome labels.
+4. **Compute detached GAE advantages.** Current and next values are evaluated
+   under `torch.no_grad()`. TD errors use
+   `delta_t = r_t + gamma * (1 - terminated_t) * V_next - V_t`, followed by GAE
+   with lambda 0.95 and recursion cut at episode boundaries. True success and
+   boundary terminals have zero continuation; timeouts bootstrap the final
+   pre-reset state. Values are held over intermediate 20 Hz controls between
+   synchronized 10 Hz camera/state observations. Advantages are converted to
+   NumPy and normalized over active actor samples before the actor update.
+5. **Update only the actor with clipped PPO.** The actor's log probabilities
+   and entropy receive gradients. The critic optimizer is `None`, its update
+   loop executes zero iterations, and there is no critic loss or backward
+   pass. Logged critic MSE/explained variance are diagnostics against GAE
+   targets; computing those numbers does not train the critic.
+6. **Save and evaluate actor checkpoints.** `actor.pt` contains the deployable
+   policy. The accompanying `critic.pt` saves the frozen value model and its
+   configuration for provenance or another experiment. Saving a critic file
+   does not mean it was optimized. Actor evaluation needs local observations
+   and the actor only; it does not require VLM inference.
+
+To start a new offline supervised run on Palmetto with these input/target
+settings, run from `MA-VLCM` (this creates a new model, not the already saved
+historical job):
+
+```bash
+mkdir -p logs
+DATASET=/home/anshuln/Dataset/polygon_formation_python_env \
+  EXPECTED_EPISODES=3000 BACKBONE_MODE=frozen RETURN_SOURCE=control \
+  IMAGE_HZ=10 CLIP_LEN=8 IMAGE_SIZE=512 BATCH_SIZE=64 NUM_GPUS=1 \
+  CONDA_ENV=internvl sbatch train_palmetto.sbatch
+```
+
+The separate `train_frozen_python_value.sh` launcher trains the **MARL actor**
+using an already trained, fully frozen critic; it is not the offline VLCM
+training launcher.
+
+### Verified formation-only run near 1.4 million steps
+
+The run is
+`../MARL_data_collection/on-policy/ckpts/formation_control/mappo_python_vlcm_frozen_seed1_20261101_160325/`.
+Its `run.json` records `freeze_critic=true`, `frozen_python_supervised=true`,
+`actor_from_scratch=true`, `critic_trainable_parameter_count=0`, no value
+calibration, and source `outputs/smolvlm-18918211/best.pt`. It requested
+2,000,000 environment steps; the latest saved checkpoint is
+`checkpoints/step_001401600/` at update 292. The saved `best/` checkpoint is
+from 768,000 steps, not the final checkpoint.
+
+The recorded run used 16 environments, 300 controls per rollout, actor learning
+rate 0.0005, five PPO epochs, seed 1, gamma 0.99 and GAE lambda 0.95. To start a
+new local experiment with these settings and the default Python source critic:
+
+```bash
+cd ../MARL_data_collection/on-policy
+PYTHON_BIN=/home/anshul/miniconda3/envs/env_isaaclab/bin/python \
+  NUM_ENVS=16 NUM_ENV_STEPS=2000000 ROLLOUT_STEPS=300 SEED=1 \
+  bash onpolicy/scripts/train_generic_polygon_python_vlcm.sh
+```
+
+The shell creates a new run directory. This is a new training run, not an exact
+resume of the saved 1,401,600-step actor.
+
+The freeze check uses code, recorded configuration, and saved tensor contents:
+
+- [`PythonValueCritic`](python_mappo.py) disables gradients for the entire
+  critic; `critic_values` uses `torch.no_grad()` and detaches results.
+- [`train_mappo.py`](train_mappo.py) builds an optimizer only for trainable
+  critic parameters. The saved optimizer artifact has `critic_optimizer=None`.
+- Every training record with an update flag has `train/critic_updated=0`.
+- All **41 source critic tensors**, including normalizers and the value head,
+  exactly equal the matching `core.*` tensors in both the 1,401,600-step and
+  best critic snapshots. The extra context embedding remains exactly zero.
+- The source checkpoint SHA-256 matches the one recorded when MAPPO started:
+  `e6a9975efab55b1c8b284627cfb5efd1b998f017638cd1766f8c8b5ce4fd85a8`.
+  The native environment source also matches the training hash.
+
+Reproduce that audit from `MA-VLCM` using the configured Python environment:
+
+```bash
+python - <<'PY'
+import json
+from evaluate_frozen_formation_policy import DEFAULT_RUN, check_provenance
+checkpoints = [DEFAULT_RUN / "checkpoints/step_001401600", DEFAULT_RUN / "best"]
+print(json.dumps(check_provenance(DEFAULT_RUN, checkpoints), indent=2))
+PY
+```
+
+The saved [provenance report](../MARL_data_collection/on-policy/eval_outputs/formation_frozen_python3000_step1401600/provenance.json)
+contains these checks. Matching saved weights establishes their equality at
+the checked checkpoints; it is not a recording of every intermediate operation.
+The no-gradient/no-optimizer code path and zero-update logs are the additional
+evidence that the critic was kept frozen during actor training. `eval()` alone,
+a run-directory name, or a freeze flag alone would not establish this.
+
+The [fresh policy evaluation](../MARL_data_collection/on-policy/eval_outputs/formation_frozen_python3000_step1401600/README.md)
+uses 50 matched starts per team size and checkpoint. Success is 6% overall for
+the 1,401,600-step actor and 11% for the saved best actor under the original
+400-step task. Those results describe actor performance, not critic updates.
 
 ## Critic training modes
 
@@ -177,13 +309,16 @@ supervised Isaac model and resets the final scalar layer on transfer. The
 run name does not select a checkpoint. Startup output and `run.json` record
 the actual checkpoint, source training step, and trainable critic parameters.
 
-## End-to-end method and mathematics
+## Historical Isaac-900 method and mathematics
 
 This section was checked against the local code, collection manifests, saved
-`run.json` files and evaluation results on 2026-10-29. It describes the existing
-experiments; updating this document does not launch training or evaluation.
+`run.json` files and evaluation results on 2026-10-29. It describes the older
+Isaac-900 initialization with downstream critic fine-tuning, not the fully
+frozen Python-3,000 experiment above. Its scalar reset, critic-loss updates,
+warmup, and older data-inventory statements apply only to that historical
+experiment. Updating this document does not launch training or evaluation.
 
-**There is a critic throughout actor training.** In the VLCM experiment, it is
+**There is a critic throughout actor training.** In that historical experiment, it is
 SmolVLM features + GAT + fusion + temporal transformer + a scalar value head.
 This replaces the native MAPPO state-vector critic. Only the SmolVLM backbone
 is frozen. The downstream critic layers are optimized again on Python
@@ -728,7 +863,13 @@ MLP/state-temporal/VLCM baselines described below, with the same actor
 initialization, reward/task settings, seeds and transition budget. A visually
 plausible polygon or a declining value loss alone does not establish success.
 
-## Operational launchers and implementation notes
+## Historical and alternative-mode operational notes
+
+The following launchers and defaults document the older Isaac-initialized
+fine-tuning and head-only experiments. For the Python-3,000 fully frozen
+critic, use the workflow and verified run recorded at the beginning of this
+document. In particular, scalar resets, critic warmup and critic optimization
+described below do not occur in `--frozen-python-supervised --freeze-critic`.
 
 Run from `/home/anshul/Research/Postdoc`:
 
@@ -789,7 +930,7 @@ then both networks learn. Use an earlier actor or scratch training across all
 arms to measure learning efficiency: the successful actor has little room to
 improve on the previous small Python evaluation.
 
-## What trains
+## What trains in the default fine-tuning mode
 
 `python_mappo.py` imports the actual `on-policy` `R_Actor` and the canonical
 `RL_bound_overwatch` environment. Its dedicated collector and clipped PPO update

@@ -1,5 +1,9 @@
 # MA-VLCM: SmolVLM formation value estimator
 
+For NRP Nautilus/Kubernetes, see [the training guide](README_KUBERNETES.md) for
+a persistent Conda environment on the PVC, GPU jobs, logs, W&B, checkpoints,
+resume, and downloading results locally.
+
 The main Python files train a signed scalar value from overhead images, the task
 instruction, robot states, and dynamic adjacency. The implementation uses
 [SmolVLM-500M-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct),
