@@ -100,6 +100,31 @@ def training_partitions(partitions, training_tasks):
     return selected
 
 
+def manifest_partitions(episodes, manifest, seed, validation_fraction, test_fraction):
+    """Reuse the full 3–6-agent split when selecting only 3 and 5 agents."""
+    expected = dict(seed=seed, validation_fraction=validation_fraction, test_fraction=test_fraction)
+    if any(manifest.get(key) != value for key, value in expected.items()):
+        raise ValueError("Split manifest seed/fractions differ from this run")
+    assignment = {}
+    for name in ("train", "validation", "test"):
+        for identity in manifest["splits"][name]:
+            if identity in assignment:
+                raise ValueError("Split manifest contains duplicate episode identities")
+            assignment[identity] = name
+    result = {name: [] for name in ("train", "validation", "test")}
+    scenarios = {}
+    for ep in episodes:
+        if ep["identity"] not in assignment:
+            raise ValueError(f"Episode missing from split manifest: {ep['path']}")
+        name = assignment[ep["identity"]]
+        key = (ep["task_domain"], ep["scenario_id"])
+        if key in scenarios and scenarios[key] != name:
+            raise ValueError("Split manifest puts the same scenario in different partitions")
+        scenarios[key] = name
+        result[name].append(ep)
+    return result
+
+
 @torch.no_grad()
 def adapt_normalizers(model, statistics):
     """Adopt joint train-only statistics without changing initial predictions."""
@@ -121,22 +146,24 @@ class JointClipDataset(FormationClipDataset):
     def __init__(self, *args, task_statistics, balance_agent_counts=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.task_statistics = task_statistics
-        self.task_counts = Counter(self.episodes[i]["task_domain"] for i, _ in self.samples)
-        self.sample_weights = torch.tensor([1. / self.task_counts[self.episodes[i]["task_domain"]]
-                                            for i, _ in self.samples], dtype=torch.double)
-        if balance_agent_counts:
-            groups = Counter((self.episodes[i]["task_domain"], self.episodes[i]["num_agents"]) for i, _ in self.samples)
-            sizes = Counter(task for task, _ in groups)
-            # P(task)=1/K; P(team size | task)=1/number_of_sizes.
-            self.sample_weights = torch.tensor([
-                1. / (sizes[self.episodes[i]["task_domain"]] * groups[(self.episodes[i]["task_domain"], self.episodes[i]["num_agents"])])
-                for i, _ in self.samples], dtype=torch.double)
+        self.task_ids = {task: i for i, task in enumerate(task_statistics)}
+        groups = []
+        for ep_index, _ in self.samples:
+            ep = self.episodes[ep_index]
+            size = ep["num_agents"] if balance_agent_counts else 0
+            groups.append((ep["task_domain"], size))
+        self.task_counts = Counter(task for task, size in groups)
+        counts = Counter(groups)
+        sizes_per_task = Counter(task for task, size in counts)
+        # Equal task probability, then equal team-size probability within each task.
+        weights = [1. / (sizes_per_task[task] * counts[task, size]) for task, size in groups]
+        self.sample_weights = torch.tensor(weights, dtype=torch.double)
 
     def __getitem__(self, index):
         row = super().__getitem__(index)
         task = row["metadata"]["task_domain"]
         row["loss_scale"] = self.task_statistics[task]["target_std"]
-        row["task_id"] = torch.tensor(list(self.task_statistics).index(task), dtype=torch.long)
+        row["task_id"] = torch.tensor(self.task_ids[task], dtype=torch.long)
         return row
 
 
@@ -186,6 +213,10 @@ def parse_args(argv=None):
     p.add_argument("--gotogoal-dataset")
     p.add_argument("--experiment", choices=["legacy"] + list(EXPERIMENTS), default="legacy")
     p.add_argument("--num-agents", nargs="+", type=int)
+    p.add_argument("--split-manifest", default="", help="Reuse a superset's episode splits, including for the 3/5-agent subset")
+    p.add_argument("--cache-only", action="store_true", help="Build frozen features and split manifest, then exit before critic training")
+    p.add_argument("--require-cuda", action="store_true", help="Fail clearly instead of training on CPU when a GPU job cannot see CUDA")
+    p.add_argument("--expected-visible-gpus", type=int, default=0, help="Require this many visible CUDA GPUs; 0 disables the check")
     p.add_argument("--init-checkpoint", default="", help="Optional frozen-backbone best.pt; required for legacy mode; starts a new optimizer")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--cache-dir", default="outputs/cache")
@@ -251,6 +282,12 @@ def parse_args(argv=None):
         p.error("Task heads require --task-normalization")
     if a.init_checkpoint and (a.task_normalization or a.formation_context or a.value_head_mode != "shared"):
         p.error("The new ablations start fresh; omit --init-checkpoint to keep their initialization comparable")
+    if a.split_manifest and a.init_checkpoint:
+        p.error("Use the checkpoint's splits or --split-manifest, not both")
+    if a.cache_only and a.resume:
+        p.error("--cache-only does not resume critic training")
+    if a.expected_visible_gpus < 0:
+        p.error("--expected-visible-gpus must be nonnegative")
     if min(a.discount_reference_hz, a.expected_control_hz, a.expected_capture_hz) < 0 or a.prefetch_factor < 1:
         p.error("Rates must be nonnegative and prefetch-factor positive")
     for key, legacy in (("expected_formation_episodes",3000),("expected_gotogoal_episodes",2000)):
@@ -267,6 +304,10 @@ def parse_args(argv=None):
 
 def main():
     a = parse_args()
+    if a.require_cuda and not a.preflight_only and not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable. Run in an allocated GPU step and check the CUDA-enabled PyTorch environment.")
+    if a.expected_visible_gpus and not a.preflight_only and torch.cuda.device_count() != a.expected_visible_gpus:
+        raise RuntimeError(f"Expected {a.expected_visible_gpus} visible CUDA GPUs, found {torch.cuda.device_count()}; check the Slurm step GPU binding.")
     if "LOCAL_RANK" in os.environ and torch.cuda.is_available():
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     accelerator = Accelerator(mixed_precision=a.mixed_precision, gradient_accumulation_steps=a.grad_accum_steps,
@@ -276,6 +317,9 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_float32_matmul_precision("high")
     set_seed(a.seed)
+    accelerator.print(f"Device={accelerator.device}; ranks={accelerator.num_processes}; "
+                      f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'unset')}; "
+                      f"batch/GPU={a.batch_size}; workers/rank={a.num_workers}", flush=True)
     root, cache = Path(a.output_dir), Path(a.cache_dir)
     root.mkdir(parents=True, exist_ok=True)
     if (root/"run.json").exists() and not a.resume:
@@ -297,7 +341,7 @@ def main():
             by_noise=dict(Counter(row.get("noise","unspecified") for row in summaries)),
             timeout_or_unfinished=sum(row["termination_reason"] in {"timeout","max_steps"} for row in summaries))
         references.extend((task,path,summary) for path,summary in refs)
-    selection = dict(experiment=a.experiment, num_agents=a.num_agents,
+    selection = dict(experiment=a.experiment, num_agents=a.num_agents, value_head_mode=a.value_head_mode,
         navigation_condition=a.navigation_condition, tasks=counts,
         selected_archives=[str(path) for _,path,_ in references])
     if accelerator.is_main_process:
@@ -358,6 +402,9 @@ def main():
                 excluded[task] += 1
     if initial:
         partitions = joint_splits(episodes,initial["run"],a.seed,a.validation_fraction,a.test_fraction)
+    elif a.split_manifest:
+        partitions = manifest_partitions(episodes,json.loads(Path(a.split_manifest).read_text()),
+                                          a.seed,a.validation_fraction,a.test_fraction)
     else:
         # Separate task RNGs keep formation holdouts identical in all three experiments.
         partitions = {name:[] for name in ("train","validation","test")}
@@ -409,6 +456,19 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     accelerator.wait_for_everyone()
+    if a.cache_only:
+        if accelerator.is_main_process:
+            manifest = dict(seed=a.seed,validation_fraction=a.validation_fraction,test_fraction=a.test_fraction,
+                            splits={name:[ep["identity"] for ep in refs] for name,refs in partitions.items()})
+            (root/"split_manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+            report = dict(model_config=asdict(cfg),episodes=sum(len(refs) for refs in used.values()),
+                          frames=sum(len(ep["selected_indices"]) for refs in used.values() for ep in refs),
+                          split_manifest=str((root/"split_manifest.json").resolve()),selection=selection)
+            (root/"cache_report.json").write_text(json.dumps(report,indent=2)+"\n")
+            accelerator.print(f"Feature cache complete. Report: {root/'cache_report.json'}", flush=True)
+        accelerator.wait_for_everyone()
+        accelerator.end_training()
+        return
     datasets = {name:JointClipDataset(refs,cfg.clip_len,a.clip_stride,feature_dir,cfg,
                     include_terminal=False,task_statistics=task_stats,
                     balance_agent_counts=a.balance_agent_counts) for name,refs in used.items()}

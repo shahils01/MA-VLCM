@@ -14,7 +14,7 @@ import torch
 from data_utils import (FormationClipDataset, cache_features, collate_clips,
                         feature_cache_path, prepare_episode, read_episode)
 from model import ModelConfig, MultimodalValueModel
-from train_multitask import JointClipDataset
+from train_multitask import JointClipDataset, manifest_partitions
 from test_multitask_value import fixture_episode
 
 torch.set_num_threads(1)
@@ -28,6 +28,22 @@ class PixelEncoder(torch.nn.Module):
 
 
 class JointHeadTests(unittest.TestCase):
+    def test_split_manifest_preserves_subsets_and_rejects_leakage(self):
+        episodes = [dict(identity=str(i), path=f"episode_{i}.tar", task_domain=TASKS[0],
+                         scenario_id=str(i), num_agents=n) for i, n in enumerate((3, 4, 5, 6))]
+        manifest = dict(seed=42, validation_fraction=.1, test_fraction=.1,
+                        splits=dict(train=["0", "1"], validation=["2"], test=["3"]))
+        subset = manifest_partitions([episodes[0], episodes[2]], manifest, 42, .1, .1)
+        self.assertEqual(subset["train"], [episodes[0]])
+        self.assertEqual(subset["validation"], [episodes[2]])
+        self.assertEqual(subset["test"], [])
+        with self.assertRaisesRegex(ValueError, "seed/fractions"):
+            manifest_partitions(episodes, manifest, 99, .1, .1)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            manifest_partitions([dict(episodes[0], identity="unknown")], manifest, 42, .1, .1)
+        with self.assertRaisesRegex(ValueError, "same scenario"):
+            manifest_partitions([episodes[0], dict(episodes[2], scenario_id="0")], manifest, 42, .1, .1)
+
     def test_head_routing_normalization_and_selected_head_gradients(self):
         batch = dict(vl_features=torch.randn(2, 6, 8), robot_obs=torch.randn(2, 6, 3, 10),
                      adj=torch.ones(2, 6, 3, 3), robot_mask=torch.ones(2, 6, 3, dtype=torch.bool),
@@ -116,7 +132,7 @@ class JointHeadTests(unittest.TestCase):
                     "--formation-dataset", str(root / "data/formation_control"),
                     "--gotogoal-dataset", str(root / "data/goal_to_goal"), "--model-id", str(backbone),
                     "--cache-dir", str(root / "cache"), "--epochs", "1", "--batch-size", "16",
-                    "--mixed-precision", "no", "--image-size", "32", "--d-model", "16", "--dropout", "0",
+                    "--mixed-precision", "no", "--image-size", "32", "--d-model", "16", "--dropout", "0", "--clip-len", "8",
                     "--task-normalization", "--formation-context", "--balance-agent-counts",
                     "--discount-reference-hz", "20", "--expected-capture-hz", "10", "--num-workers", "2"]
 
@@ -125,16 +141,30 @@ class JointHeadTests(unittest.TestCase):
                                         stderr=subprocess.STDOUT, timeout=120)
                 self.assertEqual(result.returncode, 0, result.stdout)
 
+            run([sys.executable, *base, "--cache-only", "--output-dir", str(root / "cache_build")])
+            self.assertTrue((root / "cache_build/cache_report.json").exists())
+            self.assertFalse((root / "cache_build/latest.pt").exists())
+            base += ["--split-manifest", str(root / "cache_build/split_manifest.json")]
             for mode in ("shared", "task"):
                 run([sys.executable, *base, "--value-head-mode", mode, "--output-dir", str(root / mode)])
                 saved = torch.load(root / mode / "latest.pt", weights_only=True)
                 self.assertEqual(saved["model_state"]["value_head.3.weight"].shape[0], 1 if mode == "shared" else 2)
                 self.assertEqual(saved["run"]["control_gamma_by_task"]["goal_to_goal"], [.99 ** 2])
                 self.assertEqual(saved["run"]["args"]["num_agents"], [3, 4, 5, 6])
+                self.assertEqual(saved["model_config"]["clip_len"], 8)
             shared = json.loads((root / "shared/run.json").read_text())
             task = json.loads((root / "task/run.json").read_text())
             self.assertEqual(shared["splits"], task["splits"])
             self.assertEqual(shared["task_statistics"], task["task_statistics"])
+            for mode in ("shared", "task"):
+                run([sys.executable, *base, "--num-agents", "3", "5", "--value-head-mode", mode,
+                     "--output-dir", str(root / f"agents35_{mode}")])
+                subset = json.loads((root / f"agents35_{mode}/run.json").read_text())
+                self.assertEqual(subset["args"]["num_agents"], [3, 5])
+                for split in ("train", "validation", "test"):
+                    expected = {path for path in shared["splits"][split]
+                                if "agents_03" in path or "agents_05" in path}
+                    self.assertEqual(set(subset["splits"][split]), expected)
             resume = [sys.executable, *base, "--value-head-mode", "task", "--output-dir", str(root / "task"),
                       "--epochs", "2", "--resume", str(root / "task/latest.pt")]
             run(resume)

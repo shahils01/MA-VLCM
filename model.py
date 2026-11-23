@@ -170,7 +170,10 @@ class MultimodalValueModel(nn.Module):
         if self.cfg.task_names:
             ids = self.task_indices(batch, outputs.device)
             # Evaluate all heads before gathering: safe even for single-task DDP batches.
-            normalized = outputs.gather(1, ids[:, None]).squeeze(1) if self.cfg.value_head_mode == "task" else outputs[:, 0]
+            if self.cfg.value_head_mode == "task":
+                normalized = outputs.gather(1, ids[:, None]).squeeze(1)
+            else:
+                normalized = outputs[:, 0]
             if return_normalized:
                 return normalized
             return normalized.float() * self.task_target_std[ids] + self.task_target_mean[ids]

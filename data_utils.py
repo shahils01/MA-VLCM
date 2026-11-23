@@ -121,8 +121,12 @@ def read_episode(path, summary_path, cache_dir=None):
     context = []
     for state in states:
         f = state.get("formation", {})
-        context.append([f["stable_team_steps"] / f["formation_hold_steps"],
-                        float(np.mean(f["settled_agents"]))] if task_domain == "formation_control" and has_context else [0., 0.])
+        if task_domain == "formation_control" and has_context:
+            hold_fraction = f["stable_team_steps"] / f["formation_hold_steps"]
+            settled_fraction = float(np.mean(f["settled_agents"]))
+            context.append([hold_fraction, settled_fraction])
+        else:
+            context.append([0., 0.])
     if task_domain == "formation_control":
         bounds = formation["robot_center_bounds_m"]
     elif task_domain == "goal_to_goal":

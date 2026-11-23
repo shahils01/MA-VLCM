@@ -7,8 +7,8 @@ resume, and downloading results locally.
 For the current code map and an evidence-based plan for data, loss and training
 experiments, see [README_TRAINING_IMPROVEMENTS.md](README_TRAINING_IMPROVEMENTS.md).
 
-For the **3–6-agent joint shared-head versus task-head ablations**, with per-task
-return normalization and Palmetto batch scripts, see
+For **joint shared-head versus task-head ablations on 3–6 and 3/5 agents**, with
+per-task return normalization and a four-A100 parallel Palmetto launcher, see
 [README_JOINT_HEAD_ABLATION.md](README_JOINT_HEAD_ABLATION.md).
 
 The main Python files train a signed scalar value from overhead images, the task
