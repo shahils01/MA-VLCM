@@ -26,6 +26,10 @@ class ModelConfig:
     temporal_layers: int = 1
     dropout: float = 0.2
     lora_rank: int = 8
+    # Empty task_names preserves the original single-task checkpoint format.
+    task_names: tuple = ()
+    value_head_mode: str = "shared"  # shared | task
+    formation_context: bool = False
 
 
 class SmolVLMBackbone(nn.Module):
@@ -102,12 +106,24 @@ class MultimodalValueModel(nn.Module):
         self.register_buffer("obs_std", torch.ones(cfg.robot_obs_dim))
         self.register_buffer("target_mean", torch.tensor(0.0))
         self.register_buffer("target_std", torch.tensor(1.0))
+        if cfg.value_head_mode not in {"shared", "task"}:
+            raise ValueError("value_head_mode must be shared or task")
+        if cfg.value_head_mode == "task" and not cfg.task_names:
+            raise ValueError("Task heads require ordered task_names")
+        if len(set(cfg.task_names)) != len(cfg.task_names):
+            raise ValueError("task_names must be unique")
+        if cfg.task_names:
+            self.register_buffer("task_target_mean", torch.zeros(len(cfg.task_names)))
+            self.register_buffer("task_target_std", torch.ones(len(cfg.task_names)))
         self.visual = nn.Sequential(nn.LayerNorm(cfg.vl_hidden_dim), nn.Linear(cfg.vl_hidden_dim, cfg.d_model))
         self.graph = GraphAttentionEncoder(
             cfg.robot_obs_dim, cfg.d_model, cfg.gnn_layers, cfg.attention_heads, cfg.dropout
         )
         self.fuse = nn.Sequential(nn.Linear(2 * cfg.d_model, cfg.d_model), nn.GELU())
         self.time_embedding = nn.Sequential(nn.Linear(1, cfg.d_model), nn.Tanh())
+        if cfg.formation_context:
+            # Continuous hold fraction and fraction of robots in the settling latch.
+            self.context_embedding = nn.Linear(2, cfg.d_model, bias=False)
         layer = nn.TransformerEncoderLayer(
             cfg.d_model, cfg.attention_heads, dim_feedforward=4 * cfg.d_model,
             dropout=cfg.dropout, batch_first=True, norm_first=True,
@@ -115,10 +131,26 @@ class MultimodalValueModel(nn.Module):
         self.temporal = nn.TransformerEncoder(layer, cfg.temporal_layers, enable_nested_tensor=False)
         self.value_head = nn.Sequential(
             nn.LayerNorm(cfg.d_model), nn.Linear(cfg.d_model, cfg.d_model),
-            nn.GELU(), nn.Linear(cfg.d_model, 1),
+            # A K-output linear layer is K independent scalar affine heads.
+            nn.GELU(), nn.Linear(cfg.d_model, len(cfg.task_names) if cfg.value_head_mode == "task" else 1),
         )
 
-    def forward(self, batch):
+    def task_indices(self, batch, device):
+        if "task_id" in batch:
+            return batch["task_id"].to(device)
+        names = batch.get("task_domain")
+        if names is None:
+            raise ValueError("Task-normalized inference requires task_domain or task_id")
+        lookup = {name: i for i, name in enumerate(self.cfg.task_names)}
+        return torch.tensor([lookup[name] for name in names], device=device)
+
+    def normalize_targets(self, targets, batch):
+        if self.cfg.task_names:
+            ids = self.task_indices(batch, targets.device)
+            return (targets - self.task_target_mean[ids]) / self.task_target_std[ids]
+        return (targets - self.target_mean) / self.target_std
+
+    def forward(self, batch, return_normalized=False):
         features = batch.get("vl_features")
         if features is None:
             b, t = batch["frame_mask"].shape
@@ -130,9 +162,21 @@ class MultimodalValueModel(nn.Module):
         visual = self.visual(features.float())
         fused = self.fuse(torch.cat((visual, graph), dim=-1))
         fused = fused + self.time_embedding(batch["times"].unsqueeze(-1))
+        if self.cfg.formation_context:
+            fused = fused + self.context_embedding(batch["formation_context"].float())
         temporal = self.temporal(fused, src_key_padding_mask=~batch["frame_mask"])
         # Every clip contains only observations up to its anchor, which is always the last slot.
-        normalized = self.value_head(temporal[:, -1]).squeeze(-1)
+        outputs = self.value_head(temporal[:, -1])
+        if self.cfg.task_names:
+            ids = self.task_indices(batch, outputs.device)
+            # Evaluate all heads before gathering: safe even for single-task DDP batches.
+            normalized = outputs.gather(1, ids[:, None]).squeeze(1) if self.cfg.value_head_mode == "task" else outputs[:, 0]
+            if return_normalized:
+                return normalized
+            return normalized.float() * self.task_target_std[ids] + self.task_target_mean[ids]
+        normalized = outputs.squeeze(-1)
+        if return_normalized:
+            return normalized
         return normalized * self.target_std + self.target_mean
 
     def checkpoint_state(self):

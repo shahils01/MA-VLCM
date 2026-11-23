@@ -24,7 +24,7 @@ from train_multitask import (JointClipDataset, adapt_normalizers, archive_key,
 torch.set_num_threads(1)
 
 
-def fixture_episode(root, index, task, reason=None, num_agents=3, condition=None):
+def fixture_episode(root, index, task, reason=None, num_agents=3, condition=None, control_hz=None):
     directory=Path(root)/task/f"agents_{num_agents:02d}/worker_00"
     directory.mkdir(parents=True,exist_ok=True)
     path=directory/f"episode_{index:06d}.tar"
@@ -37,11 +37,13 @@ def fixture_episode(root, index, task, reason=None, num_agents=3, condition=None
                 goal=[.7,i*.2+.3]
                 agents.append(dict(pos=pos,yaw=.1*i,vel=[.2,0.],goal_pos=goal,
                     dist_to_goal=float(np.linalg.norm(np.asarray(goal)-pos)),min_neighbor_dist=.2))
-            state=dict(agents=agents,capture_hz=10.,control_hz=20. if task=="formation_control" else 10.,
+            hz = control_hz or (20. if task=="formation_control" else 10.)
+            state=dict(agents=agents,capture_hz=10.,control_hz=hz,
                 task_domain=task,task_instruction="Form a polygon." if task=="formation_control" else "Reach matching goals.",
                 episode_meta=dict(sim_time_s=step*.1,done=step==3))
             if task=="formation_control":
-                state["formation"]=dict(robot_center_bounds_m=[-1.,1.,-1.,1.],pattern="polygon",formation_spacing_m=.5)
+                state["formation"]=dict(robot_center_bounds_m=[-1.,1.,-1.,1.],pattern="polygon",formation_spacing_m=.5,
+                    stable_team_steps=step*2,formation_hold_steps=20,settled_agents=[step>1]*num_agents)
             else:
                 state["navigation"]=dict(grid=[[-2.5,2.5],[-2.5,2.5]])
                 if condition is not None:
@@ -53,7 +55,7 @@ def fixture_episode(root, index, task, reason=None, num_agents=3, condition=None
             reward=0. if step==0 else (1. if reason=="success" else -1.) if step==3 else -.02
             fields={"state.json":json.dumps(state).encode(),"overhead.png":png.getvalue(),
                     "adj.npy":adjacency.getvalue(),"reward.json":json.dumps(reward).encode(),
-                    "control_rewards.json":json.dumps([] if step==0 else ([.01,reward] if task=="formation_control" else [reward])).encode()}
+                    "control_rewards.json":json.dumps([] if step==0 else [.01]*(round(hz/10)-1)+[reward]).encode()}
             for suffix,data in fields.items():
                 member=tarfile.TarInfo(f"ep{index:06d}_step{step:05d}.{suffix}")
                 member.size=len(data)

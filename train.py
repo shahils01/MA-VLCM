@@ -138,19 +138,32 @@ def regression_metrics(predictions, targets, baseline):
 
 
 @torch.no_grad()
-def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="test", task_baselines=None):
+def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="test", task_baselines=None,
+                  accelerator=None, num_workers=0):
     import csv
     from accelerate.utils import send_to_device
 
     model.eval()
     rows = []
-    for batch in DataLoader(dataset, batch_size=batch_size, collate_fn=collate_clips):
+    if accelerator is not None:
+        from torch.utils.data import Subset
+        # No padding or duplicated evaluation examples, even for uneven shards.
+        dataset = Subset(dataset, range(accelerator.process_index, len(dataset), accelerator.num_processes))
+    for batch in DataLoader(dataset, batch_size=batch_size, collate_fn=collate_clips,
+                            num_workers=num_workers, pin_memory=device.type=="cuda",
+                            **({"prefetch_factor": 2} if num_workers else {})):
         metadata = batch.pop("metadata")
-        batch = send_to_device(batch, device)
+        batch = send_to_device(batch, device, non_blocking=True)
         # Evaluation on the main rank uses the same precision as training.
         predictions = model(batch).float().cpu().tolist()
         for info, pred, target in zip(metadata, predictions, batch["target"].cpu().tolist()):
             rows.append(dict(info, predicted_value=pred, target_return=target))
+    if accelerator is not None:
+        from accelerate.utils import gather_object
+        rows = gather_object(rows)
+        if not accelerator.is_main_process:
+            return None
+    rows.sort(key=lambda row: (row["episode"], row["anchor"]))
     with (output_dir / f"{split_name}_predictions.csv").open("w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=rows[0].keys())
         writer.writeheader()
@@ -188,10 +201,11 @@ def evaluate_test(model, dataset, batch_size, device, output_dir, split_name="te
     metrics["by_formation_outcome"] = {}
     names = {3: "triangle", 4: "square", 5: "pentagon", 6: "hexagon"}
     formation_rows = [r for r in rows if r.get("task_domain", "formation_control") == "formation_control"]
+    formation_baseline = (task_baselines or {}).get("formation_control", baseline)
     for n, success in sorted({(r["num_agents"], r["success"]) for r in formation_rows}):
         selected = [r for r in formation_rows if r["num_agents"] == n and r["success"] == success]
         result = regression_metrics([r["predicted_value"] for r in selected],
-                                    [r["target_return"] for r in selected], baseline)
+                                    [r["target_return"] for r in selected], formation_baseline)
         errors = {}
         for row in selected:
             errors.setdefault(row["episode"], []).append((row["predicted_value"] - row["target_return"]) ** 2)

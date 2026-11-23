@@ -1,5 +1,9 @@
 # One frozen-backbone VLCM critic for both Python tasks
 
+For the new **3–6-agent shared-head versus task-head comparison**, use
+[README_JOINT_HEAD_ABLATION.md](README_JOINT_HEAD_ABLATION.md). Both ablations
+use per-task normalized targets and recover values in native reward units.
+
 For the new **formation-only / joint without obstacles / joint with obstacles**
 0.5B experiments restricted to **3 and 5 agents**, use
 [README_EXPERIMENTS_35.md](README_EXPERIMENTS_35.md) and

@@ -19,7 +19,7 @@ OBSERVATION_NAMES = (
     "position_x", "position_y", "sin_yaw", "cos_yaw", "velocity_0", "velocity_1",
     "relative_goal_x", "relative_goal_y", "distance_to_goal", "nearest_robot_distance",
 )
-INDEX_VERSION = 6
+INDEX_VERSION = 7
 
 
 def episode_path_key(path):
@@ -114,6 +114,15 @@ def read_episode(path, summary_path, cache_dir=None):
     if task_domain in {"go_to_goal", "gtg"}:
         task_domain = "goal_to_goal"
     formation = first.get("formation", {})
+    # These are causal state variables, never episode outcome or future progress.
+    has_context = task_domain != "formation_control" or all(
+        {"stable_team_steps", "formation_hold_steps", "settled_agents"} <= set(s.get("formation", {}))
+        for s in states)
+    context = []
+    for state in states:
+        f = state.get("formation", {})
+        context.append([f["stable_team_steps"] / f["formation_hold_steps"],
+                        float(np.mean(f["settled_agents"]))] if task_domain == "formation_control" and has_context else [0., 0.])
     if task_domain == "formation_control":
         bounds = formation["robot_center_bounds_m"]
     elif task_domain == "goal_to_goal":
@@ -141,6 +150,8 @@ def read_episode(path, summary_path, cache_dir=None):
         "frame_ids": sorted(frames),
         "image_offsets": [(f["overhead.png"].offset_data, f["overhead.png"].size) for f in ordered],
         "prompt": first["task_instruction"], "robot_obs": obs,
+        "formation_context": torch.tensor(context, dtype=torch.float32),
+        "has_formation_context": has_context,
         "adj": torch.tensor(np.asarray(adjacency), dtype=torch.float32),
         "timestamps": times, "rewards": torch.tensor(rewards, dtype=torch.float64),
         "control_rewards": control_rewards, "capture_hz": float(first["capture_hz"]),
@@ -203,9 +214,12 @@ def discounted_returns(episode, gamma=0.99, source="sampled", indices=None):
     return values.float()
 
 
-def prepare_episode(episode, gamma=0.99, source="sampled", image_hz=5.0):
+def prepare_episode(episode, gamma=0.99, source="sampled", image_hz=5.0, discount_reference_hz=0.):
+    # gamma is defined at the reference rate. Never invent missing control rewards.
+    control_gamma = gamma ** (discount_reference_hz / episode["control_hz"]) if discount_reference_hz else gamma
     indices = frame_indices(episode, image_hz)
-    return dict(episode, selected_indices=indices, returns=discounted_returns(episode, gamma, source, indices))
+    return dict(episode, selected_indices=indices, control_gamma=control_gamma,
+                returns=discounted_returns(episode, control_gamma, source, indices))
 
 
 def split_episodes(episodes, seed=42, validation_fraction=0.1, test_fraction=0.1):
@@ -251,20 +265,39 @@ def feature_cache_path(episode, cfg, cache_dir):
     return Path(cache_dir) / f"{key}.pt"
 
 
-def cache_features(episodes, encoder, cfg, cache_dir):
+class FeatureBatches(Dataset):
+    """CPU workers decode the next image batch while the GPU encodes this one."""
+    def __init__(self, episodes, batch_size):
+        self.episodes, self.batch_size = episodes, batch_size
+        self.batches = [(i, start) for i, ep in enumerate(episodes)
+                        for start in range(0, len(ep["selected_indices"]), batch_size)]
+
+    def __len__(self):
+        return len(self.batches)
+
+    def __getitem__(self, index):
+        i, start = self.batches[index]
+        ep = self.episodes[i]
+        images = read_images(ep, ep["selected_indices"][start:start + self.batch_size])
+        return i, start, images, [ep["prompt"]] * len(images)
+
+
+def cache_features(episodes, encoder, cfg, cache_dir, num_workers=0):
+    from torch.utils.data import DataLoader
     from tqdm.auto import tqdm
 
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
     encoder.eval()
-    for episode in tqdm(episodes, desc="SmolVLM feature cache"):
-        path = feature_cache_path(episode, cfg, cache_dir)
-        if not path.exists():
+    episodes = [ep for ep in episodes if not feature_cache_path(ep, cfg, cache_dir).exists()]
+    batches = FeatureBatches(episodes, cfg.vl_batch_size)
+    loader = DataLoader(batches, batch_size=None, num_workers=num_workers,
+                        **({"prefetch_factor": 2} if num_workers else {}))
+    blocks = []
+    for i, start, images, prompts in tqdm(loader, desc="SmolVLM feature cache"):
+        blocks.append(encoder(images, prompts).detach().cpu().half())
+        if start + len(images) == len(episodes[i]["selected_indices"]):
+            save_tensor_file(torch.cat(blocks), feature_cache_path(episodes[i], cfg, cache_dir))
             blocks = []
-            indices = episode["selected_indices"]
-            for start in range(0, len(indices), cfg.vl_batch_size):
-                images = read_images(episode, indices[start:start + cfg.vl_batch_size])
-                blocks.append(encoder(images, [episode["prompt"]] * len(images)).detach().cpu().half())
-            save_tensor_file(torch.cat(blocks), path)
 
 
 class FormationClipDataset(Dataset):
@@ -274,7 +307,8 @@ class FormationClipDataset(Dataset):
         self.samples = [(i, anchor) for i, ep in enumerate(episodes)
                         for anchor in range(0, len(ep["selected_indices"]) - int(not include_terminal and ep["complete"]), clip_stride)]
         self.features = None if feature_dir is None else [
-            torch.load(feature_cache_path(ep, cfg, feature_dir), map_location="cpu", weights_only=True).float()
+            # Keep cached fp16 features compact in CPU RAM and in transfers.
+            torch.load(feature_cache_path(ep, cfg, feature_dir), map_location="cpu", weights_only=True)
             for ep in episodes
         ]
 
@@ -298,6 +332,8 @@ class FormationClipDataset(Dataset):
                          "num_agents": ep["num_agents"], "success": ep["success"],
                          "task_domain": ep.get("task_domain", "formation_control")},
         }
+        if "formation_context" in ep:
+            row["formation_context"] = ep["formation_context"][frame_indices]
         if self.features is None:
             row.update(images=read_images(ep, frame_indices.tolist()), prompt=ep["prompt"])
         else:
@@ -318,12 +354,13 @@ def collate_clips(rows):
                 batch[key][i, :, :n, :n] = row[key]
             else:
                 batch[key][i, :, :n] = row[key]
-    for key in ("frame_mask", "times", "target", "vl_features"):
+    for key in ("frame_mask", "times", "target", "vl_features", "formation_context", "task_id"):
         if key in rows[0]:
             batch[key] = torch.stack([row[key] for row in rows])
     for key in ("images", "prompt", "metadata"):
         if key in rows[0]:
             batch[key] = [row[key] for row in rows]
+    batch["task_domain"] = [row["metadata"]["task_domain"] for row in rows]
     return batch
 
 

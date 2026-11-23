@@ -27,7 +27,8 @@ def main():
     device = torch.device(args.device)
     run_args = checkpoint["run"]["args"]
     path, summary = discover_episodes(args.episode)[0]
-    episode = prepare_episode(read_episode(path, summary), run_args["gamma"], run_args["return_source"], run_args["image_hz"])
+    episode = prepare_episode(read_episode(path, summary), run_args["gamma"], run_args["return_source"], run_args["image_hz"],
+                              run_args.get("discount_reference_hz", 0.))
     dataset = FormationClipDataset([episode], cfg.clip_len)
     row = dataset[args.anchor]
     batch = collate_clips([row])

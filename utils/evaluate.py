@@ -56,7 +56,8 @@ def main():
         if any(episode_path_key(path) in saved for path, _ in references):
             raise ValueError("External archives overlap saved split path keys; use saved-split evaluation or uniquely named new episodes")
     episodes = [prepare_episode(read_episode(path, summary, Path(args.cache_dir) / "index"),
-                                run_args["gamma"], run_args["return_source"], run_args["image_hz"])
+                                run_args["gamma"], run_args["return_source"], run_args["image_hz"],
+                                run_args.get("discount_reference_hz", 0.))
                 for path, summary in references]
     if args.num_agents and any(ep["num_agents"] not in args.num_agents for ep in episodes):
         raise ValueError("An episode's actual agent count disagrees with its summary")

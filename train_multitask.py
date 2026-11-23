@@ -1,6 +1,7 @@
 """Train one frozen-backbone VLCM on selected formation/navigation returns."""
 import argparse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import hashlib
 import json
@@ -11,8 +12,8 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from accelerate import Accelerator
-from accelerate.utils import broadcast_object_list, send_to_device, set_seed
+from accelerate import Accelerator, DataLoaderConfiguration
+from accelerate.utils import broadcast_object_list, set_seed
 
 from data_utils import (FormationClipDataset, cache_features, collate_clips,
                         discover_episodes, feature_cache_path, prepare_episode,
@@ -23,6 +24,7 @@ from train import evaluate_test
 
 TASKS = ("formation_control", "goal_to_goal")
 EXPERIMENTS = {
+    "joint": TASKS,
     "formation_only": ("formation_control",),
     "joint_without_obstacles": TASKS,
     "joint_with_obstacles": TASKS,
@@ -116,17 +118,25 @@ def adapt_normalizers(model, statistics):
 
 
 class JointClipDataset(FormationClipDataset):
-    def __init__(self, *args, task_statistics, **kwargs):
+    def __init__(self, *args, task_statistics, balance_agent_counts=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.task_statistics = task_statistics
         self.task_counts = Counter(self.episodes[i]["task_domain"] for i, _ in self.samples)
         self.sample_weights = torch.tensor([1. / self.task_counts[self.episodes[i]["task_domain"]]
                                             for i, _ in self.samples], dtype=torch.double)
+        if balance_agent_counts:
+            groups = Counter((self.episodes[i]["task_domain"], self.episodes[i]["num_agents"]) for i, _ in self.samples)
+            sizes = Counter(task for task, _ in groups)
+            # P(task)=1/K; P(team size | task)=1/number_of_sizes.
+            self.sample_weights = torch.tensor([
+                1. / (sizes[self.episodes[i]["task_domain"]] * groups[(self.episodes[i]["task_domain"], self.episodes[i]["num_agents"])])
+                for i, _ in self.samples], dtype=torch.double)
 
     def __getitem__(self, index):
         row = super().__getitem__(index)
         task = row["metadata"]["task_domain"]
         row["loss_scale"] = self.task_statistics[task]["target_std"]
+        row["task_id"] = torch.tensor(list(self.task_statistics).index(task), dtype=torch.long)
         return row
 
 
@@ -144,22 +154,30 @@ def selection_score(metrics, task_statistics):
 
 def train_epoch(model, loader, optimizer, accelerator):
     model.train()
-    squared, raw_squared, count = 0., 0., 0
+    totals = torch.zeros(3, device=accelerator.device)
+    core = accelerator.unwrap_model(model)
     for batch in loader:
         with accelerator.accumulate(model):
-            pred = model(batch)
-            error = pred - batch["target"]
-            loss = (error / batch["loss_scale"]).square().mean()
+            if core.cfg.task_names:
+                # z_k = (G - mu_k)/sigma_k; train f_k directly in normalized units.
+                pred = model(batch, return_normalized=True)
+                normalized_error = pred.float() - core.normalize_targets(batch["target"], batch)
+                ids = core.task_indices(batch, pred.device)
+                error = normalized_error * core.task_target_std[ids]
+            else:
+                error = model(batch) - batch["target"]
+                normalized_error = error / batch["loss_scale"]
+            loss = normalized_error.square().mean()
             accelerator.backward(loss)
             if accelerator.sync_gradients:
                 accelerator.clip_grad_norm_(model.parameters(), 1.)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
-        raw, normalized = accelerator.gather_for_metrics((error.detach().float(), (error / batch["loss_scale"]).detach().float()))
-        raw_squared += raw.square().sum().item()
-        squared += normalized.square().sum().item()
-        count += len(raw)
-    return dict(normalized_mse=squared/count, mse=raw_squared/count, count=count)
+        # One synchronization per epoch instead of copying CUDA metrics every batch.
+        totals += torch.stack((normalized_error.detach().square().sum(), error.detach().square().sum(),
+                               error.new_tensor(error.numel())))
+    squared, raw_squared, count = accelerator.reduce(totals, reduction="sum").tolist()
+    return dict(normalized_mse=squared/count, mse=raw_squared/count, count=int(count))
 
 
 def parse_args(argv=None):
@@ -181,6 +199,14 @@ def parse_args(argv=None):
     p.add_argument("--lr", type=float, default=3e-5)
     p.add_argument("--weight-decay", type=float, default=.01)
     p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--prefetch-factor", type=int, default=2)
+    p.add_argument("--value-head-mode", choices=("shared", "task"), default="shared")
+    p.add_argument("--task-normalization", action="store_true", help="Train normalized outputs using each task's train-only mean/std")
+    p.add_argument("--balance-agent-counts", action="store_true", help="Sample team sizes equally within each task")
+    p.add_argument("--formation-context", action="store_true", help="Add recorded hold fraction and settled fraction to both ablations")
+    p.add_argument("--discount-reference-hz", type=float, default=0., help="Gamma's reference rate; 0 keeps legacy native-step discounting")
+    p.add_argument("--expected-control-hz", type=float, default=0., help="Require this native control rate in every archive; 0 accepts recorded rates")
+    p.add_argument("--expected-capture-hz", type=float, default=0., help="Require this recorded image rate; 0 disables")
     p.add_argument("--clip-stride", type=int, default=1)
     p.add_argument("--image-hz", type=float, default=10.)
     p.add_argument("--gamma", type=float, default=.99)
@@ -214,13 +240,19 @@ def parse_args(argv=None):
     if "goal_to_goal" in a.evaluation_tasks and not a.gotogoal_dataset:
         p.error("Joint experiments require --gotogoal-dataset")
     if a.num_agents is None and a.experiment != "legacy":
-        a.num_agents = [3,5]
+        a.num_agents = [3,4,5,6] if a.experiment == "joint" else [3,5]
     if a.num_agents and any(n < 1 for n in a.num_agents):
         p.error("Agent counts must be positive")
     a.navigation_condition = {"joint_without_obstacles":"without_obstacles", "joint_with_obstacles":"with_obstacles"}.get(a.experiment,"all")
     if a.training_tasks and not set(a.training_tasks) <= set(a.evaluation_tasks):
         p.error("Training tasks must belong to the selected experiment")
     a.training_tasks = [task for task in a.evaluation_tasks if task in (a.training_tasks or a.evaluation_tasks)]
+    if a.value_head_mode == "task" and not a.task_normalization:
+        p.error("Task heads require --task-normalization")
+    if a.init_checkpoint and (a.task_normalization or a.formation_context or a.value_head_mode != "shared"):
+        p.error("The new ablations start fresh; omit --init-checkpoint to keep their initialization comparable")
+    if min(a.discount_reference_hz, a.expected_control_hz, a.expected_capture_hz) < 0 or a.prefetch_factor < 1:
+        p.error("Rates must be nonnegative and prefetch-factor positive")
     for key, legacy in (("expected_formation_episodes",3000),("expected_gotogoal_episodes",2000)):
         if getattr(a,key) is None:
             setattr(a,key,legacy if a.experiment == "legacy" else 0)
@@ -238,7 +270,11 @@ def main():
     if "LOCAL_RANK" in os.environ and torch.cuda.is_available():
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     accelerator = Accelerator(mixed_precision=a.mixed_precision, gradient_accumulation_steps=a.grad_accum_steps,
-                              log_with="wandb" if a.wandb else None)
+                              log_with="wandb" if a.wandb else None,
+                              dataloader_config=DataLoaderConfiguration(non_blocking=True))
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
     set_seed(a.seed)
     root, cache = Path(a.output_dir), Path(a.cache_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -286,7 +322,12 @@ def main():
             vl_dtype={"no":"float32","fp16":"float16","bf16":"bfloat16"}[a.mixed_precision],
             clip_len=a.clip_len, vl_batch_size=a.vl_batch_size, image_size=a.image_size,
             d_model=a.d_model, gnn_layers=a.gnn_layers, temporal_layers=a.temporal_layers,
-            attention_heads=a.attention_heads, dropout=a.dropout)
+            attention_heads=a.attention_heads, dropout=a.dropout,
+            task_names=tuple(tasks) if a.task_normalization else (),
+            value_head_mode=a.value_head_mode, formation_context=a.formation_context)
+    if a.resume and (cfg.value_head_mode != a.value_head_mode or bool(cfg.task_names) != a.task_normalization
+                     or cfg.formation_context != a.formation_context):
+        raise ValueError("Resume requires the original head, normalization and context flags")
     a.dataset = a.formation_dataset
     a.additional_datasets = [a.gotogoal_dataset] if "goal_to_goal" in tasks else []
     a.dataset_revision = "main"
@@ -297,16 +338,22 @@ def main():
     with accelerator.main_process_first():
         episodes = []
         excluded = Counter()
-        for task,path,summary in references:
-            ep = read_episode(path,summary,cache/"index")
+        with ThreadPoolExecutor(max_workers=max(1, a.num_workers)) as pool:
+            indexed = list(pool.map(lambda ref: read_episode(ref[1],ref[2],cache/"index"), references))
+        for (task,path,summary),ep in zip(references,indexed):
             if ep["task_domain"] != task:
                 raise ValueError(f"Wrong task domain in {path}")
             if a.num_agents and ep["num_agents"] not in a.num_agents:
                 raise ValueError(f"Archive/summary agent count mismatch in {path}")
             if task == "goal_to_goal" and a.navigation_condition != "all" and ep["navigation_condition"] != a.navigation_condition:
                 raise ValueError(f"Archive/summary obstacle condition mismatch in {path}")
+            for key, expected in (("control_hz", a.expected_control_hz), ("capture_hz", a.expected_capture_hz)):
+                if expected and not np.isclose(ep[key], expected):
+                    raise ValueError(f"{path}: recorded {key}={ep[key]}, expected {expected}; recollect rather than relabel timestamps")
+            if cfg.formation_context and not ep["has_formation_context"]:
+                raise ValueError(f"Missing recorded formation hold/settling state in {path}")
             if ep["complete"]:
-                episodes.append(prepare_episode(ep,a.gamma,"control",a.image_hz))
+                episodes.append(prepare_episode(ep,a.gamma,"control",a.image_hz,a.discount_reference_hz))
             else:
                 excluded[task] += 1
     if initial:
@@ -346,26 +393,33 @@ def main():
         model_config=asdict(cfg), experiment=a.experiment, num_agents=a.num_agents,
         navigation_condition=a.navigation_condition, gamma=a.gamma,
         image_hz=a.image_hz,clip_stride=a.clip_stride,seed=a.seed,training_tasks=a.training_tasks,
+        discount_reference_hz=a.discount_reference_hz,
+        balance_agent_counts=a.balance_agent_counts,
         splits={name:[ep["identity"] for ep in refs] for name,refs in splits.items()}),sort_keys=True).encode()).hexdigest()
     used = {name:refs for name,refs in splits.items() if name!="test" or not a.skip_test}
     feature_dir = cache/"features"
-    if accelerator.is_main_process:
-        missing = [ep for refs in used.values() for ep in refs if not feature_cache_path(ep,cfg,feature_dir).exists()]
-        if missing:
-            encoder = SmolVLMBackbone(cfg,accelerator.device)
-            cache_features(missing,encoder,cfg,feature_dir)
-            del encoder
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+    missing = [ep for refs in used.values() for ep in refs if not feature_cache_path(ep,cfg,feature_dir).exists()]
+    accelerator.wait_for_everyone()
+    # Every rank computes its own disjoint episode shard, including during cache creation.
+    assigned = missing[accelerator.process_index::accelerator.num_processes]
+    if assigned:
+        encoder = SmolVLMBackbone(cfg,accelerator.device)
+        cache_features(assigned,encoder,cfg,feature_dir,num_workers=a.num_workers)
+        del encoder
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     accelerator.wait_for_everyone()
     datasets = {name:JointClipDataset(refs,cfg.clip_len,a.clip_stride,feature_dir,cfg,
-                    include_terminal=False,task_statistics=task_stats) for name,refs in used.items()}
+                    include_terminal=False,task_statistics=task_stats,
+                    balance_agent_counts=a.balance_agent_counts) for name,refs in used.items()}
     generator = torch.Generator()
     sampler = (WeightedRandomSampler(datasets["train"].sample_weights,len(datasets["train"]),replacement=True,generator=generator)
-               if len(a.training_tasks)>1 else None)
+               if len(a.training_tasks)>1 or a.balance_agent_counts else None)
     train_loader = DataLoader(datasets["train"],batch_size=a.batch_size,sampler=sampler,
                              shuffle=sampler is None,generator=generator,
-                             num_workers=a.num_workers,collate_fn=collate_joint)
+                             num_workers=a.num_workers,collate_fn=collate_joint,
+                             pin_memory=accelerator.device.type=="cuda",
+                             **(dict(persistent_workers=True,prefetch_factor=a.prefetch_factor) if a.num_workers else {}))
     # Cache creation must not change the initial critic weights across experiments.
     set_seed(a.seed)
     model = MultimodalValueModel(cfg,accelerator.device,load_backbone=False)
@@ -376,6 +430,10 @@ def main():
     else:
         for key,value in joint_stats.items():
             getattr(model,key).copy_(value)
+        if cfg.task_names:
+            for i,task in enumerate(cfg.task_names):
+                model.task_target_mean[i] = task_stats[task]["target_mean"]
+                model.task_target_std[i] = task_stats[task]["target_std"]
     initial_model_state = {key:value.clone() for key,value in model.checkpoint_state().items()}
     optimizer = torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=a.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode="min",factor=.5,patience=2)
@@ -390,7 +448,8 @@ def main():
                 training_tasks=a.training_tasks,
                 splits={name:[ep["identity"] for ep in refs] for name,refs in splits.items()})
             accepted_signatures.add(hashlib.sha256(json.dumps(legacy_payload,sort_keys=True).encode()).hexdigest())
-        if checkpoint["run"]["signature"] not in accepted_signatures or checkpoint["model_config"] != asdict(cfg):
+        saved_cfg = asdict(ModelConfig(**checkpoint["model_config"]))
+        if checkpoint["run"]["signature"] not in accepted_signatures or saved_cfg != asdict(cfg):
             raise ValueError("Resume requires the same joint datasets, splits, initialization and configuration")
         if Path(checkpoint["run"]["args"]["output_dir"]).resolve() != root.resolve():
             raise ValueError("Resume must write to its original output directory")
@@ -406,6 +465,12 @@ def main():
         selection=selection,
         return_definition="Full future native control-step rewards, gamma once per control step; incoming/past reward excluded",
         control_hz_by_task={task:sorted({ep['control_hz'] for ep in episodes if ep['task_domain']==task}) for task in tasks},
+        capture_hz_by_task={task:sorted({ep['capture_hz'] for ep in episodes if ep['task_domain']==task}) for task in tasks},
+        control_gamma_by_task={task:sorted({ep['control_gamma'] for ep in episodes if ep['task_domain']==task}) for task in tasks},
+        normalization="Per-task z=(G-mu_k)/sigma_k; forward returns sigma_k*z+mu_k" if cfg.task_names else "Legacy shared affine output; task-scaled loss",
+        throughput=dict(world_size=accelerator.num_processes,per_gpu_batch_size=a.batch_size,
+                        effective_batch_size=a.batch_size*a.grad_accum_steps*accelerator.num_processes,
+                        workers_per_rank=a.num_workers),
         policy_value="Conditional expected recorded return under each task's dataset behavior-policy mixture",
         splits={name:[ep["path"] for ep in refs] for name,refs in splits.items()},
         pretrained_splits=initial["run"]["splits"] if initial else {},
@@ -413,6 +478,7 @@ def main():
         training_tasks=a.training_tasks,
         training_episode_counts=dict(Counter(ep["task_domain"] for ep in splits["train"])),
         sampling=("Equal probability per task at clip level" if len(a.training_tasks)>1 else "Only selected task; shuffled without replacement")+"; per-task train-only return standard deviation scales the loss",
+        agent_sampling="Equal team-size probability within each task" if a.balance_agent_counts else "Natural within-task clip frequency",
         normalizer_transfer="Affine conversion preserving warm-start predictions" if initial else "Training-only statistics; fresh critic layers",
         formation_split="Original checkpoint holdouts preserved" if initial else "Task-local seeded scenario splits; consistent formation holdouts across experiments")
     accelerator.print(f"Training tasks: {a.training_tasks}; gradient-bearing episodes: {run['training_episode_counts']}; evaluated tasks: {tasks}")
@@ -427,10 +493,11 @@ def main():
     def evaluate(name,label):
         accelerator.wait_for_everyone()
         payload=[None]
+        with accelerator.autocast():
+            metrics=evaluate_test(accelerator.unwrap_model(model),datasets[name],a.batch_size,
+                accelerator.device,root,label,task_baselines=baselines,
+                accelerator=accelerator,num_workers=a.num_workers)
         if accelerator.is_main_process:
-            with accelerator.autocast():
-                metrics=evaluate_test(accelerator.unwrap_model(model),datasets[name],a.batch_size,
-                    accelerator.device,root,label,task_baselines=baselines)
             metrics["macro_task_normalized_mse"]=selection_score(metrics,task_stats)
             (root/f"{label}_metrics.json").write_text(json.dumps(metrics,indent=2)+"\n")
             payload[0]=metrics
@@ -449,6 +516,8 @@ def main():
         started=time.monotonic()
         generator.manual_seed(a.seed+epoch)
         train_metrics=train_epoch(model,train_loader,optimizer,accelerator)
+        train_seconds=time.monotonic()-started
+        train_metrics.update(seconds=train_seconds, clips_per_second=train_metrics["count"]/train_seconds)
         validation=evaluate("validation","validation")
         score=validation["macro_task_normalized_mse"]
         improved=score<best
@@ -462,7 +531,8 @@ def main():
             accelerator.print(f"Epoch {epoch+1}: validation macro NMSE {score:.5f}; " +
                 "; ".join(f"{task} MAE={validation['by_task'][task]['mae']:.4f}" for task in tasks))
             if a.wandb:
-                log={"train/normalized_mse":train_metrics["normalized_mse"],"validation/macro_task_normalized_mse":score}
+                log={"train/normalized_mse":train_metrics["normalized_mse"],"validation/macro_task_normalized_mse":score,
+                     "train/clips_per_second":train_metrics["clips_per_second"],"train/seconds":train_seconds}
                 log.update({f"validation/{task}/{key}":validation["by_task"][task][key]
                             for task in tasks for key in ("mse","mae","r2")})
                 accelerator.log(log,step=epoch+1)

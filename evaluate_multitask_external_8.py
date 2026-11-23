@@ -192,7 +192,7 @@ def reuse_identical_features(root,previous):
     args=checkpoint["run"]["args"]
 
     def episodes(directory):
-        return [prepare_episode(read_episode(p,s),args["gamma"],"control",args["image_hz"])
+        return [prepare_episode(read_episode(p,s),args["gamma"],"control",args["image_hz"],args.get("discount_reference_hz",0.))
                 for p,s in discover_episodes(directory/"samples")]
 
     def image_digests(ep):
@@ -249,7 +249,7 @@ def evaluate(root,threads):
     refs=discover_episodes(root/"samples")
     if len(refs)!=8:
         raise ValueError(f"Expected eight episodes, found {len(refs)}")
-    episodes=[prepare_episode(read_episode(path,summary,root/"cache/index"),args["gamma"],"control",args["image_hz"]) for path,summary in refs]
+    episodes=[prepare_episode(read_episode(path,summary,root/"cache/index"),args["gamma"],"control",args["image_hz"],args.get("discount_reference_hz",0.)) for path,summary in refs]
     if {(ep["task_domain"],ep["num_agents"]) for ep in episodes}!={(task,n) for task in SOURCES for n in (3,4,5,6)}:
         raise ValueError("Missing task/team-size coverage")
     feature_dir=root/"cache/features"

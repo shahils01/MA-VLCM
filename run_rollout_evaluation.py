@@ -438,7 +438,7 @@ def score(root, checkpoints, device_name):
         raw = read_episode(path, row["summary_path"], cache/"index")
         args = saved[MODELS[0]]["run"]["args"]
         if raw["complete"]:
-            ep = prepare_episode(raw, args["gamma"], args["return_source"], args["image_hz"])
+            ep = prepare_episode(raw, args["gamma"], args["return_source"], args["image_hz"], args.get("discount_reference_hz", 0.))
         else:
             selected = frame_indices(raw, args["image_hz"])
             ep = dict(raw, selected_indices=selected, returns=torch.zeros(len(selected)))

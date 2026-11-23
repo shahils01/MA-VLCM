@@ -136,7 +136,8 @@ def infer(checkpoint, episode_path, cache_dir, device_name, batch_size):
     episode = read_episode(path, summary, Path(cache_dir) / 'index')
     # Incomplete rollouts may be visualized, but their truncated returns aren't ground truth.
     if episode['complete']:
-        episode = prepare_episode(episode, run_args['gamma'], run_args['return_source'], run_args['image_hz'])
+        episode = prepare_episode(episode, run_args['gamma'], run_args['return_source'], run_args['image_hz'],
+                                  run_args.get('discount_reference_hz', 0.))
     else:
         indices = frame_indices(episode, run_args['image_hz'])
         episode = dict(episode, selected_indices=indices, returns=torch.zeros(len(indices)))

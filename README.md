@@ -7,6 +7,10 @@ resume, and downloading results locally.
 For the current code map and an evidence-based plan for data, loss and training
 experiments, see [README_TRAINING_IMPROVEMENTS.md](README_TRAINING_IMPROVEMENTS.md).
 
+For the **3–6-agent joint shared-head versus task-head ablations**, with per-task
+return normalization and Palmetto batch scripts, see
+[README_JOINT_HEAD_ABLATION.md](README_JOINT_HEAD_ABLATION.md).
+
 The main Python files train a signed scalar value from overhead images, the task
 instruction, robot states, and dynamic adjacency. The implementation uses
 [SmolVLM-500M-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct),
