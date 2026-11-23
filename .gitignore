@@ -26,3 +26,5 @@ ma_vlcm_container.sif
 ma_vlcm.def
 .hf_cache/
 !reports/*.json
+
+/data_samples/
