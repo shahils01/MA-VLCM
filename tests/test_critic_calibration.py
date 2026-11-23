@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from calibrate_critic_by_formation import calibrate, read_episodes
+from utils.calibrate_critic_by_formation import calibrate, read_episodes
 
 
 class CalibrationTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class CalibrationTests(unittest.TestCase):
             self.assertEqual(len(rows), 4)
 
     def test_constant_predictions_cannot_fit(self):
-        from calibrate_critic_by_formation import fit_affine
+        from utils.calibrate_critic_by_formation import fit_affine
         ep = dict(predictions=np.ones(2), returns=np.zeros(2))
         with self.assertRaises(ValueError):
             fit_affine([ep, ep])

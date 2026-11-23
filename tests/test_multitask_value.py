@@ -261,7 +261,7 @@ class JointValueTests(unittest.TestCase):
             self.assertIn("by_outcome",metrics["by_task"]["goal_to_goal"])
             latest=torch.load(root/"output/latest.pt",map_location="cpu",weights_only=True)
             self.assertFalse(torch.equal(initial.state_dict()["graph.layers.0.source.weight"],latest["model_state"]["graph.layers.0.source.weight"]))
-            evaluate_command=[sys.executable,str(Path(__file__).resolve().parents[1]/"evaluate.py"),
+            evaluate_command=[sys.executable,str(Path(__file__).resolve().parents[1]/"utils/evaluate.py"),
                 "--checkpoint",str(root/"output/best.pt"),"--cache-dir",str(root/"cache"),
                 "--output-dir",str(root/"standalone_evaluation"),"--split","test"]
             evaluation=subprocess.run(evaluate_command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)

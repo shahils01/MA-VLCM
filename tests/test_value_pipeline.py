@@ -134,8 +134,7 @@ class ArchiveAndModelTests(unittest.TestCase):
         self.assertEqual([anchor for _, anchor in dataset.samples], [0, 1, 2])
         stats = training_statistics(self.episodes[:1], include_terminal=False)
         torch.testing.assert_close(stats["target_mean"], self.episodes[0]["returns"][:-1].mean())
-        import predict
-
+        import utils.predict as predict
         checkpoint = self.root / "terminal.pt"
         torch.save({"model_config": asdict(ModelConfig()), "run": {
             "args": {"gamma": 0.99, "return_source": "sampled", "image_hz": 5.0},

@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 
 from data_utils import prepare_episode, read_episode
-from inspect_dataset import Catalog, inspect_episode, load_archive, make_handler
+from utils.inspect_dataset import Catalog, inspect_episode, load_archive, make_handler
 
 
 def fixture(root, task="goal_to_goal", reason="success", bad_controls=False, bad_dist=False):

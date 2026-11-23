@@ -1,6 +1,6 @@
 # Compare formation and navigation episode archives
 
-`inspect_dataset.py` serves a read-only, CPU-only comparison viewer. It does
+`utils/inspect_dataset.py` serves a read-only, CPU-only comparison viewer. It does
 not load VLM weights, modify archives, extract tar members to disk, or send
 data to an external service. It uses the existing VLCM training return code.
 
@@ -10,7 +10,7 @@ With the training Python environment activated, on the login host:
 
 ```bash
 cd /home/anshuln/MA_VLCM/MA-VLCM
-python inspect_dataset.py \
+python utils/inspect_dataset.py \
   --dataset formation /home/anshuln/Dataset/polygon_formation_python_env \
   --dataset navigation /home/anshuln/Dataset/manyagent_gotogoal_10m_3000 \
   --port 8765
@@ -32,7 +32,7 @@ the actual DeltaAI login hostname, and your `/u/anayak2/VLCM/datasets/...` paths
 To start with particular archives instead of scanning dataset roots:
 
 ```bash
-python inspect_dataset.py \
+python utils/inspect_dataset.py \
   --episode /path/to/formation/episode_000001.tar \
   --episode /path/to/formation/episode_000501.tar \
   --episode /path/to/navigation/episode_000002.tar \
@@ -129,7 +129,7 @@ safety curves use captured endpoints, not continuous swept collision replay.
 For a headless report without the web server:
 
 ```bash
-python inspect_dataset.py --episode /path/to/episode_000001.tar \
+python utils/inspect_dataset.py --episode /path/to/episode_000001.tar \
   --gamma .99 --image-hz 10 --report reports/episode_checks.json
 ```
 

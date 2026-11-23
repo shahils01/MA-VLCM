@@ -25,7 +25,7 @@ if [[ -e "$RUN_DIR" ]]; then
     exit 1
 fi
 mkdir -p "$RUN_DIR"
-"$PYTHON_BIN" "$PROJECT_ROOT/prepare_frozen_2000.py" \
+"$PYTHON_BIN" "$PROJECT_ROOT/utils/prepare_frozen_2000.py" \
     --dataset "$DATASET" --external-dataset "$EXTERNAL_DATASET" \
     --cache-dir "$CACHE_DIR" --output "$RUN_DIR/preflight.json" \
     --seed "$SEED" --gamma 0.99 --image-hz "$IMAGE_HZ"
@@ -50,7 +50,7 @@ bash "$PROJECT_ROOT/train.sh" \
     --checkpoint-every "${FROZEN_CHECKPOINT_EVERY:-2}" \
     --checkpoint-every-steps "${FROZEN_CHECKPOINT_EVERY_STEPS:-0}" --log-every-steps 50
 # Select best.pt using internal validation only, then score the separate 60 once.
-"$PYTHON_BIN" "$PROJECT_ROOT/evaluate.py" \
+"$PYTHON_BIN" "$PROJECT_ROOT/utils/evaluate.py" \
     --checkpoint "$RUN_DIR/best.pt" --dataset "$EXTERNAL_DATASET" \
     --split external --expected-episodes 60 --cache-dir "$CACHE_DIR" \
     --output-dir "$RUN_DIR/external60" --batch-size "$BATCH_SIZE"

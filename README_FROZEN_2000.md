@@ -7,9 +7,9 @@ temporal transformer and value head train from scratch on the expanded data.
 
 ## Submit on Palmetto
 
-Update the MA-VLCM code on Palmetto, including `prepare_frozen_2000.py`,
+Update the MA-VLCM code on Palmetto, including `utils/prepare_frozen_2000.py`,
 `train_frozen_2000.sh`, `train_frozen_2000_palmetto.sbatch`, `train.py` and
-`evaluate.py`. From that checkout, set paths to the uploaded datasets:
+`utils/evaluate.py`. From that checkout, set paths to the uploaded datasets:
 
 ```bash
 cd /path/to/MA-VLCM
@@ -119,7 +119,7 @@ that rolling recovery checkpoint. A new
 These defaults apply to new launches. An already running Palmetto process keeps
 the checkpoint intervals recorded in its own `run.json`; changing a local script
 does not change that job's startup arguments.
-After training, the job automatically runs `evaluate.py --split external
+After training, the job automatically runs `utils/evaluate.py --split external
 --expected-episodes 60` with that checkpoint. It fails if fewer than 60 complete
 evaluation episodes are available, rather than reporting a partial set.
 
@@ -140,7 +140,7 @@ Rerun value estimation independently after copying a checkpoint back, from
 MA-VLCM with the correct Python environment:
 
 ```bash
-python evaluate.py --checkpoint outputs/frozen_2000_JOBID/best.pt \
+python utils/evaluate.py --checkpoint outputs/frozen_2000_JOBID/best.pt \
   --dataset ../Ground_Robot_MARL/datasets/formation_validation_seed7300001 \
   --split external --expected-episodes 60 \
   --cache-dir outputs/cache_frozen_2000 \
@@ -150,7 +150,7 @@ python evaluate.py --checkpoint outputs/frozen_2000_JOBID/best.pt \
 To make per-formation success/failure videos from those predictions:
 
 ```bash
-python animate_checkpoint.py \
+python utils/animate_checkpoint.py \
   --predictions outputs/frozen_2000_JOBID/external60/external_predictions.csv \
   --run-dir outputs/frozen_2000_JOBID \
   --external-dataset ../Ground_Robot_MARL/datasets/formation_validation_seed7300001 \

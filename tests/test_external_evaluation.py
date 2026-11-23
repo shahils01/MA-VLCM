@@ -11,9 +11,7 @@ import torch
 from data_utils import discover_episodes, feature_cache_path, prepare_episode, read_episode
 from model import ModelConfig, MultimodalValueModel
 from test_value_pipeline import write_episode
-import evaluate
-
-
+import utils.evaluate as evaluate
 class ExternalEvaluationTests(unittest.TestCase):
     def test_filter_allows_even_agents_from_a_dataset_with_saved_odd_episodes(self):
         with tempfile.TemporaryDirectory() as temporary:

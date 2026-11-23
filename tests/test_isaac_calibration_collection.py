@@ -5,9 +5,9 @@ import unittest
 
 import torch
 
-import collect_isaac_critic_calibration as collect
-import evaluate_python_vlcm_actor as base
-from calibrate_critic_by_formation import read_episodes
+import utils.collect_isaac_critic_calibration as collect
+import utils.evaluate_python_vlcm_actor as base
+from utils.calibrate_critic_by_formation import read_episodes
 from model import ModelConfig, MultimodalValueModel
 from train_mappo import parser
 

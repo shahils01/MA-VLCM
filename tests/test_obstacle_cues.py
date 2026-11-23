@@ -3,7 +3,7 @@ from io import BytesIO
 import json
 import unittest
 from PIL import Image
-from evaluate_obstacle_cues import cue_sample
+from utils.evaluate_obstacle_cues import cue_sample
 
 
 class ObstacleCueTests(unittest.TestCase):

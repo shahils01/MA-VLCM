@@ -8,7 +8,7 @@ import unittest
 
 from PIL import Image
 
-from animate_checkpoint import animation_frames, load_frames, saved_values, split_membership, select_formation_cases, formation_name
+from utils.animate_checkpoint import animation_frames, load_frames, saved_values, split_membership, select_formation_cases, formation_name
 
 
 class AnimationTests(unittest.TestCase):

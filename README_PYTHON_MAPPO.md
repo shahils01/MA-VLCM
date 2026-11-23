@@ -576,14 +576,14 @@ not load the separate LoRA-trained backbone as its encoder.
 
 ### 6. Validate value estimates on recorded rollouts
 
-[evaluate.py](evaluate.py) loads the selected supervised `best.pt`, reconstructs
+[utils/evaluate.py](utils/evaluate.py) loads the selected supervised `best.pt`, reconstructs
 the saved split or a new external collection, builds the same past-only
 features and uses the original training normalization. No optimizer runs.
 It saves per-anchor predictions, realized return labels and aggregate metrics.
-[animate_checkpoint.py](animate_checkpoint.py) turns these predictions into
+[utils/animate_checkpoint.py](utils/animate_checkpoint.py) turns these predictions into
 formation-specific replay videos.
 
-The external collection was prepared with [collect_fresh_validation.py](collect_fresh_validation.py)
+The external collection was prepared with [utils/collect_fresh_validation.py](utils/collect_fresh_validation.py)
 using the **intermediate behavior actor**, 15 episodes for each of four
 formations and reset-stream seeds starting at **7300001**, offset by 100000
 per formation. It preserves the Isaac task and reward definitions. Its 60
@@ -838,7 +838,7 @@ mean actor validation success, with mean return as the tiebreaker, so it may be
 older than the latest periodic snapshot. The run also saves optimizer artifacts
 and metadata; frozen 0.5B backbone tensors are not copied into every checkpoint.
 
-[evaluate_python_vlcm_actor.py](evaluate_python_vlcm_actor.py) loads a matching
+[utils/evaluate_python_vlcm_actor.py](utils/evaluate_python_vlcm_actor.py) loads a matching
 actor/critic pair, resets the Python environment to seeded random positions,
 and lets the actor alone choose actions. Afterward it computes VLCM values
 from the recorded causal histories and compares them to observed discounted

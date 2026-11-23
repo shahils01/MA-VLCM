@@ -319,7 +319,7 @@ def verify_training(root, checkpoints):
 
 def audit_rollouts(root, samples):
     """Check archive targets independently against the full control trace."""
-    from animate_checkpoint import load_frames
+    from utils.animate_checkpoint import load_frames
     records = read_records(root)
     groups = Counter((r["eval_case"], r["num_agents"]) for r in records)
     expected = {(case, n) for case in ("formation_clean", "navigation_without_obstacles", "navigation_with_obstacles")
@@ -513,7 +513,7 @@ def plot_panel(draw, bounds, times, series, cursor, ylabel):
 
 
 def render_result(result, root):
-    from animate_checkpoint import load_frames
+    from utils.animate_checkpoint import load_frames
     row = result["episode"]
     frames, _ = load_frames(Path(row["shard"]), dict(gamma=result["gamma"], return_source="control", image_hz=10.))
     if not np.allclose([f["time_s"] for f in frames], result["times"]):

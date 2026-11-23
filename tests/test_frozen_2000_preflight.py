@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from prepare_frozen_2000 import validate_collections
+from utils.prepare_frozen_2000 import validate_collections
 
 
 class FrozenPreflightTests(unittest.TestCase):

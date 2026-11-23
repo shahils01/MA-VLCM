@@ -111,7 +111,7 @@ full states under one explicitly specified policy/noise process.
 
 ## Explicit obstacle cues
 
-`python evaluate_obstacle_cues.py all` creates three matched variants of the six
+`python utils/evaluate_obstacle_cues.py all` creates three matched variants of the six
 existing visual-only formation-obstacle episodes: language-only, red outlines
 only, and language plus outlines. Both frozen joint critics score all variants.
 Results and 18 additional videos are saved in

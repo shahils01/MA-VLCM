@@ -4,6 +4,9 @@ For NRP Nautilus/Kubernetes, see [the training guide](README_KUBERNETES.md) for
 a persistent Conda environment on the PVC, GPU jobs, logs, W&B, checkpoints,
 resume, and downloading results locally.
 
+For the current code map and an evidence-based plan for data, loss and training
+experiments, see [README_TRAINING_IMPROVEMENTS.md](README_TRAINING_IMPROVEMENTS.md).
+
 The main Python files train a signed scalar value from overhead images, the task
 instruction, robot states, and dynamic adjacency. The implementation uses
 [SmolVLM-500M-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct),
@@ -30,7 +33,7 @@ seconds. Early clips are left-padded with an explicit attention mask. Clips neve
 cross episode boundaries or include observations after the prediction time.
 Training and evaluation exclude terminal anchors: the model input does not
 include a termination flag, and the known terminal state's future return is zero.
-`predict.py` returns zero directly when given a known terminal frame.
+`utils/predict.py` returns zero directly when given a known terminal frame.
 
 The graph inputs per robot are position x/y, sin/cos of yaw, the two recorded
 velocity components, relative assigned-goal x/y, distance to goal, and nearest
@@ -264,7 +267,7 @@ GPU environment and replace `CHECKPOINT` and `OUTPUT`:
 
 ```bash
 cd /workspace/code/MA-VLCM
-python evaluate.py --checkpoint CHECKPOINT --split external \
+python utils/evaluate.py --checkpoint CHECKPOINT --split external \
   --dataset /workspace/datasets/polygon_formation_python_env/formation_control --num-agents 4 6 \
   --cache-dir /workspace/vlcm-cache --output-dir OUTPUT --batch-size 1
 ```
@@ -313,9 +316,9 @@ MSE, MAE, RMSE, correlation, R2, constant-prediction baseline MSE, per-team/stag
 outcome metrics, episode-averaged MSE, and prediction CSV files.
 
 ```bash
-python evaluate.py --checkpoint /path/to/run/best.pt --split test \
+python utils/evaluate.py --checkpoint /path/to/run/best.pt --split test \
   --output-dir outputs/final-test
-python predict.py --checkpoint /path/to/run/best.pt \
+python utils/predict.py --checkpoint /path/to/run/best.pt \
   --episode /path/to/episode_000001.tar --anchor 10
 ```
 
@@ -330,7 +333,7 @@ To prepare and collect a separate 60-episode validation set with new seeds
 source of frozen actor and environment settings:
 
 ```bash
-python3 collect_fresh_validation.py --collect
+python3 utils/collect_fresh_validation.py --collect
 ```
 
 The default output is the sibling
@@ -347,7 +350,7 @@ outside training when using it for model selection.
 Evaluate genuinely new archives with the training Python environment:
 
 ```bash
-python evaluate.py --checkpoint outputs/zero_margin_900/best.pt \
+python utils/evaluate.py --checkpoint outputs/zero_margin_900/best.pt \
   --dataset ../Ground_Robot_MARL/datasets/formation_validation_seed7300001 \
   --split external --output-dir outputs/validation_seed7300001_evaluation
 ```
@@ -357,7 +360,7 @@ split path keys, and excludes timeout/unfinished episodes whose full future
 return is unknown. MSE is reported on nonterminal anchors by default. New-seed
 collection alone does not establish generalization to new tasks or appearances.
 
-`animate_checkpoint.py` displays an episode's overhead images beside causal
+`utils/animate_checkpoint.py` displays an episode's overhead images beside causal
 predicted value, recorded discounted future return, recorded frame reward, and
 recorded team progress. The model predicts future return; it has no separate
 immediate-reward or progress output. Curves reveal observations only as playback
@@ -370,7 +373,7 @@ From this directory, run fresh inference on two saved validation episodes
 (one per outcome when available):
 
 ```bash
-python animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
+python utils/animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
   --samples 2 --output-dir outputs/checkpoint_animations/fresh
 ```
 
@@ -379,7 +382,7 @@ archives. CPU inference works with `--device cpu`, but uncached SmolVLM inferenc
 can be slow. Existing frozen feature caches are reused automatically.
 
 ```bash
-python animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
+python utils/animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
   --episode /path/to/episode_000001.tar \
   --output-dir outputs/checkpoint_animations/custom
 ```
@@ -407,7 +410,7 @@ predictions, explicitly labeled in the video, rather than performing new
 inference. This mode also works without PyTorch:
 
 ```bash
-python3 animate_checkpoint.py \
+python3 utils/animate_checkpoint.py \
   --predictions outputs/zero_margin_900/validation_predictions.csv \
   --samples 2 --output-dir outputs/checkpoint_animations/validation_preview
 ```
@@ -423,11 +426,11 @@ To create named success/failure examples for every formation in the saved
 validation split, use `--by-formation`:
 
 ```bash
-python animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
+python utils/animate_checkpoint.py --checkpoint outputs/zero_margin_900/best.pt \
   --by-formation --output-dir outputs/checkpoint_animations/by_formation_fresh
 
 # Replay existing best-checkpoint predictions without PyTorch:
-python3 animate_checkpoint.py \
+python3 utils/animate_checkpoint.py \
   --predictions outputs/zero_margin_900/validation_predictions.csv \
   --by-formation --output-dir outputs/checkpoint_animations/by_formation
 ```
@@ -445,7 +448,7 @@ For the separately collected new-seed episodes and their existing best-checkpoin
 predictions, select one success and failure from every formation with:
 
 ```bash
-python3 animate_checkpoint.py --predictions outputs/validation_seed7300001_evaluation/external_predictions.csv \
+python3 utils/animate_checkpoint.py --predictions outputs/validation_seed7300001_evaluation/external_predictions.csv \
   --run-dir outputs/zero_margin_900 \
   --external-dataset ../Ground_Robot_MARL/datasets/formation_validation_seed7300001 \
   --by-formation --exclude-terminal \
@@ -461,7 +464,7 @@ recorded terminal reward.
 Run the audit without downloading a model:
 
 ```bash
-python audit_dataset.py --dataset /path/to/formation_vlcm_polygon_3to6
+python utils/audit_dataset.py --dataset /path/to/formation_vlcm_polygon_3to6
 ```
 
 The checked-in [audit report](reports/formation_diversity.md) describes all 2,000

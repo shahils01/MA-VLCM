@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import torch
 
-import evaluate_polygon_ood as ood
+import utils.evaluate_polygon_ood as ood
 from model import ModelConfig
 from python_mappo import EpisodeHistory, PythonValueCritic, context_batch
 from train_mappo import parser

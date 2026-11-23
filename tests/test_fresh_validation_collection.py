@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from collect_fresh_validation import prepare
+from utils.collect_fresh_validation import prepare
 
 
 class ValidationPlanTests(unittest.TestCase):
