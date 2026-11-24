@@ -76,6 +76,30 @@ hold is a true terminal; its future return is zero. External timeout episodes
 are excluded from this Monte Carlo regression because their continuation is
 unobserved. Native terminal failures remain valid examples.
 
+## Two concurrent 3–6-agent cases on two A100s
+
+`train_joint_3456_two_palmetto.sbatch` runs `agents3456_shared` and
+`agents3456_task` concurrently, with one A100, two CPUs and 14 GB of host
+memory per training step. It requests one node with two A100s, four CPUs,
+32 GB of host memory and 24 hours. The cache stage uses both GPUs and all
+four CPUs first; both cases then use its pinned model revision and split
+manifest. Defaults for batch size, epochs and learning rate match the
+four-case launcher. The 3/5-agent-only cases are not run by this launcher.
+
+From the project directory on Palmetto, submit the job with:
+
+```bash
+srun --partition=work1 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem=1G --time=00:05:00 mkdir -p logs
+CONDA_ENV=internvl sbatch train_joint_3456_two_palmetto.sbatch
+```
+
+Outputs go to `outputs/joint_3456_two_JOB_ID/`; inspect `logs/cache.err`,
+`logs/agents3456_shared.err` and `logs/agents3456_task.err` inside it if a
+step fails. `CASE_MEM_GB` can adjust the per-case host-memory request, but
+twice that value must fit within the job's `--mem` allocation. Increase the
+job memory if the cache stage or either training step runs out of memory.
+The two-GPU request can be easier to schedule but does not guarantee a start.
+
 ## Four concurrent cases on four A100s
 
 The four-case launcher compares both head choices on both agent sets:
@@ -88,16 +112,16 @@ The four-case launcher compares both head choices on both agent sets:
 | `agents35_task` | 3, 5 | Two, one per task | One |
 
 ```bash
-mkdir -p logs
+srun --partition=work1 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem=1G --time=00:05:00 mkdir -p logs
 export FORMATION_DATASET=/home/anshuln/Dataset/polygon_formation_python_env
 export GOTOGOAL_DATASET=/home/anshuln/Dataset/manyagent_gotogoal_python_2000
 CONDA_ENV=internvl sbatch train_joint_four_palmetto.sbatch
 ```
 
-This requests **four A100s, eight CPUs total and 192 GB RAM on one node**. First,
+This requests **four A100s, eight CPUs total and 64 GB RAM on one node**. First,
 all four GPUs build/reuse a single frozen-feature cache for the full 3–6-agent
 collection. Then four independent `srun` steps train concurrently. Each gets
-one GPU, two CPUs, one data worker and a 40 GB CPU-memory request. Explicit
+one GPU, two CPUs, one data worker and a 14 GB CPU-memory request. Explicit
 per-step CPU/GPU/memory requests let the four steps coexist; see the official
 [srun resource options](https://slurm.schedmd.com/srun.html).
 
@@ -143,11 +167,10 @@ and `.err` per case, GPU samples in `logs/gpu.csv`, and four `.exitcode` files.
 Nonzero status in any case makes the job fail after the other cases finish.
 Startup messages show each process's visible GPU assignment and batch size.
 
-Check all four dataset selections on the login node, from an activated Python
-environment, before requesting GPUs:
+Check all four dataset selections inside a Slurm allocation on a compute node:
 
 ```bash
-PYTHON_BIN="$(command -v python)" bash train_joint_four_palmetto.sbatch --check
+srun --partition=work1 --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=8G --time=00:15:00 bash train_joint_four_palmetto.sbatch --check
 ```
 
 This reads summary sidecars only; it does not require CUDA, launch `srun`,
