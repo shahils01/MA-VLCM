@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --gpus-per-node=a100:2
 #SBATCH --mem=32gb
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
@@ -39,7 +39,7 @@ export RUN_ROOT="${RUN_ROOT:-$PROJECT_ROOT/outputs/joint_3456_two_${SLURM_JOB_ID
 export CACHE_DIR="${CACHE_DIR:-$RUN_ROOT/cache}"
 export FORMATION_DATASET="${FORMATION_DATASET:-/home/anshuln/Dataset/polygon_formation_python_env}"
 export GOTOGOAL_DATASET="${GOTOGOAL_DATASET:-/home/anshuln/Dataset/manyagent_gotogoal_10m_3000/without_obstacles}"
-export WANDB_ENTITY="${WANDB_ENTITY:-shulnak09}"
+export WANDB_ENTITY="${WANDB_ENTITY:-i2rLAB}"
 export WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-value-heads}"
 DATA_FLAGS=(--experiment joint_without_obstacles --expected-formation-episodes 3000 --expected-gotogoal-episodes 3000)
 
