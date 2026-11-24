@@ -36,7 +36,12 @@ if [[ -d "$PROJECT_ROOT/outputs/training_dependencies" ]]; then
   export PYTHONPATH="$PROJECT_ROOT/outputs/training_dependencies${PYTHONPATH:+:$PYTHONPATH}"
 fi
 export RUN_ROOT="${RUN_ROOT:-$PROJECT_ROOT/outputs/joint_3456_two_${SLURM_JOB_ID:-preflight}}"
-export CACHE_DIR="${CACHE_DIR:-$PROJECT_ROOT/outputs/cache}"
+export CACHE_DIR="${CACHE_DIR:-$RUN_ROOT/cache}"
+export FORMATION_DATASET="${FORMATION_DATASET:-/home/anshuln/Dataset/polygon_formation_python_env}"
+export GOTOGOAL_DATASET="${GOTOGOAL_DATASET:-/home/anshuln/Dataset/manyagent_gotogoal_10m_3000/without_obstacles}"
+export WANDB_ENTITY="${WANDB_ENTITY:-shulnak09}"
+export WANDB_PROJECT="${WANDB_PROJECT:-ma-vlcm-value-heads}"
+DATA_FLAGS=(--experiment joint_without_obstacles --expected-formation-episodes 3000 --expected-gotogoal-episodes 3000)
 
 # EDIT TRAINING SETTINGS HERE. Environment variables can override these defaults.
 export CLIP_LEN="${CLIP_LEN:-8}"
@@ -58,7 +63,7 @@ if [[ "$CHECK_ONLY" == 1 ]]; then
   for i in 0 1; do
     printf 'Checking %s\n' "${CASES[i]}"
     NUM_GPUS=1 NUM_AGENTS="${COUNTS[i]}" RUN_DIR="$RUN_ROOT/preflight/${CASES[i]}" \
-      WANDB_ENABLED=0 bash "$PROJECT_ROOT/train_joint_ablation.sh" "${HEADS[i]}" --preflight-only
+      WANDB_ENABLED=0 bash "$PROJECT_ROOT/train_joint_ablation.sh" "${HEADS[i]}" --preflight-only "${DATA_FLAGS[@]}"
   done
   exit
 fi
@@ -87,7 +92,7 @@ srun --exclusive --exact --nodes=1 --ntasks=1 --cpus-per-task="$((2 * CPUS_PER_C
   --gpus-per-node=a100:2 --gpus-per-task=a100:2 --gpu-bind=none --mem=0 \
   --output="$RUN_ROOT/logs/cache.out" --error="$RUN_ROOT/logs/cache.err" \
   env NUM_GPUS=2 NUM_AGENTS='3 4 5 6' RUN_DIR="$RUN_ROOT/cache_build" WANDB_ENABLED=0 \
-  bash "$PROJECT_ROOT/train_joint_ablation.sh" shared --cache-only --require-cuda --expected-visible-gpus 2
+  bash "$PROJECT_ROOT/train_joint_ablation.sh" shared --cache-only --require-cuda --expected-visible-gpus 2 "${DATA_FLAGS[@]}"
 export MODEL_REVISION
 MODEL_REVISION="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["model_config"]["model_revision"])' "$RUN_ROOT/cache_build/cache_report.json")"
 SPLIT_MANIFEST="$RUN_ROOT/cache_build/split_manifest.json"
@@ -104,7 +109,7 @@ for i in 0 1; do
     env NUM_GPUS=1 NUM_AGENTS="${COUNTS[i]}" RUN_DIR="$RUN_ROOT/$case_name" \
     WANDB_RUN_NAME="$case_name-${SEED:-42}-${SLURM_JOB_ID}" \
     bash "$PROJECT_ROOT/train_joint_ablation.sh" "${HEADS[i]}" \
-    --require-cuda --expected-visible-gpus 1 --split-manifest "$SPLIT_MANIFEST" &
+    --require-cuda --expected-visible-gpus 1 --split-manifest "$SPLIT_MANIFEST" "${DATA_FLAGS[@]}" &
   step_pids+=("$!")
 done
 
