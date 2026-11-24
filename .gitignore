@@ -28,3 +28,5 @@ ma_vlcm.def
 !reports/*.json
 
 /data_samples/
+/debug_samples/
+/eval_outputs/
